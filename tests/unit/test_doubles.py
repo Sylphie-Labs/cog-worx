@@ -46,6 +46,27 @@ async def test_commit_step_is_idempotent_on_key() -> None:
     assert state.steps[0].step_id == "a"
 
 
+async def test_commit_step_idempotent_on_key_with_differing_fields() -> None:
+    """A second commit under the SAME idempotency_key is a no-op, even if other fields differ (S6).
+
+    Mirrors the integration guard against ``InMemoryJournal`` so the deterministic tier also pins
+    exactly-once-on-the-key. The two records share an idempotency_key but differ in every other
+    field; the second must be dropped (first-write-wins), leaving exactly one step.
+    """
+    journal = InMemoryJournal()
+    await journal.start_run("r1", "s1")
+    first = _step("a", Transition(to="b", output=_artifact()), key="r1:dup")
+    second = _step("z", Done(output=_artifact()), key="r1:dup")
+
+    await journal.commit_step(first)
+    await journal.commit_step(second)  # same idempotency_key, all other fields differ.
+
+    state = await journal.load_run("r1")
+    assert state is not None
+    assert len(state.steps) == 1
+    assert state.steps[0].step_id == "a"  # the FIRST commit won; the conflicting second was dropped
+
+
 async def test_start_run_does_not_wipe_existing_steps() -> None:
     journal = InMemoryJournal()
     await journal.start_run("r1", "s1")

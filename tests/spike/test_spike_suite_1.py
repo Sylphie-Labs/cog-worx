@@ -8,14 +8,17 @@ of which falsifies a load-bearing bet if it fails:
   its ``DERIVED_FROM`` lineage; pgvector returns nearest-first dense recall. Failure of any one
   engine fails the polyglot-capability criterion (they are asserted in the same test body).
 - **Criterion 2 (S6 — THE durability gate):** the reusable kill-mid-run chaos harness
-  (``assert_resume_never_recalls_model``) wired to a REAL ``TimescaleJournal``. A run crashes after
-  the model-bearing ``respond`` stage durably commits; a fresh engine resumes over the same Postgres
-  rows with a zero-response model and makes ZERO model calls. A post-assert queries Postgres
-  directly to prove exactly ONE row carries the respond idempotency_key — exactly-once survived a
-  real commit + crash + resume against durable rows, not memory.
+  (``assert_resume_never_recalls_model``) wired to a REAL ``TimescaleJournal``. A run is killed
+  mid-flight after the model-bearing ``respond`` stage durably commits; a fresh engine SAME-PROCESS
+  resume re-reads the run's committed step rows from Postgres and replays them, making ZERO model
+  calls. A post-assert queries Postgres directly to prove exactly ONE row carries the respond
+  idempotency_key — exactly-once and no-model-recall hold against durable rows, not memory. What
+  this proves is in-process resume over durable Postgres rows: the graph object is still held
+  in-process (``engine._graphs``). Durable CROSS-PROCESS cold resume (rebuilding the graph after a
+  real process death) is Phase 1.
 - **Criterion 3 (S8 — first Lesion pass):** disabling a real component (a ``latent_recall``
-  capability backed by ``PgLatentStore``) makes the loop DEGRADE, not crash, and emits the lesion
-  events (``LESION_ENABLED`` + ``STAGE_DEGRADED``) that pass the event-boundary contract.
+  capability backed by ``PgLatentStore``) makes the loop DEGRADE, not crash, and the ENGINE emits a
+  ``STAGE_DEGRADED`` event through its sink — proof the loop witnessed the lesion, not the test.
 
 These hit the live substrate; under ``-m spike`` (also ``-m integration``). They ERROR rather than
 silently pass when the substrate is unreachable, since the gate is only meaningful when it is up.
@@ -38,19 +41,12 @@ from cogworx.adapters.timescale_journal import TimescaleJournal
 from cogworx.capability.base import CapabilityUnavailable
 from cogworx.capability.registry import Registry, function_capability
 from cogworx.claims.provenance import Artifact, Claim, Provenance
-from cogworx.coordination.events import (
-    Event,
-    EventType,
-    Subsystem,
-    validate_event_boundary,
-)
-from cogworx.cost.budget import BudgetGuard
+from cogworx.coordination.events import Event, EventType
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.result import Degraded, Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import ChatMessage, ModelResponse
-from cogworx.runtime.context import RunContext
 from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import Journal, StepRecord
 from cogworx.substrate.latent import LatentRecord
@@ -291,11 +287,13 @@ async def _count_rows_for_key(dsn: str, idempotency_key: str) -> int:
 async def test_criterion_2_exactly_once_resume_on_real_timescale(
     settings: SubstrateSettings,
 ) -> None:
-    """Kill mid-run after ``respond`` commits; resume over the REAL journal re-calls no model (S6).
+    """Kill mid-run after ``respond`` commits; same-process resume re-calls no model (S6).
 
     Proves exactly-once against durable Postgres rows: the harness asserts engine B made 0 model
     calls and the replayed StepRecords equal what was committed before the crash; the post-assert
-    queries Postgres directly for exactly ONE row carrying the respond idempotency_key.
+    queries Postgres directly for exactly ONE row carrying the respond idempotency_key. This is
+    IN-PROCESS resume — engine B re-reads the committed step rows from Postgres but the graph object
+    is still held in-process (``engine._graphs``). Durable cross-process cold resume is Phase 1.
     """
     journal = TimescaleJournal(settings=settings)
     await journal.ensure_schema()
@@ -426,11 +424,13 @@ async def test_criterion_3a_capability_enabled_completes(settings: SubstrateSett
 
 
 async def test_criterion_3b_lesioned_capability_degrades(settings: SubstrateSettings) -> None:
-    """Disabling the recall capability DEGRADES the loop (no crash) and emits lesion events (S8).
+    """Disabling the recall capability DEGRADES the loop (no crash) and the ENGINE emits the lesion.
 
-    Asserts: (1) a ``LESION_ENABLED`` event (``OPERATIONS``) passes the boundary contract;
-    (2) the run reaches ``RunStatus.DEGRADED`` — the loop degraded, it did NOT raise; (3) a
-    ``STAGE_DEGRADED`` event was emitted through the engine's event sink.
+    Asserts only things the ENGINE produces BECAUSE the capability was lesioned: (1) the run reaches
+    ``RunStatus.DEGRADED`` — the loop degraded, it did NOT raise; (2) the loop emitted
+    ``STAGE_DEGRADED`` through its event sink. (An earlier revision also asserted a
+    ``LESION_ENABLED`` event that the TEST itself constructed and emitted — that proved nothing
+    about engine behaviour, so it was removed.)
     """
     latent = PgLatentStore(dim=4, settings=settings)
     journal = TimescaleJournal(settings=settings)
@@ -442,36 +442,11 @@ async def test_criterion_3b_lesioned_capability_degrades(settings: SubstrateSett
         await latent.ensure_schema()
         await latent.reset()
 
-        # The S8 lesion switch: disable the component.
+        # The S8 lesion switch: disable the component so its dispatch raises CapabilityUnavailable.
         registry.disable("latent_recall")
 
-        # Emit a LESION_ENABLED event through a RunContext and prove it passes the boundary contract
-        # (LESION_ENABLED is owned by OPERATIONS). The RunContext.emit also runs the boundary check.
-        run_id = f"spike3b-{uuid.uuid4().hex}"
-        lesion_event = Event(
-            id=f"{run_id}:lesion:0",
-            type=EventType.LESION_ENABLED,
-            timestamp=_NOW,
-            subsystem=Subsystem.OPERATIONS,
-            session_id="spike3b-sess",
-            run_id=run_id,
-            attributes={"component": "latent_recall"},
-        )
-        validate_event_boundary(lesion_event)  # constructive proof: boundary contract holds.
-        lesion_ctx = RunContext(
-            run_id=run_id,
-            session_id="spike3b-sess",
-            model=ReplayModel([]),
-            journal=journal,
-            graph_store=InMemoryGraphStore(),
-            latent=latent,
-            budget=BudgetGuard(),
-            registry=registry,
-            event_sink=events.append,
-        )
-        lesion_ctx.emit(lesion_event)
-
         # Run the graph: the disabled capability must DEGRADE the loop, not raise.
+        run_id = f"spike3b-{uuid.uuid4().hex}"
         state = await engine.run(
             run_id=run_id,
             session_id="spike3b-sess",
@@ -483,10 +458,9 @@ async def test_criterion_3b_lesioned_capability_degrades(settings: SubstrateSett
         assert isinstance(degraded_result, Degraded)
         assert degraded_result.to is None  # terminal degraded.
 
-        # The lesion is observable on the event stream: both the operator's LESION_ENABLED and the
-        # loop's STAGE_DEGRADED were emitted through the sink.
+        # The lesion is observable on the event stream: the LOOP emitted STAGE_DEGRADED through the
+        # sink (the engine produced this, not the test).
         emitted_types = {event.type for event in events}
-        assert EventType.LESION_ENABLED in emitted_types
         assert EventType.STAGE_DEGRADED in emitted_types
     finally:
         await journal.aclose()

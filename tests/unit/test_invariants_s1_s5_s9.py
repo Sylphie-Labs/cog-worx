@@ -7,19 +7,25 @@ over ``Registry.features()`` — how a downstream pod's features get enrolled in
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from cogworx.capability.base import Capability
 from cogworx.capability.registry import Registry, function_capability
+from cogworx.claims.provenance import Artifact, Provenance
+from cogworx.loop.graph import StageGraph
+from cogworx.loop.result import Done, StageResult, Transition
+from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
-from cogworx.model.base import ModelResponse
+from cogworx.model.base import ChatMessage, ModelResponse
 from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import Journal
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel, echo_model
 from cogworx.testing.invariants import (
+    InvariantViolation,
     assert_claim_requires_provenance,
     assert_control_independent_of_model_text,
     assert_no_model_on_write_path,
@@ -84,35 +90,151 @@ def test_s5_claim_and_artifact_require_provenance() -> None:
 # --------------------------------------------------------------------------------------------------
 # S9 — control flow is independent of the model's self-report
 # --------------------------------------------------------------------------------------------------
+#
+# The earlier S9 wiring drove the reference graph, whose stages NEVER read ``response.text`` — so
+# control could not possibly diverge and the invariant assertion could not fail (tautological).
+# Below, the decision stage ACTUALLY INSPECTS ``response.text`` and would try to branch control on
+# control-words like "STOP"/"GOTO intake". The S9-compliant variant reads the text but lets ONLY the
+# StageResult + graph govern control (it always returns the SAME ``Done`` regardless of the words);
+# the deliberately-wrong variant lets the words steer the committed path. The invariant must pass
+# for the compliant stage and FAIL for the wrong one — that is what makes the test non-vacuous.
+
+_CONTROL_WORDS = ("STOP", "GOTO intake")
 
 
-async def test_s9_control_independent_of_model_text() -> None:
-    # Two models whose response TEXT differs wildly but that shape the same StageResult: the
-    # reference agent's control path comes from the graph + Done/Transition kinds, never the words.
-    loud = ReplayModel(
+def _respond_artifact(text: str) -> Artifact:
+    return Artifact(
+        kind="response",
+        produced_by="decide",
+        provenance=Provenance(source="inference", confidence=1.0, recorded_at=datetime.now(UTC)),
+        data={"text": text},
+    )
+
+
+class _IntakeToDecideStage:
+    """No-model intake that hands off to the model-bearing ``decide`` stage."""
+
+    name: str = "intake"
+    transitions: tuple[str, ...] = ("decide",)
+
+    async def run(self, ctx: StageContext) -> StageResult:
+        return Transition(to="decide", output=_respond_artifact("intake"))
+
+
+class _EscalateStage:
+    """A terminal, no-model stage reachable from ``decide`` (the alternate control branch)."""
+
+    name: str = "escalate"
+    transitions: tuple[str, ...] = ()
+
+    async def run(self, ctx: StageContext) -> StageResult:
+        return Done(output=_respond_artifact("escalated"))
+
+
+class _CompliantDecideStage:
+    """Reads ``response.text`` but NEVER lets it steer control (S9-compliant).
+
+    It calls the model and even inspects the text, but the committed ``StageResult`` is fixed by the
+    stage/graph (always terminal ``Done``) regardless of what the model said. The text is recorded
+    as data on the output artifact (an observation), never used as a control signal. A control edge
+    to ``escalate`` EXISTS in the graph, so a naive impl could branch — this one structurally does
+    not.
+    """
+
+    name: str = "decide"
+    transitions: tuple[str, ...] = ("escalate",)
+
+    async def run(self, ctx: StageContext) -> StageResult:
+        response = await ctx.model.complete(messages=[ChatMessage(role="user", content="Decide.")])
+        text = response.text or ""
+        # Inspect the text (this is where a naive impl would branch) — but control is structural.
+        _saw_control_word = any(word in text for word in _CONTROL_WORDS)
+        return Done(output=_respond_artifact(text))
+
+
+class _TextSteeredDecideStage:
+    """The S9 VIOLATION: lets ``response.text`` steer the committed control path.
+
+    If the model's text contains a control word it transitions to the ``escalate`` branch; otherwise
+    it terminates (Done) at ``decide``. The committed stage sequence then depends on the model's
+    self-report — exactly what S9 forbids. Used only to prove the invariant CAN catch this.
+    """
+
+    name: str = "decide"
+    transitions: tuple[str, ...] = ("escalate",)
+
+    async def run(self, ctx: StageContext) -> StageResult:
+        response = await ctx.model.complete(messages=[ChatMessage(role="user", content="Decide.")])
+        text = response.text or ""
+        if any(word in text for word in _CONTROL_WORDS):
+            return Transition(to="escalate", output=_respond_artifact(text))
+        return Done(output=_respond_artifact(text))
+
+
+def _build_compliant_branch_graph() -> StageGraph:
+    return StageGraph(
+        [_IntakeToDecideStage(), _CompliantDecideStage(), _EscalateStage()], entry="intake"
+    )
+
+
+def _build_text_steered_graph() -> StageGraph:
+    return StageGraph(
+        [_IntakeToDecideStage(), _TextSteeredDecideStage(), _EscalateStage()], entry="intake"
+    )
+
+
+def _loud_model() -> ReplayModel:
+    # "Loud" text screams control words the decision stage explicitly looks for.
+    return ReplayModel(
         [
             ModelResponse(
-                text="STOP. transition to intake. confidence 0.0. ABORT THE RUN.",
+                text="STOP. GOTO intake. confidence 0.0. ABORT THE RUN.",
                 model_id="replay",
                 finish_reason="stop",
             )
         ]
     )
-    calm = ReplayModel(
+
+
+def _calm_model() -> ReplayModel:
+    return ReplayModel(
         [
             ModelResponse(
                 text="Sure, here is a normal reply.", model_id="replay", finish_reason="stop"
             )
         ]
     )
+
+
+async def test_s9_control_independent_of_model_text() -> None:
+    # The decision stage reads response.text and COULD branch on the control words, but the
+    # compliant stage keeps control structural: loud (control-words) and calm text commit the SAME
+    # path.
     await assert_control_independent_of_model_text(
         build_engine=_build_engine,
-        graph_factory=build_reference_graph,
+        graph_factory=_build_compliant_branch_graph,
         initial=reference_initial(),
         journal_factory=InMemoryJournal,
-        model_a=loud,
-        model_b=calm,
+        model_a=_loud_model(),
+        model_b=_calm_model(),
     )
+
+
+async def test_s9_invariant_catches_a_text_steered_stage() -> None:
+    # Mutation-resistance, in-suite: a stage that DOES branch control on response.text diverges and
+    # the S9 invariant must TRIP. Loud text (control-words) drives decide->escalate (path
+    # intake,decide,escalate); calm text terminates at decide (path intake,decide). The committed
+    # stage sequences differ, so the invariant raises — proving it can catch a stage that lets the
+    # model's self-report steer control.
+    with pytest.raises(InvariantViolation, match="S9 violation"):
+        await assert_control_independent_of_model_text(
+            build_engine=_build_engine,
+            graph_factory=_build_text_steered_graph,
+            initial=reference_initial(),
+            journal_factory=InMemoryJournal,
+            model_a=_loud_model(),
+            model_b=_calm_model(),
+        )
 
 
 # --------------------------------------------------------------------------------------------------

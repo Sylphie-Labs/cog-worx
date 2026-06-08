@@ -106,6 +106,13 @@ class Engine:
         return await self._drive(ctx, graph, current=graph.entry)
 
     async def resume(self, run_id: str) -> RunState:
+        """Re-drive the run from the graph entry, replaying committed steps from the journal (S6).
+
+        ``_drive`` walks the whole path from the entry; for every stage it reads the journaled step
+        and, if that step already committed before the crash, replays its stored result WITHOUT
+        re-running the stage or re-calling the model (S6). Only uncommitted stages actually run.
+        Cross-process resume is Phase 1: this relies on the in-process graph in ``self._graphs``.
+        """
         state = await self._journal.load_run(run_id)
         if state is None:
             raise ResumeError(f"cannot resume unknown run {run_id!r}")
@@ -121,24 +128,8 @@ class Engine:
                 f"cannot resume run {run_id!r}: no in-process graph held "
                 "(cross-process resume is Phase 1)"
             )
-        next_stage = self._next_stage(state)
-        if next_stage is None:
-            return state
         ctx = self._build_context(run_id=run_id, session_id=state.session_id)
-        return await self._drive(ctx, graph, current=next_stage)
-
-    @staticmethod
-    def _next_stage(state: RunState) -> str | None:
-        if not state.steps:
-            return None
-        result = state.steps[-1].result
-        match result.kind:
-            case "transition":
-                return result.to
-            case "degraded":
-                return result.to
-            case "done" | "await-human":
-                return None
+        return await self._drive(ctx, graph, current=graph.entry)
 
     async def _drive(self, ctx: RunContext, graph: StageGraph, *, current: str) -> RunState:
         run_id = ctx.run_id
@@ -163,6 +154,8 @@ class Engine:
                 await self._journal.commit_step(record)
                 self._emit(ctx, EventType.STEP_COMMITTED, run_id=run_id, session_id=session_id)
 
+            # On resume, replayed (committed) steps re-emit these transition/terminal events. Events
+            # are observational broadcasts; idempotency/dedup is a Phase 1 concern (no dedup here).
             match result.kind:
                 case "done":
                     self._emit(ctx, EventType.RUN_COMPLETED, run_id=run_id, session_id=session_id)

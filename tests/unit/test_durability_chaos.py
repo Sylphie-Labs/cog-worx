@@ -3,9 +3,12 @@
 A 3-stage chaos graph (``intake`` → ``respond`` → ``close``) is driven until a simulated crash right
 after the model-bearing ``respond`` stage durably commits. A fresh engine resumes over the SAME
 journal with a ZERO-response model: if resume re-called the model, ``ReplayExhaustedError`` would
-fire. It does not. Resume replays intake+respond from the journal (0 model calls), runs the
-non-model ``close`` stage, and reaches COMPLETED — carrying the SAME response text ``respond``
-produced before the crash, proving the model call was not repeated.
+fire. It does not. Resume re-drives from the graph ENTRY: ``_drive`` walks intake→respond→close, and
+for each already-committed stage (``intake``, ``respond``) it reads the journaled step and replays
+its stored result WITHOUT re-running the stage or re-calling the model (the replay branch
+``if existing is not None`` in ``Engine._drive``); only the uncommitted ``close`` stage actually
+runs (it makes no model call). The run reaches COMPLETED carrying the SAME response text ``respond``
+produced before the crash, proving the committed model call was replayed, not repeated.
 """
 
 from __future__ import annotations

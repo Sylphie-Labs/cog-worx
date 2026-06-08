@@ -244,11 +244,12 @@ async def assert_resume_never_recalls_model(
     run_id: str = "s6-run",
     session_id: str = "s6-sess",
 ) -> RunState:
-    """The reusable kill-mid-run chaos harness (S6).
+    """The reusable kill-mid-run chaos harness (S6) — SAME-PROCESS resume over a durable journal.
 
     1. Build engine **A** over a ``CrashAfterStepJournal(inner=shared_journal, ...)`` and the
        ``scripted_model``; ``run`` it and assert it raises ``SimulatedCrash`` — the
-       ``crash_after_stage`` step is durably committed to ``shared_journal``, then the process dies.
+       ``crash_after_stage`` step is durably committed to ``shared_journal``, then the run is killed
+       mid-flight (the crash models the process dying after the commit, before the runner advances).
     2. Build engine **B** over the SAME ``shared_journal`` (now holding the committed prefix) with a
        fresh **zero-response** ``ReplayModel`` (so ANY model call raises ``ReplayExhaustedError``),
        register the graph on it, and ``resume(run_id)``.
@@ -259,8 +260,12 @@ async def assert_resume_never_recalls_model(
     The caller is responsible for shaping ``graph_factory`` so the crash lands AFTER a model-bearing
     stage commits and BEFORE a later stage — then a zero-response model on resume proves the
     committed model call was never repeated. ``build_engine(journal, model)`` builds an ``Engine``;
-    ``register_graph(engine, run_id)`` seeds the engine's in-process graph for ``run_id`` (in-proc
-    resume is the Phase-0 behaviour; cross-process resume is Phase 1).
+    ``register_graph(engine, run_id)`` seeds the engine's in-process graph for ``run_id``.
+
+    Scope of the proof: this is IN-PROCESS resume. Engine B re-reads the run's committed step rows
+    from the (durable) journal and replays them without re-calling the model, but the graph object
+    is still handed to it in-process via ``register_graph`` — the harness does NOT prove durable
+    cross-process cold resume (rebuilding the graph after a real process death), which is Phase 1.
     """
     from cogworx.loop.graph import StageGraph  # local import: keep the seam light
 

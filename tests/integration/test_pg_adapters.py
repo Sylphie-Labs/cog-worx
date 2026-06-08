@@ -96,6 +96,40 @@ async def test_commit_step_exactly_once(journal: TimescaleJournal) -> None:
     assert state.steps[0].step_id == "a"
 
 
+async def test_commit_step_idempotent_on_key_with_differing_fields(
+    journal: TimescaleJournal,
+) -> None:
+    """A SECOND commit under the SAME idempotency_key is a silent no-op, not a UNIQUE error (S6).
+
+    This targets the ``ON CONFLICT (idempotency_key) DO NOTHING`` clause specifically: the two
+    records share an idempotency_key but differ in EVERY other column (step_id, stage_name, result,
+    committed_at). Distinct ``(run_id, step_id)`` means the secondary ``run_step`` UNIQUE does NOT
+    fire — so only the idempotency_key constraint can reject the duplicate. The second commit must
+    (a) not raise and (b) leave exactly ONE row carrying that key (the FIRST write wins).
+    """
+    await journal.start_run("r1", "s1")
+    first = _step("a", Transition(to="b", output=_artifact()), committed_at=_NOW, key="r1:dup")
+    second = _step("z", Done(output=_artifact()), committed_at=_LATER, key="r1:dup")
+
+    await journal.commit_step(first)
+    await journal.commit_step(second)  # same idempotency_key, all other fields differ.
+
+    conn = await journal._connection()
+    cursor = await conn.execute(
+        "SELECT count(*), min(step_id) FROM cogworx_journal_steps WHERE idempotency_key = %s",
+        ("r1:dup",),
+    )
+    row = await cursor.fetchone()
+    assert row is not None
+    assert row[0] == 1  # exactly one durable row for the key
+    assert row[1] == "a"  # the FIRST commit won; the conflicting second was dropped
+
+    # And the run-level view shows a single step, not two.
+    state = await journal.load_run("r1")
+    assert state is not None
+    assert len(state.steps) == 1
+
+
 async def test_read_step_round_trips_stage_result(journal: TimescaleJournal) -> None:
     await journal.start_run("r1", "s1")
     original = _step("a", Transition(to="b", output=_artifact()), committed_at=_NOW)
