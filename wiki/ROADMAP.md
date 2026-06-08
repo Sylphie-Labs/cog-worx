@@ -21,22 +21,23 @@ The job of Phase 0 is to **freeze the seams** and build the **machinery that mak
 independently testable**. Nothing in Phase 1+ starts until Phase 0's contracts are frozen and the
 walking skeleton is green.
 
-- [ ] **Package skeleton** — `pyproject`, module layout, CI running `ruff` + `mypy --strict` + `pytest`.
-- [ ] **Freeze the cross-pod contracts (the seams):** `Model` interface (S4); `Stage`/`Loop` contract;
+- [x] **Package skeleton** — `pyproject`, module layout, CI running `ruff` + `mypy --strict` + `pytest`.
+- [x] **Freeze the cross-pod contracts (the seams):** `Model` interface (S4); `Stage`/`Loop` contract;
       the three **Store seams** — Neo4j graph, pgvector, Timescale journal (S3); `Capability` interface;
       the **event/coordination types** (port sylphie `packages/shared/src/types/event.types.ts`, S7);
       artifact/claim types carrying **provenance + epistemic typing** (S5).
-- [ ] **Substrate up:** docker-compose for Neo4j + **one Postgres cluster** (pgvector + TimescaleDB)
+- [x] **Substrate up:** docker-compose for Neo4j + **one Postgres cluster** (pgvector + TimescaleDB)
       (S3); plus **ephemeral test instances wiped per case** (port tess's isolated instances).
-- [ ] **The Test Kit** (the deliverable that makes heavy testing repeatable, not heroic): fake/replay
+- [x] **The Test Kit** (the deliverable that makes heavy testing repeatable, not heroic): fake/replay
       `Model` client (port tess `llm`/`kg_stub`); ephemeral-substrate fixtures; the **reference agent**;
       the **invariant property-suites** (S1, S5, S6, S9) as reusable parametrized tests.
-- [ ] **Feature registry** — discoverable, toggleable features auto-enrolled in the relevant suites
+- [x] **Feature registry** — discoverable, toggleable features auto-enrolled in the relevant suites
       (generalize tess `tools/registry`). Toggleability is also S8.
-- [ ] **Walking skeleton** — the thinnest end-to-end loop (intake → one model call → journal commit →
+- [x] **Walking skeleton** — the thinnest end-to-end loop (intake → one model call → journal commit →
       done) driven by one **trivial reference agent**.
-- [ ] **⛓ GATE — Spike Suite 1:** polyglot substrate capability + exactly-once resume (S6) + a first
-      Lesion pass (S8). **Phase 1 is blocked until this passes.**
+- [x] **⛓ GATE — Spike Suite 1:** polyglot substrate capability + exactly-once resume (S6) + a first
+      Lesion pass (S8). **Phase 1 is blocked until this passes.** ✅ **PASSED** (hardened against a
+      red-team pass; CANON-reviewed COMPLIANT). **Phase 1 is unblocked.**
 
 ---
 
