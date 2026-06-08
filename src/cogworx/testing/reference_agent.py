@@ -12,9 +12,12 @@ from datetime import UTC, datetime
 
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.loop.graph import StageGraph
+from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.model.base import ChatMessage
+
+REFERENCE_PATHWAY_ID = "reference"
 
 
 class IntakeStage:
@@ -55,6 +58,12 @@ def build_reference_graph() -> StageGraph:
     return StageGraph([IntakeStage(), RespondStage()], entry="intake")
 
 
+def reference_pathways() -> PathwayRegistry:
+    registry = PathwayRegistry()
+    registry.register(REFERENCE_PATHWAY_ID, build_reference_graph(), version=1)
+    return registry
+
+
 def reference_initial() -> Artifact:
     return Artifact(
         kind="user-input",
@@ -65,8 +74,10 @@ def reference_initial() -> Artifact:
 
 
 __all__ = [
+    "REFERENCE_PATHWAY_ID",
     "IntakeStage",
     "RespondStage",
     "build_reference_graph",
     "reference_initial",
+    "reference_pathways",
 ]

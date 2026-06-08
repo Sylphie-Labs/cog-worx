@@ -13,10 +13,12 @@ produced before the crash, proving the committed model call was replayed, not re
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.loop.graph import StageGraph
+from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
@@ -25,8 +27,14 @@ from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import Journal
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel
-from cogworx.testing.invariants import assert_resume_never_recalls_model
+from cogworx.testing.invariants import (
+    CrashAfterStepJournal,
+    SimulatedCrash,
+    assert_resume_never_recalls_model,
+)
 from cogworx.testing.reference_agent import IntakeStage
+
+_CHAOS_PATHWAY_ID = "chaos"
 
 
 class RespondToCloseStage:
@@ -59,8 +67,9 @@ class CloseStage:
     transitions: tuple[str, ...] = ()
 
     async def run(self, ctx: StageContext) -> StageResult:
-        # No model call. Read the response text the (already-committed) respond step produced.
-        prior = await ctx.journal.read_step(ctx.run_id, "respond")
+        # No model call. Read the response text the (already-committed) respond step produced. In
+        # the chaos graph respond is the second stage, committed at positional step_index 1.
+        prior = await ctx.journal.read_step(ctx.run_id, 1)
         text = ""
         if prior is not None:
             output = getattr(prior.result, "output", None)
@@ -81,13 +90,29 @@ def build_chaos_graph() -> StageGraph:
     return StageGraph([IntakeStage(), RespondToCloseStage(), CloseStage()], entry="intake")
 
 
-def _build_engine(journal: Journal, model: ReplayModel) -> Engine:
-    return Engine(
-        model=model,
-        journal=journal,
-        graph_store=InMemoryGraphStore(),
-        latent=InMemoryLatentStore(),
-    )
+def _chaos_pathways() -> PathwayRegistry:
+    registry = PathwayRegistry()
+    registry.register(_CHAOS_PATHWAY_ID, build_chaos_graph())
+    return registry
+
+
+def _make_build_engine(pathways: PathwayRegistry) -> Callable[[Journal, ReplayModel], Engine]:
+    """A ``build_engine(journal, model)`` factory baking in the SHARED registry.
+
+    Engine A and the FRESH engine B both come from this factory, so engine B rehydrates the chaos
+    graph from the registry via the run's stored pathway pointer — true cold resume, no in-process
+    graph carried."""
+
+    def build(journal: Journal, model: ReplayModel) -> Engine:
+        return Engine(
+            model=model,
+            journal=journal,
+            graph_store=InMemoryGraphStore(),
+            latent=InMemoryLatentStore(),
+            pathways=pathways,
+        )
+
+    return build
 
 
 def _chaos_initial() -> Artifact:
@@ -99,12 +124,6 @@ def _chaos_initial() -> Artifact:
     )
 
 
-def _register_graph(engine: Engine, run_id: str) -> None:
-    # In-process resume holds the graph keyed by run_id (engine.run does this internally). For a
-    # fresh resuming engine in Phase 0 we seed that map directly; cross-process resume is Phase 1.
-    engine._graphs[run_id] = build_chaos_graph()
-
-
 async def test_kill_after_respond_resumes_exactly_once_no_model_recall() -> None:
     shared_journal = InMemoryJournal()
     scripted = ReplayModel(
@@ -112,10 +131,9 @@ async def test_kill_after_respond_resumes_exactly_once_no_model_recall() -> None
     )
 
     final = await assert_resume_never_recalls_model(
-        build_engine=_build_engine,
-        register_graph=_register_graph,
-        graph_factory=build_chaos_graph,
+        build_engine=_make_build_engine(_chaos_pathways()),
         initial=_chaos_initial(),
+        pathway_id=_CHAOS_PATHWAY_ID,
         crash_after_stage="respond",
         shared_journal=shared_journal,
         scripted_model=scripted,
@@ -138,18 +156,68 @@ async def test_kill_after_respond_resumes_exactly_once_no_model_recall() -> None
     assert scripted.call_count == 1
 
 
+async def test_cold_resume_via_registry_fresh_engine_zero_recalls() -> None:
+    """A FRESH ``Engine`` resumes off only (journal + shared registry) — true cold resume (S2, S6).
+
+    Engine A crashes after ``respond`` durably commits (the run is left RUNNING). Engine B is a
+    BRAND-NEW ``Engine`` instance — it shares ONLY the ``InMemoryJournal`` and the
+    ``PathwayRegistry`` with A; it carries no in-process graph. It rehydrates the chaos graph from
+    the registry using the run's stored ``pathway_id`` pointer and resumes to COMPLETED with a
+    zero-response model, making ZERO model re-calls.
+    """
+    shared_journal = InMemoryJournal()
+    shared_pathways = _chaos_pathways()  # the SAME registry threaded into both engines
+    build_engine = _make_build_engine(shared_pathways)
+
+    # Engine A: run until the durable-commit-then-crash after the model-bearing respond stage.
+    scripted = ReplayModel(
+        [ModelResponse(text="durable answer", model_id="replay", finish_reason="stop")]
+    )
+    crash_journal = CrashAfterStepJournal(inner=shared_journal, crash_after_stage="respond")
+    engine_a = build_engine(crash_journal, scripted)
+    crashed = False
+    try:
+        await engine_a.run(
+            run_id="cold-1",
+            session_id="cold-sess",
+            pathway_id=_CHAOS_PATHWAY_ID,
+            initial=_chaos_initial(),
+        )
+    except SimulatedCrash:
+        crashed = True
+    assert crashed
+    assert scripted.call_count == 1  # the one model-bearing stage ran exactly once, before crash
+
+    mid = await shared_journal.load_run("cold-1")
+    assert mid is not None
+    # Crashed mid-flight, NOT terminal — so resume must actually re-drive (not short-circuit).
+    assert mid.status is RunStatus.RUNNING
+
+    # Engine B: a FRESH Engine (new instance) over the SAME journal + SAME registry, no graph held.
+    zero_model = ReplayModel([])  # any model re-call would raise ReplayExhaustedError
+    engine_b = build_engine(shared_journal, zero_model)
+    assert engine_b is not engine_a
+    resumed = await engine_b.resume("cold-1")
+
+    assert resumed.status is RunStatus.COMPLETED
+    assert tuple(step.stage_name for step in resumed.steps) == ("intake", "respond", "close")
+    assert zero_model.call_count == 0  # cold resume replayed committed work, re-called no model
+    close_result = resumed.steps[-1].result
+    assert isinstance(close_result, Done)
+    assert close_result.output.data["text"] == "durable answer"
+
+
 async def test_resume_of_completed_run_is_idempotent_noop() -> None:
     journal = InMemoryJournal()
     model = ReplayModel(
         [ModelResponse(text="durable answer", model_id="replay", finish_reason="stop")]
     )
-    engine = _build_engine(journal, model)
-    graph = build_chaos_graph()
+    engine = _make_build_engine(_chaos_pathways())(journal, model)
 
     state = await engine.run(
         run_id="chaos-2",
         session_id="chaos-sess",
-        graph=graph,
+        pathway_id=_CHAOS_PATHWAY_ID,
         initial=_chaos_initial(),
     )
     assert state.status is RunStatus.COMPLETED

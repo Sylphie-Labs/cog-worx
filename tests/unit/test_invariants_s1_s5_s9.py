@@ -16,6 +16,7 @@ from cogworx.capability.base import Capability
 from cogworx.capability.registry import Registry, function_capability
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.loop.graph import StageGraph
+from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
@@ -25,23 +26,36 @@ from cogworx.substrate.journal import Journal
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel, echo_model
 from cogworx.testing.invariants import (
+    EngineFactory,
     InvariantViolation,
     assert_claim_requires_provenance,
     assert_control_independent_of_model_text,
     assert_no_model_on_write_path,
     assert_run_writes_carry_provenance,
 )
-from cogworx.testing.reference_agent import build_reference_graph, reference_initial
+from cogworx.testing.reference_agent import (
+    REFERENCE_PATHWAY_ID,
+    reference_initial,
+    reference_pathways,
+)
 
 
-def _build_engine(journal: Journal, model: ReplayModel) -> Engine:
-    """An engine wired to the in-memory graph/latent doubles over the given journal + model."""
-    return Engine(
-        model=model,
-        journal=journal,
-        graph_store=InMemoryGraphStore(),
-        latent=InMemoryLatentStore(),
-    )
+def _engine_factory(pathways: PathwayRegistry) -> EngineFactory:
+    """A ``build_engine(journal, model)`` factory that bakes the given pathway registry in.
+
+    Both engine A and a FRESH engine B come from the SAME factory, so they share the registry — this
+    is what makes a cold resume (engine B rehydrating the graph from the registry) work."""
+
+    def build(journal: Journal, model: ReplayModel) -> Engine:
+        return Engine(
+            model=model,
+            journal=journal,
+            graph_store=InMemoryGraphStore(),
+            latent=InMemoryLatentStore(),
+            pathways=pathways,
+        )
+
+    return build
 
 
 # --------------------------------------------------------------------------------------------------
@@ -52,10 +66,10 @@ def _build_engine(journal: Journal, model: ReplayModel) -> Engine:
 async def test_s1_no_model_on_write_path() -> None:
     model = echo_model("hello from replay")
     state = await assert_no_model_on_write_path(
-        engine_factory=_build_engine,
+        engine_factory=_engine_factory(reference_pathways()),
         inner_journal=InMemoryJournal(),
         model=model,
-        graph=build_reference_graph(),
+        pathway_id=REFERENCE_PATHWAY_ID,
         initial=reference_initial(),
     )
     assert state.status is RunStatus.COMPLETED
@@ -71,11 +85,11 @@ async def test_s1_no_model_on_write_path() -> None:
 
 async def test_s5_run_writes_carry_provenance() -> None:
     model = echo_model("hello from replay")
-    engine = _build_engine(InMemoryJournal(), model)
+    engine = _engine_factory(reference_pathways())(InMemoryJournal(), model)
     state = await engine.run(
         run_id="s5-run",
         session_id="s5-sess",
-        graph=build_reference_graph(),
+        pathway_id=REFERENCE_PATHWAY_ID,
         initial=reference_initial(),
     )
     assert state.steps  # the run actually committed work to walk
@@ -171,6 +185,10 @@ class _TextSteeredDecideStage:
         return Done(output=_respond_artifact(text))
 
 
+_COMPLIANT_PATHWAY_ID = "s9-compliant"
+_STEERED_PATHWAY_ID = "s9-steered"
+
+
 def _build_compliant_branch_graph() -> StageGraph:
     return StageGraph(
         [_IntakeToDecideStage(), _CompliantDecideStage(), _EscalateStage()], entry="intake"
@@ -181,6 +199,18 @@ def _build_text_steered_graph() -> StageGraph:
     return StageGraph(
         [_IntakeToDecideStage(), _TextSteeredDecideStage(), _EscalateStage()], entry="intake"
     )
+
+
+def _compliant_pathways() -> PathwayRegistry:
+    registry = PathwayRegistry()
+    registry.register(_COMPLIANT_PATHWAY_ID, _build_compliant_branch_graph())
+    return registry
+
+
+def _steered_pathways() -> PathwayRegistry:
+    registry = PathwayRegistry()
+    registry.register(_STEERED_PATHWAY_ID, _build_text_steered_graph())
+    return registry
 
 
 def _loud_model() -> ReplayModel:
@@ -211,8 +241,8 @@ async def test_s9_control_independent_of_model_text() -> None:
     # compliant stage keeps control structural: loud (control-words) and calm text commit the SAME
     # path.
     await assert_control_independent_of_model_text(
-        build_engine=_build_engine,
-        graph_factory=_build_compliant_branch_graph,
+        build_engine=_engine_factory(_compliant_pathways()),
+        pathway_id=_COMPLIANT_PATHWAY_ID,
         initial=reference_initial(),
         journal_factory=InMemoryJournal,
         model_a=_loud_model(),
@@ -228,8 +258,8 @@ async def test_s9_invariant_catches_a_text_steered_stage() -> None:
     # model's self-report steer control.
     with pytest.raises(InvariantViolation, match="S9 violation"):
         await assert_control_independent_of_model_text(
-            build_engine=_build_engine,
-            graph_factory=_build_text_steered_graph,
+            build_engine=_engine_factory(_steered_pathways()),
+            pathway_id=_STEERED_PATHWAY_ID,
             initial=reference_initial(),
             journal_factory=InMemoryJournal,
             model_a=_loud_model(),

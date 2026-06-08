@@ -2,8 +2,9 @@
 
 Reference implementations of the distinct substrate seams (journal / graph / latent) — kept separate
 so the doubles exercise the same engine-shaped contracts the real adapters do (S3, no flattening
-``Store``). ``InMemoryJournal`` is the S6 reference behaviour: exactly-once on the idempotency key,
-status derived from the committed steps.
+``Store``). ``InMemoryJournal`` is the S6 reference behaviour: exactly-once on ``(run_id,
+step_index)``, with the run's status PERSISTED on the run record (the authority — not derived from
+the last step) and the run's pathway pointer stored for cold resume.
 """
 
 from __future__ import annotations
@@ -19,68 +20,63 @@ from cogworx.substrate.latent import LatentMatch, LatentRecord
 
 
 class _RunLog:
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, *, pathway_id: str, pathway_version: int) -> None:
         self.session_id = session_id
-        self.steps: list[StepRecord] = []
-        self.seen_keys: set[str] = set()
+        self.pathway_id = pathway_id
+        self.pathway_version = pathway_version
+        self.status = RunStatus.RUNNING
+        self.steps: dict[int, StepRecord] = {}
 
 
 class InMemoryJournal:
-    """An in-memory ``Journal`` with exactly-once commits and status derived from steps."""
+    """An in-memory ``Journal``: exactly-once positional commits + persisted run status."""
 
     def __init__(self) -> None:
         self._runs: dict[str, _RunLog] = {}
         self._timers: list[Timer] = []
 
-    async def start_run(self, run_id: str, session_id: str) -> None:
+    async def start_run(
+        self, run_id: str, session_id: str, *, pathway_id: str, pathway_version: int
+    ) -> None:
         if run_id not in self._runs:
-            self._runs[run_id] = _RunLog(session_id)
+            self._runs[run_id] = _RunLog(
+                session_id, pathway_id=pathway_id, pathway_version=pathway_version
+            )
+
+    async def set_run_status(self, run_id: str, status: RunStatus) -> None:
+        log = self._runs.get(run_id)
+        if log is not None:
+            log.status = status
 
     async def commit_step(self, record: StepRecord) -> None:
-        log = self._runs.setdefault(record.run_id, _RunLog(record.run_id))
-        if record.idempotency_key in log.seen_keys:
+        log = self._runs.get(record.run_id)
+        if log is None:
             return
-        log.seen_keys.add(record.idempotency_key)
-        log.steps.append(record)
+        if record.step_index in log.steps:
+            return
+        log.steps[record.step_index] = record
 
-    async def read_step(self, run_id: str, step_id: str) -> StepRecord | None:
+    async def read_step(self, run_id: str, step_index: int) -> StepRecord | None:
         log = self._runs.get(run_id)
         if log is None:
             return None
-        for record in log.steps:
-            if record.step_id == step_id:
-                return record
-        return None
+        return log.steps.get(step_index)
 
     async def load_run(self, run_id: str) -> RunState | None:
         log = self._runs.get(run_id)
         if log is None:
             return None
-        steps = tuple(log.steps)
-        status = self._derive_status(steps)
+        steps = tuple(log.steps[index] for index in sorted(log.steps))
         current_stage = steps[-1].stage_name if steps else None
         return RunState(
             run_id=run_id,
             session_id=log.session_id,
-            status=status,
+            status=log.status,
+            pathway_id=log.pathway_id,
+            pathway_version=log.pathway_version,
             current_stage=current_stage,
             steps=steps,
         )
-
-    @staticmethod
-    def _derive_status(steps: Sequence[StepRecord]) -> RunStatus:
-        if not steps:
-            return RunStatus.PENDING
-        result = steps[-1].result
-        match result.kind:
-            case "done":
-                return RunStatus.COMPLETED
-            case "await-human":
-                return RunStatus.AWAITING_HUMAN
-            case "degraded":
-                return RunStatus.DEGRADED if result.to is None else RunStatus.RUNNING
-            case "transition":
-                return RunStatus.RUNNING
 
     async def set_timer(self, timer: Timer) -> None:
         self._timers.append(timer)

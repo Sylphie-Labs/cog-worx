@@ -13,10 +13,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from cogworx.loop.graph import StageGraph
+from cogworx.loop.pathway import PathwayRegistry
 from cogworx.runtime.engine import Clock, Engine
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel, echo_model
-from cogworx.testing.reference_agent import build_reference_graph
+from cogworx.testing.reference_agent import build_reference_graph, reference_pathways
 
 _EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -58,6 +59,11 @@ def reference_graph() -> StageGraph:
 
 
 @pytest.fixture
+def pathways() -> PathwayRegistry:
+    return reference_pathways()
+
+
+@pytest.fixture
 def counter_clock() -> Clock:
     return _counter_clock()
 
@@ -68,6 +74,7 @@ def engine(
     in_memory_journal: InMemoryJournal,
     in_memory_graph: InMemoryGraphStore,
     in_memory_latent: InMemoryLatentStore,
+    pathways: PathwayRegistry,
     counter_clock: Callable[[], datetime],
 ) -> Engine:
     return Engine(
@@ -75,6 +82,7 @@ def engine(
         journal=in_memory_journal,
         graph_store=in_memory_graph,
         latent=in_memory_latent,
+        pathways=pathways,
         clock=counter_clock,
     )
 
@@ -85,6 +93,7 @@ __all__ = [
     "in_memory_graph",
     "in_memory_journal",
     "in_memory_latent",
+    "pathways",
     "reference_graph",
     "replay_model",
 ]

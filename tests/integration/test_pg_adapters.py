@@ -25,6 +25,8 @@ from cogworx.loop.state import RunStatus
 from cogworx.substrate.journal import StepRecord
 from cogworx.substrate.latent import LatentRecord
 
+_PATHWAY_ID = "reference"
+
 pytestmark = pytest.mark.integration
 
 
@@ -50,14 +52,13 @@ def _artifact() -> Artifact:
 
 
 def _step(
-    step_id: str, result: StageResult, *, committed_at: datetime, key: str | None = None
+    step_index: int, result: StageResult, *, committed_at: datetime, stage_name: str | None = None
 ) -> StepRecord:
     return StepRecord(
         run_id="r1",
-        step_id=step_id,
-        stage_name=step_id,
+        step_index=step_index,
+        stage_name=stage_name if stage_name is not None else f"stage-{step_index}",
         result=result,
-        idempotency_key=key if key is not None else f"r1:{step_id}",
         committed_at=committed_at,
     )
 
@@ -85,43 +86,43 @@ async def latent(settings: SubstrateSettings) -> AsyncIterator[PgLatentStore]:
 
 
 async def test_commit_step_exactly_once(journal: TimescaleJournal) -> None:
-    await journal.start_run("r1", "s1")
-    record = _step("a", Transition(to="b", output=_artifact()), committed_at=_NOW)
+    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
+    record = _step(0, Transition(to="b", output=_artifact()), committed_at=_NOW, stage_name="a")
     await journal.commit_step(record)
     await journal.commit_step(record)
 
     state = await journal.load_run("r1")
     assert state is not None
     assert len(state.steps) == 1
-    assert state.steps[0].step_id == "a"
+    assert state.steps[0].step_index == 0
 
 
-async def test_commit_step_idempotent_on_key_with_differing_fields(
+async def test_commit_step_idempotent_on_position_with_differing_fields(
     journal: TimescaleJournal,
 ) -> None:
-    """A SECOND commit under the SAME idempotency_key is a silent no-op, not a UNIQUE error (S6).
+    """A SECOND commit at the SAME position is a silent no-op, not a UNIQUE error (S6).
 
-    This targets the ``ON CONFLICT (idempotency_key) DO NOTHING`` clause specifically: the two
-    records share an idempotency_key but differ in EVERY other column (step_id, stage_name, result,
-    committed_at). Distinct ``(run_id, step_id)`` means the secondary ``run_step`` UNIQUE does NOT
-    fire — so only the idempotency_key constraint can reject the duplicate. The second commit must
-    (a) not raise and (b) leave exactly ONE row carrying that key (the FIRST write wins).
+    This targets the ``ON CONFLICT (run_id, step_index) DO NOTHING`` clause specifically: the two
+    records share ``(run_id, step_index)`` but differ in EVERY other column (stage_name, result,
+    committed_at). The second commit must (a) not raise and (b) leave exactly ONE row at that
+    position (the FIRST write wins) — exactly-once is on the POSITION, not on the stage name.
     """
-    await journal.start_run("r1", "s1")
-    first = _step("a", Transition(to="b", output=_artifact()), committed_at=_NOW, key="r1:dup")
-    second = _step("z", Done(output=_artifact()), committed_at=_LATER, key="r1:dup")
+    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
+    first = _step(0, Transition(to="b", output=_artifact()), committed_at=_NOW, stage_name="a")
+    second = _step(0, Done(output=_artifact()), committed_at=_LATER, stage_name="z")
 
     await journal.commit_step(first)
-    await journal.commit_step(second)  # same idempotency_key, all other fields differ.
+    await journal.commit_step(second)  # same position, all other fields differ.
 
     conn = await journal._connection()
     cursor = await conn.execute(
-        "SELECT count(*), min(step_id) FROM cogworx_journal_steps WHERE idempotency_key = %s",
-        ("r1:dup",),
+        "SELECT count(*), min(stage_name) FROM cogworx_journal_steps "
+        "WHERE run_id = %s AND step_index = %s",
+        ("r1", 0),
     )
     row = await cursor.fetchone()
     assert row is not None
-    assert row[0] == 1  # exactly one durable row for the key
+    assert row[0] == 1  # exactly one durable row at the position
     assert row[1] == "a"  # the FIRST commit won; the conflicting second was dropped
 
     # And the run-level view shows a single step, not two.
@@ -131,29 +132,35 @@ async def test_commit_step_idempotent_on_key_with_differing_fields(
 
 
 async def test_read_step_round_trips_stage_result(journal: TimescaleJournal) -> None:
-    await journal.start_run("r1", "s1")
-    original = _step("a", Transition(to="b", output=_artifact()), committed_at=_NOW)
+    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
+    original = _step(0, Transition(to="b", output=_artifact()), committed_at=_NOW, stage_name="a")
     await journal.commit_step(original)
 
-    loaded = await journal.read_step("r1", "a")
+    loaded = await journal.read_step("r1", 0)
     assert loaded is not None
     assert loaded == original
 
 
-async def test_load_run_derives_completed_with_ordered_steps(
+async def test_load_run_persisted_status_with_ordered_steps(
     journal: TimescaleJournal,
 ) -> None:
-    await journal.start_run("r1", "s1")
+    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
     await journal.commit_step(
-        _step("intake", Transition(to="respond", output=_artifact()), committed_at=_NOW)
+        _step(
+            0, Transition(to="respond", output=_artifact()), committed_at=_NOW, stage_name="intake"
+        )
     )
-    await journal.commit_step(_step("respond", Done(output=_artifact()), committed_at=_LATER))
+    await journal.commit_step(
+        _step(1, Done(output=_artifact()), committed_at=_LATER, stage_name="respond")
+    )
+    await journal.set_run_status("r1", RunStatus.COMPLETED)
 
     state = await journal.load_run("r1")
     assert state is not None
-    assert state.status is RunStatus.COMPLETED
+    assert state.status is RunStatus.COMPLETED  # the PERSISTED status is the authority
     assert state.current_stage == "respond"
-    assert tuple(step.step_id for step in state.steps) == ("intake", "respond")
+    assert tuple(step.step_index for step in state.steps) == (0, 1)
+    assert tuple(step.stage_name for step in state.steps) == ("intake", "respond")
 
 
 async def test_load_run_unknown_is_none(journal: TimescaleJournal) -> None:

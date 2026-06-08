@@ -101,8 +101,9 @@ class Loop(Protocol):
         *,
         run_id: str,
         session_id: str,
-        graph: StageGraph,
+        pathway_id: str,
         initial: Artifact,
+        pathway_version: int = 1,
     ) -> RunState: ...
 
     async def resume(self, run_id: str) -> RunState: ...

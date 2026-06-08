@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 import psycopg
@@ -43,6 +44,7 @@ from cogworx.capability.registry import Registry, function_capability
 from cogworx.claims.provenance import Artifact, Claim, Provenance
 from cogworx.coordination.events import Event, EventType
 from cogworx.loop.graph import StageGraph
+from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Degraded, Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
@@ -56,6 +58,9 @@ from cogworx.testing.invariants import assert_resume_never_recalls_model
 from cogworx.testing.reference_agent import IntakeStage
 
 pytestmark = [pytest.mark.spike, pytest.mark.integration]
+
+_SPIKE_CHAOS_PATHWAY_ID = "spike-chaos"
+_SPIKE_RECALL_PATHWAY_ID = "spike-recall"
 
 
 # The 3-stage chaos graph (intake[no model] -> respond[the model call] -> close[terminal Done]),
@@ -95,7 +100,8 @@ class _CloseStage:
     transitions: tuple[str, ...] = ()
 
     async def run(self, ctx: StageContext) -> StageResult:
-        prior = await ctx.journal.read_step(ctx.run_id, "respond")
+        # respond is the second stage in the chaos graph, committed at positional step_index 1.
+        prior = await ctx.journal.read_step(ctx.run_id, 1)
         text = ""
         if prior is not None:
             output = getattr(prior.result, "output", None)
@@ -183,33 +189,33 @@ async def test_criterion_1_polyglot_substrate_capability(settings: SubstrateSett
         await journal.ensure_schema()
         await journal.reset()
         run_id = f"spike1-{uuid.uuid4().hex}"
-        await journal.start_run(run_id, "spike1-sess")
+        await journal.start_run(run_id, "spike1-sess", pathway_id="reference", pathway_version=1)
         transition_step = StepRecord(
             run_id=run_id,
-            step_id="intake",
+            step_index=0,
             stage_name="intake",
             result=Transition(to="respond", output=_artifact("intake")),
-            idempotency_key=f"{run_id}:intake",
             committed_at=_NOW,
         )
         done_step = StepRecord(
             run_id=run_id,
-            step_id="respond",
+            step_index=1,
             stage_name="respond",
             result=Done(output=_artifact("response")),
-            idempotency_key=f"{run_id}:respond",
             committed_at=_LATER,
         )
         await journal.commit_step(transition_step)
         await journal.commit_step(done_step)
+        await journal.set_run_status(run_id, RunStatus.COMPLETED)
 
-        read_back = await journal.read_step(run_id, "respond")
+        read_back = await journal.read_step(run_id, 1)
         assert read_back is not None
         assert read_back.result == done_step.result  # StageResult round-trips through jsonb.
         run_state = await journal.load_run(run_id)
         assert run_state is not None
-        assert run_state.status is RunStatus.COMPLETED
-        assert tuple(step.step_id for step in run_state.steps) == ("intake", "respond")
+        assert run_state.status is RunStatus.COMPLETED  # the PERSISTED status is the authority
+        assert tuple(step.step_index for step in run_state.steps) == (0, 1)
+        assert tuple(step.stage_name for step in run_state.steps) == ("intake", "respond")
 
         # --- Neo4j: a provenance-bearing claim round-trips and its DERIVED_FROM lineage walks. ---
         # Upsert BOTH the evidence and the derived claim as FULL claims, then link via the derived
@@ -254,28 +260,35 @@ async def test_criterion_1_polyglot_substrate_capability(settings: SubstrateSett
 # ==================================================================================================
 
 
-def _build_engine(journal: Journal, model: ReplayModel) -> Engine:
+def _make_build_engine(pathways: PathwayRegistry) -> Callable[[Journal, ReplayModel], Engine]:
     # The S6 claim is about the JOURNAL, so keep graph/latent as in-memory doubles to isolate the
-    # proof to durable Postgres rows. The chaos graph touches neither.
-    return Engine(
-        model=model,
-        journal=journal,
-        graph_store=InMemoryGraphStore(),
-        latent=InMemoryLatentStore(),
-    )
+    # proof to durable Postgres rows. The chaos graph touches neither. Engine A and the FRESH engine
+    # B share this factory's registry, so engine B rehydrates the graph from the run's stored
+    # pathway pointer — true cold resume, no in-process graph carried.
+    def build(journal: Journal, model: ReplayModel) -> Engine:
+        return Engine(
+            model=model,
+            journal=journal,
+            graph_store=InMemoryGraphStore(),
+            latent=InMemoryLatentStore(),
+            pathways=pathways,
+        )
+
+    return build
 
 
-def _register_chaos_graph(engine: Engine, run_id: str) -> None:
-    # Seed the resuming engine's in-process graph map (in-proc resume is Phase-0 behaviour).
-    engine._graphs[run_id] = build_chaos_graph()
+def _chaos_pathways() -> PathwayRegistry:
+    registry = PathwayRegistry()
+    registry.register(_SPIKE_CHAOS_PATHWAY_ID, build_chaos_graph())
+    return registry
 
 
-async def _count_rows_for_key(dsn: str, idempotency_key: str) -> int:
+async def _count_rows_for_position(dsn: str, run_id: str, step_index: int) -> int:
     conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True)
     try:
         cursor = await conn.execute(
-            "SELECT count(*) FROM cogworx_journal_steps WHERE idempotency_key = %s",
-            (idempotency_key,),
+            "SELECT count(*) FROM cogworx_journal_steps WHERE run_id = %s AND step_index = %s",
+            (run_id, step_index),
         )
         row = await cursor.fetchone()
         assert row is not None
@@ -287,28 +300,26 @@ async def _count_rows_for_key(dsn: str, idempotency_key: str) -> int:
 async def test_criterion_2_exactly_once_resume_on_real_timescale(
     settings: SubstrateSettings,
 ) -> None:
-    """Kill mid-run after ``respond`` commits; same-process resume re-calls no model (S6).
+    """Kill mid-run after ``respond`` commits; a FRESH engine cold-resumes, re-calls no model (S6).
 
     Proves exactly-once against durable Postgres rows: the harness asserts engine B made 0 model
     calls and the replayed StepRecords equal what was committed before the crash; the post-assert
-    queries Postgres directly for exactly ONE row carrying the respond idempotency_key. This is
-    IN-PROCESS resume — engine B re-reads the committed step rows from Postgres but the graph object
-    is still held in-process (``engine._graphs``). Durable cross-process cold resume is Phase 1.
+    queries Postgres directly for exactly ONE row at the respond position. Engine B is a FRESH
+    engine that rehydrates the graph from its ``PathwayRegistry`` via the run's stored pathway
+    pointer — durable cold resume off the durable Postgres rows.
     """
     journal = TimescaleJournal(settings=settings)
     await journal.ensure_schema()
     await journal.reset()
     run_id = f"spike2-{uuid.uuid4().hex}"
-    respond_key = f"{run_id}:respond"
     try:
         scripted = ReplayModel(
             [ModelResponse(text="durable answer", model_id="replay", finish_reason="stop")]
         )
         final = await assert_resume_never_recalls_model(
-            build_engine=_build_engine,
-            register_graph=_register_chaos_graph,
-            graph_factory=build_chaos_graph,
+            build_engine=_make_build_engine(_chaos_pathways()),
             initial=_chaos_initial(),
+            pathway_id=_SPIKE_CHAOS_PATHWAY_ID,
             crash_after_stage="respond",
             shared_journal=journal,
             scripted_model=scripted,
@@ -328,8 +339,9 @@ async def test_criterion_2_exactly_once_resume_on_real_timescale(
         assert isinstance(close_result, Done)
         assert close_result.output.data["text"] == "durable answer"
 
-        # Exactly-once survived a REAL commit + crash + resume: one durable row for the respond key.
-        rows = await _count_rows_for_key(settings.pg_dsn, respond_key)
+        # Exactly-once survived a REAL commit + crash + resume: one durable row at the respond
+        # position (step_index 1 in the chaos graph).
+        rows = await _count_rows_for_position(settings.pg_dsn, run_id, 1)
         assert rows == 1
     finally:
         await journal.aclose()
@@ -385,11 +397,14 @@ async def _make_recall_engine(
         function_capability(latent_recall, name="latent_recall", tier="read"),
         tags=("memory",),
     )
+    pathways = PathwayRegistry()
+    pathways.register(_SPIKE_RECALL_PATHWAY_ID, _build_recall_graph())
     engine = Engine(
         model=ReplayModel([]),  # the recall graph is model-free; any model call would exhaust.
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=latent,
+        pathways=pathways,
         registry=registry,
         event_sink=events.append,
     )
@@ -413,7 +428,7 @@ async def test_criterion_3a_capability_enabled_completes(settings: SubstrateSett
         state = await engine.run(
             run_id=run_id,
             session_id="spike3a-sess",
-            graph=_build_recall_graph(),
+            pathway_id=_SPIKE_RECALL_PATHWAY_ID,
             initial=_artifact("input"),
         )
         assert state.status is RunStatus.COMPLETED
@@ -450,7 +465,7 @@ async def test_criterion_3b_lesioned_capability_degrades(settings: SubstrateSett
         state = await engine.run(
             run_id=run_id,
             session_id="spike3b-sess",
-            graph=_build_recall_graph(),
+            pathway_id=_SPIKE_RECALL_PATHWAY_ID,
             initial=_artifact("input"),
         )
         assert state.status is RunStatus.DEGRADED
