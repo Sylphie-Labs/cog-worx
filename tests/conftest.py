@@ -6,3 +6,5 @@ Kit's ``ReplayModel`` and in-memory substrate doubles. Integration/spike tiers (
 """
 
 from __future__ import annotations
+
+pytest_plugins = ["cogworx.testing.fixtures"]
