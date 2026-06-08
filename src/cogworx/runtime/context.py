@@ -1,8 +1,9 @@
 """Concrete ``StageContext`` handed to every stage (CANON S3, S7, S8).
 
 ``RunContext`` carries the distinct substrate seams (S3 — no flattening), enforces the event
-boundary on every ``emit`` (S7), and routes capability dispatch through the registry where ``get``
-raises on a disabled capability (the S8 lesion path).
+boundary on every ``emit`` (S7), and routes capability dispatch through the registry — surfacing any
+unavailable capability (no registry, unknown, or disabled/lesioned) as a single
+``CapabilityUnavailable`` so a stage degrades uniformly (the S8 lesion path).
 """
 
 from __future__ import annotations
@@ -10,17 +11,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from cogworx.capability.registry import Registry
+from cogworx.capability.base import CapabilityUnavailable
+from cogworx.capability.registry import Registry, RegistryError
 from cogworx.coordination.events import Event, validate_event_boundary
 from cogworx.cost.budget import BudgetGuard
 from cogworx.model.base import Model
 from cogworx.substrate.graph_store import GraphStore
 from cogworx.substrate.journal import Journal
 from cogworx.substrate.latent import LatentStore
-
-
-class DispatchError(Exception):
-    """Raised when a capability is dispatched with no registry wired into the context."""
 
 
 class RunContext:
@@ -78,10 +76,15 @@ class RunContext:
 
     async def dispatch(self, capability: str, args: Mapping[str, Any]) -> Any:
         if self._registry is None:
-            raise DispatchError(
+            raise CapabilityUnavailable(
                 f"cannot dispatch {capability!r}: no capability registry wired into this run"
             )
-        cap = self._registry.get(capability)
+        try:
+            cap = self._registry.get(capability)
+        except RegistryError as exc:
+            # Unknown or disabled/lesioned — both surface as the single S8 signal so a
+            # degradation-aware stage catches one error type regardless of the failure mode.
+            raise CapabilityUnavailable(f"capability {capability!r} is unavailable: {exc}") from exc
         return await cap.invoke(args)
 
     @property
@@ -90,6 +93,5 @@ class RunContext:
 
 
 __all__ = [
-    "DispatchError",
     "RunContext",
 ]

@@ -7,12 +7,11 @@ advancing (S6) and never calling the model on the write path (S1) or on replay (
 
 from __future__ import annotations
 
-from cogworx.runtime.context import DispatchError, RunContext
+from cogworx.runtime.context import RunContext
 from cogworx.runtime.engine import Clock, Engine, ResumeError
 
 __all__ = [
     "Clock",
-    "DispatchError",
     "Engine",
     "ResumeError",
     "RunContext",
