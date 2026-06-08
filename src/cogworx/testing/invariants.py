@@ -69,10 +69,20 @@ class CommitSpyJournal:
         self._model = model
 
     async def start_run(
-        self, run_id: str, session_id: str, *, pathway_id: str, pathway_version: int
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        pathway_id: str,
+        pathway_version: int,
+        pathway_fingerprint: str,
     ) -> None:
         await self._inner.start_run(
-            run_id, session_id, pathway_id=pathway_id, pathway_version=pathway_version
+            run_id,
+            session_id,
+            pathway_id=pathway_id,
+            pathway_version=pathway_version,
+            pathway_fingerprint=pathway_fingerprint,
         )
 
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:
@@ -213,10 +223,20 @@ class CrashAfterStepJournal:
         self._crash_after_stage = crash_after_stage
 
     async def start_run(
-        self, run_id: str, session_id: str, *, pathway_id: str, pathway_version: int
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        pathway_id: str,
+        pathway_version: int,
+        pathway_fingerprint: str,
     ) -> None:
         await self._inner.start_run(
-            run_id, session_id, pathway_id=pathway_id, pathway_version=pathway_version
+            run_id,
+            session_id,
+            pathway_id=pathway_id,
+            pathway_version=pathway_version,
+            pathway_fingerprint=pathway_fingerprint,
         )
 
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:

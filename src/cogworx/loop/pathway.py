@@ -12,9 +12,39 @@ honest, surfaced error.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from cogworx.loop.graph import StageGraph
+
+_FINGERPRINT_HEX_LEN = 16
+
+
+def pathway_fingerprint(graph: StageGraph) -> str:
+    """A deterministic hash of a ``StageGraph``'s STRUCTURE (CANON S6 — resume integrity).
+
+    Canonicalises the graph as ``entry`` plus, for every stage sorted by name, the stage's name and
+    its transitions (themselves sorted), then ``sha256``-es that canonical string and returns the
+    leading hex digits. Deterministic across processes — no clock, no ``random``, no object identity
+    — so a cold resume in a fresh process can compare the rehydrated graph's fingerprint against the
+    one stored at ``start_run`` time.
+
+    What it CATCHES: STRUCTURAL divergence under a resumed run — a stage added, removed, renamed, or
+    rewired (transitions changed) — even when the ``(pathway_id, version)`` pointer is unchanged
+    (an in-place edit that forgot to bump the version).
+
+    What it does NOT catch: PURELY BEHAVIOURAL changes — same stages, same transitions, but a
+    stage's ``run()`` logic was edited. The structure is byte-identical, so the fingerprint matches.
+    Those are the responsibility of the version-bump convention (bump ``pathway_version`` when stage
+    behaviour changes), not the fingerprint. The fingerprint is a structural backstop, not a
+    behaviour oracle.
+    """
+    parts: list[str] = [f"entry={graph.entry}"]
+    for name in sorted(graph.names()):
+        transitions = ",".join(sorted(graph.transitions_from(name)))
+        parts.append(f"{name}->[{transitions}]")
+    canonical = "|".join(parts)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:_FINGERPRINT_HEX_LEN]
 
 
 class PathwayError(Exception):
@@ -57,4 +87,5 @@ __all__ = [
     "Pathway",
     "PathwayError",
     "PathwayRegistry",
+    "pathway_fingerprint",
 ]

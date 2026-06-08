@@ -20,10 +20,18 @@ from cogworx.substrate.latent import LatentMatch, LatentRecord
 
 
 class _RunLog:
-    def __init__(self, session_id: str, *, pathway_id: str, pathway_version: int) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        *,
+        pathway_id: str,
+        pathway_version: int,
+        pathway_fingerprint: str,
+    ) -> None:
         self.session_id = session_id
         self.pathway_id = pathway_id
         self.pathway_version = pathway_version
+        self.pathway_fingerprint = pathway_fingerprint
         self.status = RunStatus.RUNNING
         self.steps: dict[int, StepRecord] = {}
 
@@ -36,11 +44,20 @@ class InMemoryJournal:
         self._timers: list[Timer] = []
 
     async def start_run(
-        self, run_id: str, session_id: str, *, pathway_id: str, pathway_version: int
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        pathway_id: str,
+        pathway_version: int,
+        pathway_fingerprint: str,
     ) -> None:
         if run_id not in self._runs:
             self._runs[run_id] = _RunLog(
-                session_id, pathway_id=pathway_id, pathway_version=pathway_version
+                session_id,
+                pathway_id=pathway_id,
+                pathway_version=pathway_version,
+                pathway_fingerprint=pathway_fingerprint,
             )
 
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:
@@ -74,6 +91,7 @@ class InMemoryJournal:
             status=log.status,
             pathway_id=log.pathway_id,
             pathway_version=log.pathway_version,
+            pathway_fingerprint=log.pathway_fingerprint,
             current_stage=current_stage,
             steps=steps,
         )

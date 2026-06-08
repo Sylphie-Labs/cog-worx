@@ -48,6 +48,7 @@ class RunState(BaseModel):
     status: RunStatus
     pathway_id: str
     pathway_version: int
+    pathway_fingerprint: str
     current_stage: str | None = None
     steps: tuple[StepRecord, ...] = ()
 
@@ -65,9 +66,21 @@ class Journal(Protocol):
     """The durable, exactly-once journal seam over TimescaleDB."""
 
     async def start_run(
-        self, run_id: str, session_id: str, *, pathway_id: str, pathway_version: int
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        pathway_id: str,
+        pathway_version: int,
+        pathway_fingerprint: str,
     ) -> None:
-        """Record the run as RUNNING with its pathway pointer. Idempotent re-start is a no-op."""
+        """Record the run as RUNNING with its pathway pointer + structural fingerprint.
+
+        The ``pathway_fingerprint`` is a hash of the graph's STRUCTURE at start time (see
+        ``cogworx.loop.pathway.pathway_fingerprint``); a cold resume compares the rehydrated graph's
+        fingerprint against this stored value to catch a structural in-place edit under the same
+        ``(pathway_id, version)``. Idempotent re-start is a no-op.
+        """
         ...
 
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:

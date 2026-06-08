@@ -86,7 +86,9 @@ async def latent(settings: SubstrateSettings) -> AsyncIterator[PgLatentStore]:
 
 
 async def test_commit_step_exactly_once(journal: TimescaleJournal) -> None:
-    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
+    await journal.start_run(
+        "r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1, pathway_fingerprint="fp"
+    )
     record = _step(0, Transition(to="b", output=_artifact()), committed_at=_NOW, stage_name="a")
     await journal.commit_step(record)
     await journal.commit_step(record)
@@ -107,7 +109,9 @@ async def test_commit_step_idempotent_on_position_with_differing_fields(
     committed_at). The second commit must (a) not raise and (b) leave exactly ONE row at that
     position (the FIRST write wins) — exactly-once is on the POSITION, not on the stage name.
     """
-    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
+    await journal.start_run(
+        "r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1, pathway_fingerprint="fp"
+    )
     first = _step(0, Transition(to="b", output=_artifact()), committed_at=_NOW, stage_name="a")
     second = _step(0, Done(output=_artifact()), committed_at=_LATER, stage_name="z")
 
@@ -132,7 +136,9 @@ async def test_commit_step_idempotent_on_position_with_differing_fields(
 
 
 async def test_read_step_round_trips_stage_result(journal: TimescaleJournal) -> None:
-    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
+    await journal.start_run(
+        "r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1, pathway_fingerprint="fp"
+    )
     original = _step(0, Transition(to="b", output=_artifact()), committed_at=_NOW, stage_name="a")
     await journal.commit_step(original)
 
@@ -144,7 +150,9 @@ async def test_read_step_round_trips_stage_result(journal: TimescaleJournal) -> 
 async def test_load_run_persisted_status_with_ordered_steps(
     journal: TimescaleJournal,
 ) -> None:
-    await journal.start_run("r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1)
+    await journal.start_run(
+        "r1", "s1", pathway_id=_PATHWAY_ID, pathway_version=1, pathway_fingerprint="fp"
+    )
     await journal.commit_step(
         _step(
             0, Transition(to="respond", output=_artifact()), committed_at=_NOW, stage_name="intake"

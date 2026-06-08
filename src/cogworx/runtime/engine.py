@@ -23,7 +23,7 @@ from cogworx.claims.provenance import Artifact
 from cogworx.coordination.events import Event, EventType, Subsystem, validate_event_boundary
 from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.graph import StageGraph
-from cogworx.loop.pathway import PathwayRegistry
+from cogworx.loop.pathway import PathwayRegistry, pathway_fingerprint
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import Model
 from cogworx.runtime.context import RunContext
@@ -112,7 +112,11 @@ class Engine:
     ) -> RunState:
         graph = self._pathways.get(pathway_id, pathway_version)
         await self._journal.start_run(
-            run_id, session_id, pathway_id=pathway_id, pathway_version=pathway_version
+            run_id,
+            session_id,
+            pathway_id=pathway_id,
+            pathway_version=pathway_version,
+            pathway_fingerprint=pathway_fingerprint(graph),
         )
         ctx = self._build_context(run_id=run_id, session_id=session_id)
         self._emit(ctx, EventType.RUN_STARTED, run_id=run_id, session_id=session_id)
@@ -125,8 +129,14 @@ class Engine:
         the run's stored ``pathway_id`` pointer — NOT in-process state — so a brand-new ``Engine``
         in a fresh process resumes as long as the SAME pathways are registered at startup. If
         the registry lacks the run's pathway, ``PathwayError`` propagates (the honest requirement).
-        ``_drive`` walks from the entry; every already-committed position is replayed from the
-        journal WITHOUT re-running the stage or re-calling the model. Only uncommitted stages run.
+
+        Before driving, the rehydrated graph's STRUCTURAL fingerprint is compared against the one
+        stored at ``start_run``; a mismatch means the pathway was edited in place under the same
+        ``(pathway_id, version)`` (rewired transitions, added/removed/renamed stages) and resume is
+        refused with ``ResumeError`` rather than re-driving against the wrong graph. The per-step
+        ``stage_name`` guard in ``_drive`` remains a deeper backstop. ``_drive`` walks from the
+        entry; every already-committed position is replayed from the journal WITHOUT re-running the
+        stage or re-calling the model. Only uncommitted stages run.
         """
         state = await self._journal.load_run(run_id)
         if state is None:
@@ -139,6 +149,16 @@ class Engine:
         ):
             return state
         graph = self._pathways.get(state.pathway_id, state.pathway_version)
+        rehydrated_fingerprint = pathway_fingerprint(graph)
+        if rehydrated_fingerprint != state.pathway_fingerprint:
+            raise ResumeError(
+                f"pathway structure changed under resumed run {run_id!r}: the rehydrated "
+                f"{state.pathway_id!r} v{state.pathway_version} graph fingerprints "
+                f"{rehydrated_fingerprint!r} but the run was started against "
+                f"{state.pathway_fingerprint!r}. An in-place pathway edit (rewired transitions, "
+                "added/removed/renamed stages) resumes against the wrong graph — bump the pathway "
+                "version instead of editing in place."
+            )
         ctx = self._build_context(run_id=run_id, session_id=state.session_id)
         return await self._drive(ctx, graph, current=graph.entry)
 

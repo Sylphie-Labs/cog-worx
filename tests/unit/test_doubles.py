@@ -33,7 +33,7 @@ def _step(step_index: int, result: StageResult, *, stage_name: str | None = None
 
 
 async def _start(journal: InMemoryJournal) -> None:
-    await journal.start_run("r1", "s1", pathway_id="p", pathway_version=1)
+    await journal.start_run("r1", "s1", pathway_id="p", pathway_version=1, pathway_fingerprint="fp")
 
 
 async def test_commit_step_is_idempotent_on_position() -> None:
@@ -126,11 +126,14 @@ async def test_run_status_is_persisted_authority_not_derived() -> None:
 
 async def test_run_carries_pathway_pointer_for_cold_resume() -> None:
     journal = InMemoryJournal()
-    await journal.start_run("r1", "s1", pathway_id="checkout", pathway_version=3)
+    await journal.start_run(
+        "r1", "s1", pathway_id="checkout", pathway_version=3, pathway_fingerprint="cafebabe"
+    )
     state = await journal.load_run("r1")
     assert state is not None
     assert state.pathway_id == "checkout"
     assert state.pathway_version == 3
+    assert state.pathway_fingerprint == "cafebabe"
 
 
 async def test_latent_search_returns_nearest_first() -> None:

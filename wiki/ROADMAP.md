@@ -45,12 +45,24 @@ walking skeleton is green.
 
 The configurable control loop everything else attaches to.
 
+> **Pod 1.0 (durable-execution core) — DONE** ✅ (red-team-hardened, CANON-COMPLIANT): per-visit
+> `step_index` keying (cyclic pathways resume exactly-once), code-registered **pathway registry** +
+> **true cold cross-process resume** (rehydrate the graph from the journal's `pathway_id`, guarded by a
+> structural pathway fingerprint), a structural **step ceiling**, and persisted run status. The
+> durability/chaos spike now covers cold resume + cyclic per-visit replay on the live Timescale journal.
+> **Next:** pods 1.1 timers/sweeper · 1.2 retries+FSM timeouts · 1.3 await-human resume · 1.4
+> fire-and-forget.
+
 - [ ] **Configurable graph loop** — DAG-of-stages + FSM-per-stage; **dev-authored pathways, graph by
-      default**, not a fixed list.
+      default**, not a fixed list. *(graph + dev-authored pathway registry done in 1.0; per-stage FSM
+      timeouts in 1.2)*
 - [ ] **Durability** — journaled resume, durable timers (`wake_at` + sweeper), **retries**,
       **pause/resume**, **fire-and-forget-with-feedback**, all on the Timescale journal (S6).
-- [ ] **First-class transitions** — `await-human` and `degraded` (S8).
+      *(cold/cyclic journaled resume done in 1.0; timers/retries/pause/fire-and-forget = pods 1.1–1.4)*
+- [ ] **First-class transitions** — `await-human` and `degraded` (S8). *(both are first-class results;
+      durable await-human resume is pod 1.3)*
 - [ ] **⛓ Spike** — durability/chaos test: kill mid-step → resume → exactly-once, **no model re-call**.
+      *(core PASSED on live substrate — cold + cyclic; the full gate spans the operation pods)*
 
 ---
 

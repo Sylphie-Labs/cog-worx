@@ -12,10 +12,10 @@ of which falsifies a load-bearing bet if it fails:
   mid-flight after the model-bearing ``respond`` stage durably commits; a fresh engine SAME-PROCESS
   resume re-reads the run's committed step rows from Postgres and replays them, making ZERO model
   calls. A post-assert queries Postgres directly to prove exactly ONE row carries the respond
-  idempotency_key — exactly-once and no-model-recall hold against durable rows, not memory. What
-  this proves is in-process resume over durable Postgres rows: the graph object is still held
-  in-process (``engine._graphs``). Durable CROSS-PROCESS cold resume (rebuilding the graph after a
-  real process death) is Phase 1.
+  idempotency_key — exactly-once and no-model-recall hold against durable rows, not memory. Cold
+  resume rehydrates the graph from the ``PathwayRegistry`` via the run's stored ``pathway_id`` (no
+  in-process graph is carried); a structural ``pathway_fingerprint`` stored at ``start_run`` guards
+  the rehydrated graph against pathway drift before resume re-drives.
 - **Criterion 3 (S8 — first Lesion pass):** disabling a real component (a ``latent_recall``
   capability backed by ``PgLatentStore``) makes the loop DEGRADE, not crash, and the ENGINE emits a
   ``STAGE_DEGRADED`` event through its sink — proof the loop witnessed the lesion, not the test.
@@ -205,7 +205,13 @@ async def test_criterion_1_polyglot_substrate_capability(settings: SubstrateSett
         await journal.ensure_schema()
         await journal.reset()
         run_id = f"spike1-{uuid.uuid4().hex}"
-        await journal.start_run(run_id, "spike1-sess", pathway_id="reference", pathway_version=1)
+        await journal.start_run(
+            run_id,
+            "spike1-sess",
+            pathway_id="reference",
+            pathway_version=1,
+            pathway_fingerprint="fp",
+        )
         transition_step = StepRecord(
             run_id=run_id,
             step_index=0,
@@ -636,10 +642,20 @@ class _CrashAfterStageVisitJournal:
         self._visits = 0
 
     async def start_run(
-        self, run_id: str, session_id: str, *, pathway_id: str, pathway_version: int
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        pathway_id: str,
+        pathway_version: int,
+        pathway_fingerprint: str,
     ) -> None:
         await self._inner.start_run(
-            run_id, session_id, pathway_id=pathway_id, pathway_version=pathway_version
+            run_id,
+            session_id,
+            pathway_id=pathway_id,
+            pathway_version=pathway_version,
+            pathway_fingerprint=pathway_fingerprint,
         )
 
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:

@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS cogworx_journal_runs (
     session_id text NOT NULL,
     status text NOT NULL,
     pathway_id text NOT NULL,
-    pathway_version integer NOT NULL
+    pathway_version integer NOT NULL,
+    pathway_fingerprint text NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS cogworx_journal_steps (
@@ -87,15 +88,28 @@ class TimescaleJournal:
         await conn.execute(_SCHEMA)
 
     async def start_run(
-        self, run_id: str, session_id: str, *, pathway_id: str, pathway_version: int
+        self,
+        run_id: str,
+        session_id: str,
+        *,
+        pathway_id: str,
+        pathway_version: int,
+        pathway_fingerprint: str,
     ) -> None:
         conn = await self._connection()
         await conn.execute(
             "INSERT INTO cogworx_journal_runs "
-            "(run_id, session_id, status, pathway_id, pathway_version) "
-            "VALUES (%s, %s, %s, %s, %s) "
+            "(run_id, session_id, status, pathway_id, pathway_version, pathway_fingerprint) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (run_id) DO NOTHING",
-            (run_id, session_id, RunStatus.RUNNING.value, pathway_id, pathway_version),
+            (
+                run_id,
+                session_id,
+                RunStatus.RUNNING.value,
+                pathway_id,
+                pathway_version,
+                pathway_fingerprint,
+            ),
         )
 
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:
@@ -137,7 +151,7 @@ class TimescaleJournal:
     async def load_run(self, run_id: str) -> RunState | None:
         conn = await self._connection()
         run_cursor = await conn.execute(
-            "SELECT session_id, status, pathway_id, pathway_version "
+            "SELECT session_id, status, pathway_id, pathway_version, pathway_fingerprint "
             "FROM cogworx_journal_runs WHERE run_id = %s",
             (run_id,),
         )
@@ -148,6 +162,7 @@ class TimescaleJournal:
         status = RunStatus(run_row[1])
         pathway_id: str = run_row[2]
         pathway_version: int = run_row[3]
+        pathway_fingerprint: str = run_row[4]
 
         step_cursor = await conn.execute(
             "SELECT run_id, step_index, stage_name, result, committed_at "
@@ -164,6 +179,7 @@ class TimescaleJournal:
             status=status,
             pathway_id=pathway_id,
             pathway_version=pathway_version,
+            pathway_fingerprint=pathway_fingerprint,
             current_stage=current_stage,
             steps=steps,
         )
