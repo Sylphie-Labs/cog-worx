@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cogworx.claims.provenance import Artifact
 from cogworx.coordination.events import Event
+from cogworx.cost.budget import BudgetGuard
 from cogworx.model.base import Model
 from cogworx.substrate.graph_store import GraphStore
 from cogworx.substrate.journal import Journal
@@ -66,7 +67,8 @@ class StageContext(Protocol):
     run_id: str
     session_id: str
 
-    # budget added in cost seam (Pass B)
+    @property
+    def budget(self) -> BudgetGuard: ...
 
     @property
     def model(self) -> Model: ...
