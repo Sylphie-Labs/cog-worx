@@ -1,0 +1,43 @@
+# The polyglot substrate (CANON S3): each engine for its strength.
+#   neo4j     — the graph knowledge layer (procedural/entity KGs, world/user model)
+#   postgres  — ONE cluster hosting BOTH pgvector (latent space) and TimescaleDB (durable journal)
+# The timescaledb-ha image bundles the timescaledb + vector extensions in a single cluster, so the
+# whole hot/cold latent space and the time-ordered run journal share one Postgres (S3).
+
+services:
+  neo4j:
+    image: neo4j:5
+    container_name: cogworx-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/cogworx-test
+    ports:
+      - "7474:7474" # http browser
+      - "7687:7687" # bolt
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p cogworx-test 'RETURN 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - cogworx-neo4j-data:/data
+
+  postgres:
+    image: timescale/timescaledb-ha:pg16
+    container_name: cogworx-postgres
+    environment:
+      POSTGRES_PASSWORD: cogworx-test
+      POSTGRES_DB: cogworx
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d cogworx"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - cogworx-pg-data:/home/postgres/pgdata/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/00-cogworx-init.sql:ro
+
+volumes:
+  cogworx-neo4j-data:
+  cogworx-pg-data:

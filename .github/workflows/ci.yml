@@ -53,6 +53,7 @@ jobs:
       - name: Integration + spike
         env:
           COGWORX_NEO4J_URI: bolt://localhost:7687
-          COGWORX_NEO4J_AUTH: neo4j/cogworx-test
+          COGWORX_NEO4J_USER: neo4j
+          COGWORX_NEO4J_PASSWORD: cogworx-test
           COGWORX_PG_DSN: postgresql://postgres:cogworx-test@localhost:5432/cogworx
         run: uv run nox -s integration
