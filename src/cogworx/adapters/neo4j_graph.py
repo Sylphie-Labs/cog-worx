@@ -67,35 +67,41 @@ MERGE (e:Claim {id: evidence_id})
 MERGE (c)-[:DERIVED_FROM]->(e)
 """
 
-# All persisted properties, named so get_claim/neighbors share one projection + one rebuild path.
-_CLAIM_RETURN = """
-       c.id              AS id,
-       c.subject         AS subject,
-       c.predicate       AS predicate,
-       c.payload         AS payload,
-       c.epistemic_type  AS epistemic_type,
-       c.valid_from      AS valid_from,
-       c.valid_to        AS valid_to,
-       c.ingest_time     AS ingest_time,
-       c.created_by      AS created_by,
-       c.embedding       AS embedding,
-       c.prov_source     AS prov_source,
-       c.prov_source_ref AS prov_source_ref,
-       c.prov_confidence AS prov_confidence,
-       c.prov_evidence   AS prov_evidence,
-       c.prov_recorded_at AS prov_recorded_at
+
+# All persisted properties, parameterized on the bound variable so get_claim (anchor `c`) and
+# neighbors (neighbor `n`) share one projection shape + one rebuild path. Each is rendered against
+# its own variable: a missing/optional property projects as null and rebuilds cleanly as None.
+def _claim_return(var: str) -> str:
+    return f"""
+       {var}.id              AS id,
+       {var}.subject         AS subject,
+       {var}.predicate       AS predicate,
+       {var}.payload         AS payload,
+       {var}.epistemic_type  AS epistemic_type,
+       {var}.valid_from      AS valid_from,
+       {var}.valid_to        AS valid_to,
+       {var}.ingest_time     AS ingest_time,
+       {var}.created_by      AS created_by,
+       {var}.embedding       AS embedding,
+       {var}.prov_source     AS prov_source,
+       {var}.prov_source_ref AS prov_source_ref,
+       {var}.prov_confidence AS prov_confidence,
+       {var}.prov_evidence   AS prov_evidence,
+       {var}.prov_recorded_at AS prov_recorded_at
 """
+
 
 _GET_CLAIM_CYPHER = f"""
 MATCH (c:Claim {{id: $id}})
-RETURN{_CLAIM_RETURN}
+RETURN{_claim_return("c")}
 """
 
 # Neighbors: claims one [:DERIVED_FROM] hop away in EITHER direction (this claim's evidence, plus
-# claims that cite this one as evidence). Phase 0 keeps recall thin; full fusion is Phase 2.
+# claims that cite this one as evidence). Project the NEIGHBOR `n`, not the anchor `c`. Phase 0
+# keeps recall thin; full fusion is Phase 2.
 _NEIGHBORS_CYPHER = f"""
 MATCH (c:Claim {{id: $id}})-[:DERIVED_FROM]-(n:Claim)
-RETURN DISTINCT{_CLAIM_RETURN}
+RETURN DISTINCT{_claim_return("n")}
 LIMIT $limit
 """
 

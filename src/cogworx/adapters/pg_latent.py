@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import psycopg
-from pgvector.psycopg import register_vector_async
+from pgvector.psycopg import Vector, register_vector_async
 from psycopg.types.json import Jsonb
 
 from cogworx.adapters.config import SubstrateSettings
@@ -67,7 +67,7 @@ class PgLatentStore:
             "use_count = EXCLUDED.use_count",
             (
                 record.id,
-                list(record.embedding),
+                Vector(record.embedding),
                 Jsonb(record.payload),
                 record.use_count,
             ),
@@ -83,7 +83,7 @@ class PgLatentStore:
         cursor = await conn.execute(
             "SELECT id, embedding, payload, use_count, embedding <=> %s AS distance "
             "FROM cogworx_latent ORDER BY distance ASC LIMIT %s",
-            (query, k),
+            (Vector(query), k),
         )
         rows = await cursor.fetchall()
         return tuple(
