@@ -9,7 +9,8 @@ import pytest
 
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.loop.graph import StageGraph, StageGraphError
-from cogworx.loop.stage import Done, StageContext, StageResult
+from cogworx.loop.result import Done, StageResult
+from cogworx.loop.stage import StageContext
 
 
 def _artifact() -> Artifact:

@@ -3,15 +3,8 @@
 from __future__ import annotations
 
 from cogworx.loop.graph import Loop, StageGraph, StageGraphError
-from cogworx.loop.stage import (
-    AwaitHuman,
-    Degraded,
-    Done,
-    Stage,
-    StageContext,
-    StageResult,
-    Transition,
-)
+from cogworx.loop.result import AwaitHuman, Degraded, Done, StageResult, Transition
+from cogworx.loop.stage import Stage, StageContext
 from cogworx.loop.state import RunStatus, StageStatus
 
 __all__ = [

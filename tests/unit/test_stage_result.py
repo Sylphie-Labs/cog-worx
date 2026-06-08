@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from cogworx.loop.stage import AwaitHuman, Degraded, Done, StageResult, Transition
+from cogworx.loop.result import AwaitHuman, Degraded, Done, StageResult, Transition
 
 _ADAPTER: TypeAdapter[StageResult] = TypeAdapter(StageResult)
 

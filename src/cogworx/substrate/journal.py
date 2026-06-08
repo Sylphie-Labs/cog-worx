@@ -13,7 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cogworx.claims.provenance import Artifact
+from cogworx.loop.result import StageResult
 from cogworx.loop.state import RunStatus
 
 
@@ -23,7 +23,10 @@ class StepRecord(BaseModel):
     run_id: str
     step_id: str
     stage_name: str
-    output: Artifact
+    # The committed control decision (S6): a step is "done" iff its StageResult is journaled before
+    # the runner advances. On resume the runner reads this and selects the next stage WITHOUT
+    # re-running the stage or re-calling the model.
+    result: StageResult
     idempotency_key: str
     committed_at: datetime
 
