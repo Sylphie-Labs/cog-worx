@@ -1,0 +1,55 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebSearch",
+      "WebFetch",
+      "Agent",
+      "Bash(*)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(railway *)",
+      "Skill(update-config)",
+      "mcp__playwright__*",
+      "mcp__smart-terminal__*",
+      "mcp__railway-mcp-server__*",
+      "mcp__sylphie-pkg__*",
+      "mcp__codebase-pkg__*"
+    ],
+    "deny": []
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const cmd=(JSON.parse(d).tool_input.command)||'';if(/CANON\\.md/.test(cmd)&&/(\\brm\\b|\\bmv\\b|\\bdel\\b|Remove-Item|Move-Item|Clear-Content|>\\s*[^|]*CANON)/i.test(cmd)){console.log(JSON.stringify({decision:'block',reason:'wiki/CANON.md is immutable law (CANON \\u00a76) \\u2014 change it only via the /update-canon skill with Jim\\u2019s approval, never raw rm/mv/redirect.'}));process.exit(2)}});\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/doc-check.cjs",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/canon-check.cjs",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

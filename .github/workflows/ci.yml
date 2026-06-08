@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deterministic:
+    name: lint · typecheck · test (no Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Lint
+        run: uv run nox -s lint
+      - name: Typecheck (mypy --strict)
+        run: uv run nox -s typecheck
+      - name: Test (unit + invariant suites)
+        run: uv run nox -s test
+
+  integration:
+    name: integration + Spike Suite 1 (polyglot substrate)
+    runs-on: ubuntu-latest
+    # The substrate job is heavier; keep it off every PR push until the
+    # compose stack is wired. Enabled for main and release tags.
+    if: github.ref == 'refs/heads/main'
+    services:
+      neo4j:
+        image: neo4j:5
+        env:
+          NEO4J_AUTH: neo4j/cogworx-test
+        ports: ["7687:7687"]
+      postgres:
+        image: timescale/timescaledb-ha:pg16
+        env:
+          POSTGRES_PASSWORD: cogworx-test
+          POSTGRES_DB: cogworx
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Integration + spike
+        env:
+          COGWORX_NEO4J_URI: bolt://localhost:7687
+          COGWORX_NEO4J_AUTH: neo4j/cogworx-test
+          COGWORX_PG_DSN: postgresql://postgres:cogworx-test@localhost:5432/cogworx
+        run: uv run nox -s integration
