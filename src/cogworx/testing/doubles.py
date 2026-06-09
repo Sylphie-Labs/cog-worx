@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from cogworx.claims.provenance import Claim
 from cogworx.loop.state import RunStatus
@@ -41,7 +41,7 @@ class InMemoryJournal:
 
     def __init__(self) -> None:
         self._runs: dict[str, _RunLog] = {}
-        self._timers: list[Timer] = []
+        self._timers: dict[str, Timer] = {}
 
     async def start_run(
         self,
@@ -64,6 +64,17 @@ class InMemoryJournal:
         log = self._runs.get(run_id)
         if log is not None:
             log.status = status
+
+    async def compare_and_set_run_status(
+        self, run_id: str, *, expect: RunStatus, new: RunStatus
+    ) -> bool:
+        # Atomic under asyncio: the read and the write straddle NO ``await``, so no other task can
+        # interleave between them — mirrors the adapter's single row-locked conditional UPDATE.
+        log = self._runs.get(run_id)
+        if log is None or log.status is not expect:
+            return False
+        log.status = new
+        return True
 
     async def commit_step(self, record: StepRecord) -> None:
         log = self._runs.get(record.run_id)
@@ -97,10 +108,39 @@ class InMemoryJournal:
         )
 
     async def set_timer(self, timer: Timer) -> None:
-        self._timers.append(timer)
+        # Idempotent on timer_id (mirrors the adapter's ON CONFLICT DO NOTHING): a re-armed Wait is
+        # a no-op, so a committed Wait that replays can never resurrect a cancelled timer.
+        self._timers.setdefault(timer.timer_id, timer)
 
     async def due_timers(self, now: datetime) -> Sequence[Timer]:
-        return tuple(timer for timer in self._timers if timer.wake_at <= now)
+        return tuple(timer for timer in self._timers.values() if timer.wake_at <= now)
+
+    async def claim_due_timers(self, now: datetime, *, lease_ttl: timedelta) -> Sequence[Timer]:
+        # Atomic-by-single-threadedness lease: stamp claimed_at on each due, unclaimed-or-stale
+        # timer and return the stamped copies. The row SURVIVES — deleted only by cancel_* — a crash
+        # between claim and advance is recoverable (the next stale-lease sweep re-fires it).
+        stale_before = now - lease_ttl
+        claimed: list[Timer] = []
+        for timer_id, timer in self._timers.items():
+            if timer.wake_at > now:
+                continue
+            if timer.claimed_at is not None and timer.claimed_at > stale_before:
+                continue
+            leased = timer.model_copy(update={"claimed_at": now})
+            self._timers[timer_id] = leased
+            claimed.append(leased)
+        return tuple(claimed)
+
+    async def cancel_timer(self, timer_id: str) -> None:
+        self._timers.pop(timer_id, None)
+
+    async def cancel_timers_for_run(self, run_id: str) -> None:
+        for timer_id in [tid for tid, t in self._timers.items() if t.run_id == run_id]:
+            del self._timers[timer_id]
+
+    async def get_run_status(self, run_id: str) -> RunStatus | None:
+        log = self._runs.get(run_id)
+        return log.status if log is not None else None
 
 
 class InMemoryGraphStore:

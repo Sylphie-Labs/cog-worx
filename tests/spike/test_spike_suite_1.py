@@ -42,7 +42,7 @@ import asyncio
 import sys
 import uuid
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
@@ -682,6 +682,23 @@ class _CrashAfterStageVisitJournal:
 
     async def due_timers(self, now: datetime) -> Sequence[Timer]:
         return await self._inner.due_timers(now)
+
+    async def claim_due_timers(self, now: datetime, *, lease_ttl: timedelta) -> Sequence[Timer]:
+        return await self._inner.claim_due_timers(now, lease_ttl=lease_ttl)
+
+    async def cancel_timer(self, timer_id: str) -> None:
+        await self._inner.cancel_timer(timer_id)
+
+    async def cancel_timers_for_run(self, run_id: str) -> None:
+        await self._inner.cancel_timers_for_run(run_id)
+
+    async def get_run_status(self, run_id: str) -> RunStatus | None:
+        return await self._inner.get_run_status(run_id)
+
+    async def compare_and_set_run_status(
+        self, run_id: str, *, expect: RunStatus, new: RunStatus
+    ) -> bool:
+        return await self._inner.compare_and_set_run_status(run_id, expect=expect, new=new)
 
 
 async def test_criterion_4_cyclic_per_visit_durability_cold_resume(

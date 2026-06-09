@@ -23,7 +23,7 @@ lesioned, so it does not harden (S12). Surface that to ``architect`` rather than
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pydantic
 
@@ -88,6 +88,11 @@ class CommitSpyJournal:
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:
         await self._inner.set_run_status(run_id, status)
 
+    async def compare_and_set_run_status(
+        self, run_id: str, *, expect: RunStatus, new: RunStatus
+    ) -> bool:
+        return await self._inner.compare_and_set_run_status(run_id, expect=expect, new=new)
+
     async def commit_step(self, record: StepRecord) -> None:
         before = self._model.call_count
         await self._inner.commit_step(record)
@@ -110,6 +115,18 @@ class CommitSpyJournal:
 
     async def due_timers(self, now: datetime) -> Sequence[Timer]:
         return await self._inner.due_timers(now)
+
+    async def claim_due_timers(self, now: datetime, *, lease_ttl: timedelta) -> Sequence[Timer]:
+        return await self._inner.claim_due_timers(now, lease_ttl=lease_ttl)
+
+    async def cancel_timer(self, timer_id: str) -> None:
+        await self._inner.cancel_timer(timer_id)
+
+    async def cancel_timers_for_run(self, run_id: str) -> None:
+        await self._inner.cancel_timers_for_run(run_id)
+
+    async def get_run_status(self, run_id: str) -> RunStatus | None:
+        return await self._inner.get_run_status(run_id)
 
 
 async def assert_no_model_on_write_path(
@@ -242,6 +259,11 @@ class CrashAfterStepJournal:
     async def set_run_status(self, run_id: str, status: RunStatus) -> None:
         await self._inner.set_run_status(run_id, status)
 
+    async def compare_and_set_run_status(
+        self, run_id: str, *, expect: RunStatus, new: RunStatus
+    ) -> bool:
+        return await self._inner.compare_and_set_run_status(run_id, expect=expect, new=new)
+
     async def commit_step(self, record: StepRecord) -> None:
         await self._inner.commit_step(record)
         if record.stage_name == self._crash_after_stage:
@@ -260,6 +282,18 @@ class CrashAfterStepJournal:
 
     async def due_timers(self, now: datetime) -> Sequence[Timer]:
         return await self._inner.due_timers(now)
+
+    async def claim_due_timers(self, now: datetime, *, lease_ttl: timedelta) -> Sequence[Timer]:
+        return await self._inner.claim_due_timers(now, lease_ttl=lease_ttl)
+
+    async def cancel_timer(self, timer_id: str) -> None:
+        await self._inner.cancel_timer(timer_id)
+
+    async def cancel_timers_for_run(self, run_id: str) -> None:
+        await self._inner.cancel_timers_for_run(run_id)
+
+    async def get_run_status(self, run_id: str) -> RunStatus | None:
+        return await self._inner.get_run_status(run_id)
 
 
 _TERMINAL_STATUSES = (

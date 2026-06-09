@@ -50,17 +50,25 @@ The configurable control loop everything else attaches to.
 > **true cold cross-process resume** (rehydrate the graph from the journal's `pathway_id`, guarded by a
 > structural pathway fingerprint), a structural **step ceiling**, and persisted run status. The
 > durability/chaos spike now covers cold resume + cyclic per-visit replay on the live Timescale journal.
-> **Next:** pods 1.1 timers/sweeper · 1.2 retries+FSM timeouts · 1.3 await-human resume · 1.4
-> fire-and-forget.
+
+> **Pod 1.1 (durable timers + sweeper + pause/resume) — DONE** ✅ (CANON-COMPLIANT, red-team-hardened
+> over two passes): a 5th first-class `StageResult` kind **`Wait`** (parks a run on a durable, **leased**
+> timer); a **`Sweeper`** that claims due timers and re-drives (no model, no commits); **pause/unpause**
+> with cooperative step-boundary stops; and a run-status **CAS** giving exactly-once *execution* under
+> concurrent drivers (commit-idempotency alone is not enough). Crashed-mid-drive auto-recovery
+> (run-lease + reaper) is **deferred** to a future ops pod (single-active-driver bar; explicit `resume`
+> recovers a dead `RUNNING` run — §3/S7). **Next:** 1.2 retries+FSM timeouts · 1.3 await-human resume ·
+> 1.4 fire-and-forget.
 
 - [ ] **Configurable graph loop** — DAG-of-stages + FSM-per-stage; **dev-authored pathways, graph by
       default**, not a fixed list. *(graph + dev-authored pathway registry done in 1.0; per-stage FSM
       timeouts in 1.2)*
 - [ ] **Durability** — journaled resume, durable timers (`wake_at` + sweeper), **retries**,
       **pause/resume**, **fire-and-forget-with-feedback**, all on the Timescale journal (S6).
-      *(cold/cyclic journaled resume done in 1.0; timers/retries/pause/fire-and-forget = pods 1.1–1.4)*
+      *(cold/cyclic journaled resume done in 1.0; durable timers + sweeper + pause/resume done in 1.1;
+      retries = pod 1.2, fire-and-forget = pod 1.4)*
 - [ ] **First-class transitions** — `await-human` and `degraded` (S8). *(both are first-class results;
-      durable await-human resume is pod 1.3)*
+      `Wait` added as a 5th first-class result in 1.1; durable await-human resume is pod 1.3)*
 - [ ] **⛓ Spike** — durability/chaos test: kill mid-step → resume → exactly-once, **no model re-call**.
       *(core PASSED on live substrate — cold + cyclic; the full gate spans the operation pods)*
 

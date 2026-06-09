@@ -18,7 +18,7 @@ from the pathway registry (S2, S6) instead of relying on in-process state.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,10 +54,21 @@ class RunState(BaseModel):
 
 
 class Timer(BaseModel):
+    """A durable timer that parks a run until ``wake_at`` (S6).
+
+    ``timer_id`` is the identity (derived as ``f"{run_id}:{step_index}"`` by the engine) so a given
+    ``Wait`` has exactly one timer: ``set_timer`` is idempotent on it and advancing past the
+    ``Wait`` can cancel it by derived id. ``claimed_at`` is the LEASE marker — ``claim_due_timers``
+    stamps it instead of deleting, so a crash between claim and advance leaves the timer reclaimable
+    once the lease goes stale (the at-least-once-fire / exactly-once-advance property).
+    """
+
     model_config = ConfigDict(frozen=True)
 
     run_id: str
+    timer_id: str
     wake_at: datetime
+    claimed_at: datetime | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -87,6 +98,26 @@ class Journal(Protocol):
         """Persist the run's status — the run record is the AUTHORITY (not derived from steps)."""
         ...
 
+    async def compare_and_set_run_status(
+        self, run_id: str, *, expect: RunStatus, new: RunStatus
+    ) -> bool:
+        """Atomically flip status to ``new`` ONLY IF it currently equals ``expect``; return whether
+        it changed — the run-level MUTUAL-EXCLUSION primitive that serializes drivers (S6).
+
+        Backed by a single conditional ``UPDATE … WHERE status = expect RETURNING``, so the DB row
+        lock admits exactly ONE winner even across concurrent sweepers racing to drive the same run.
+        This is what makes a RUN (not just a commit) exactly-once: a driver must win the CAS before
+        it may execute uncommitted stages, so two racers cannot both call the model. A loser gets
+        ``False`` and must NOT drive (the run is already being driven, parked, or terminal).
+
+        The CAS serializes drivers (exactly-once EXECUTION even under concurrent sweepers). What is
+        DEFERRED is auto-recovery of a driver that crashes mid-drive: the CAS cannot distinguish a
+        LIVE RUNNING run from a DEAD one — that needs a run-lease (owner + expiry + heartbeat) and a
+        stranded-RUNNING reaper (a future ops pod). Until then a crashed RUNNING run is recovered by
+        an explicit ``resume(run_id)``.
+        """
+        ...
+
     async def commit_step(self, record: StepRecord) -> None:
         """Idempotent on ``(run_id, step_index)``; commit BEFORE the runner advances."""
         ...
@@ -95,9 +126,40 @@ class Journal(Protocol):
 
     async def load_run(self, run_id: str) -> RunState | None: ...
 
-    async def set_timer(self, timer: Timer) -> None: ...
+    async def set_timer(self, timer: Timer) -> None:
+        """Arm a durable timer; idempotent on ``timer_id`` (a re-armed ``Wait`` is a no-op)."""
+        ...
 
-    async def due_timers(self, now: datetime) -> Sequence[Timer]: ...
+    async def due_timers(self, now: datetime) -> Sequence[Timer]:
+        """Read all timers due at ``now`` REGARDLESS of lease (observability/tests, not sweep)."""
+        ...
+
+    async def claim_due_timers(self, now: datetime, *, lease_ttl: timedelta) -> Sequence[Timer]:
+        """Atomically LEASE the due timers — the sweep primitive (S6). It does NOT delete.
+
+        Returns the timers due at ``now`` that are either unclaimed OR whose lease is STALE
+        (``claimed_at <= now - lease_ttl``, so a lease exactly ``lease_ttl`` old is expired),
+        stamping ``claimed_at = now`` on each as it returns it.
+        Two concurrent claims over the same due set therefore deliver each timer to exactly one
+        caller (the lease is the single-delivery guard). The timer row SURVIVES the claim: it is
+        deleted only when the run advances past its ``Wait`` (``cancel_timer`` on the wait-replay
+        branch) or on terminal ``cancel_timers_for_run``. So a process that dies after the claim but
+        before the advance does not strand the run — the next sweep past ``lease_ttl`` reclaims and
+        re-fires it, and the advance is idempotent (at-least-once fire / exactly-once advance).
+        """
+        ...
+
+    async def cancel_timer(self, timer_id: str) -> None:
+        """Delete a timer by id; idempotent (the engine cancels on the wait-replay advance)."""
+        ...
+
+    async def cancel_timers_for_run(self, run_id: str) -> None:
+        """Delete every timer for a run; called on terminal cleanup so no straggler can re-fire."""
+        ...
+
+    async def get_run_status(self, run_id: str) -> RunStatus | None:
+        """Cheap AUTHORITATIVE status poll (no step fan-out) for the cooperative pause check."""
+        ...
 
 
 __all__ = [

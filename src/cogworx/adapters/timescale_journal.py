@@ -11,6 +11,25 @@ drive), so a cyclic pathway that revisits a stage commits a DISTINCT step per vi
 ``status`` is PERSISTED on the run record (the authority — not derived from the last step), and the
 run record carries the ``pathway_id`` + ``pathway_version`` pointer for cold resume.
 
+Durable timers ride the same cluster. ``cogworx_timers`` is keyed by ``timer_id`` (idempotent
+``set_timer`` via ``ON CONFLICT DO NOTHING``) and carries a ``claimed_at`` LEASE marker. The sweep
+primitive ``claim_due_timers`` is a bare atomic ``UPDATE … SET claimed_at = now WHERE wake_at <= now
+AND (claimed_at IS NULL OR claimed_at <= now - lease_ttl) RETURNING …`` — no ``FOR UPDATE SKIP
+LOCKED`` is needed: under READ COMMITTED the conditional ``UPDATE`` takes a row lock per candidate
+row, and a SECOND concurrent claim blocks on that lock, then RE-EVALUATES its ``WHERE`` against the
+now-committed ``claimed_at`` once the lock releases — so it sees the fresh (non-stale) lease and
+returns 0 rows for that timer. That row-lock-plus-re-check IS single-delivery: two concurrent
+sweepers cannot both claim the same timer. The row SURVIVES the claim (it is deleted only by
+``cancel_timer`` once the run advances past its ``Wait``, or by ``cancel_timers_for_run`` on a
+terminal run), so a crash between claim and advance leaves a stale lease the next sweep reclaims —
+the at-least-once-fire / exactly-once-advance contract. Behaviourally identical to
+``InMemoryJournal`` (S3 — same lease/cancel/idempotency semantics).
+
+``compare_and_set_run_status`` is the run-level mutual-exclusion primitive: a conditional ``UPDATE …
+SET status = new WHERE run_id = id AND status = expect RETURNING`` whose row lock admits exactly one
+winning driver even across concurrent sweepers. It is what makes a RUN exactly-once (not merely its
+commits), so two racers cannot both execute an uncommitted, model-bearing stage.
+
 Hypertable-vs-exactly-once trade-off: a TimescaleDB hypertable requires the time partitioning column
 to appear in every UNIQUE constraint. A UNIQUE on ``(run_id, step_index, committed_at)`` would NOT
 give exactly-once — a replay computes a fresh ``committed_at`` and the same position would slip in
@@ -23,7 +42,7 @@ metrics hypertable) without weakening this guarantee.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -60,12 +79,15 @@ CREATE INDEX IF NOT EXISTS cogworx_journal_steps_order
     ON cogworx_journal_steps (run_id, step_index);
 
 CREATE TABLE IF NOT EXISTS cogworx_timers (
+    timer_id text PRIMARY KEY,
     run_id text NOT NULL,
     wake_at timestamptz NOT NULL,
-    payload jsonb NOT NULL
+    payload jsonb NOT NULL,
+    claimed_at timestamptz
 );
 
 CREATE INDEX IF NOT EXISTS cogworx_timers_wake ON cogworx_timers (wake_at);
+CREATE INDEX IF NOT EXISTS cogworx_timers_run ON cogworx_timers (run_id);
 """
 
 
@@ -118,6 +140,17 @@ class TimescaleJournal:
             "UPDATE cogworx_journal_runs SET status = %s WHERE run_id = %s",
             (status.value, run_id),
         )
+
+    async def compare_and_set_run_status(
+        self, run_id: str, *, expect: RunStatus, new: RunStatus
+    ) -> bool:
+        conn = await self._connection()
+        cursor = await conn.execute(
+            "UPDATE cogworx_journal_runs SET status = %s "
+            "WHERE run_id = %s AND status = %s RETURNING run_id",
+            (new.value, run_id, expect.value),
+        )
+        return await cursor.fetchone() is not None
 
     async def commit_step(self, record: StepRecord) -> None:
         conn = await self._connection()
@@ -187,19 +220,55 @@ class TimescaleJournal:
     async def set_timer(self, timer: Timer) -> None:
         conn = await self._connection()
         await conn.execute(
-            "INSERT INTO cogworx_timers (run_id, wake_at, payload) VALUES (%s, %s, %s)",
-            (timer.run_id, timer.wake_at, Jsonb(timer.payload)),
+            "INSERT INTO cogworx_timers (timer_id, run_id, wake_at, claimed_at, payload) "
+            "VALUES (%s, %s, %s, %s, %s) "
+            "ON CONFLICT (timer_id) DO NOTHING",
+            (timer.timer_id, timer.run_id, timer.wake_at, timer.claimed_at, Jsonb(timer.payload)),
         )
 
     async def due_timers(self, now: datetime) -> Sequence[Timer]:
         conn = await self._connection()
         cursor = await conn.execute(
-            "SELECT run_id, wake_at, payload FROM cogworx_timers WHERE wake_at <= %s "
-            "ORDER BY wake_at",
+            "SELECT run_id, timer_id, wake_at, claimed_at, payload FROM cogworx_timers "
+            "WHERE wake_at <= %s ORDER BY wake_at",
             (now,),
         )
         rows = await cursor.fetchall()
-        return tuple(Timer(run_id=row[0], wake_at=row[1], payload=row[2]) for row in rows)
+        return tuple(self._row_to_timer(row) for row in rows)
+
+    async def claim_due_timers(self, now: datetime, *, lease_ttl: timedelta) -> Sequence[Timer]:
+        # Atomic per-row LEASE (not delete): the UPDATE … RETURNING admits exactly one claimant per
+        # timer even under concurrent sweepers — a second claim at the same instant sees the fresh
+        # (non-stale) lease and skips the row. The row SURVIVES until the advance past the Wait is
+        # durably committed (cancel_timer), so a crash between claim and fire is recoverable.
+        conn = await self._connection()
+        stale_before = now - lease_ttl
+        cursor = await conn.execute(
+            "UPDATE cogworx_timers SET claimed_at = %s "
+            "WHERE wake_at <= %s AND (claimed_at IS NULL OR claimed_at <= %s) "
+            "RETURNING run_id, timer_id, wake_at, claimed_at, payload",
+            (now, now, stale_before),
+        )
+        rows = await cursor.fetchall()
+        return tuple(self._row_to_timer(row) for row in rows)
+
+    async def cancel_timer(self, timer_id: str) -> None:
+        conn = await self._connection()
+        await conn.execute("DELETE FROM cogworx_timers WHERE timer_id = %s", (timer_id,))
+
+    async def cancel_timers_for_run(self, run_id: str) -> None:
+        conn = await self._connection()
+        await conn.execute("DELETE FROM cogworx_timers WHERE run_id = %s", (run_id,))
+
+    async def get_run_status(self, run_id: str) -> RunStatus | None:
+        conn = await self._connection()
+        cursor = await conn.execute(
+            "SELECT status FROM cogworx_journal_runs WHERE run_id = %s", (run_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return RunStatus(row[0])
 
     async def reset(self) -> None:
         # Test-only ephemeral isolation: DROP + recreate (not TRUNCATE) so the per-case schema is
@@ -224,6 +293,18 @@ class TimescaleJournal:
             stage_name=row[2],
             result=_RESULT_ADAPTER.validate_python(row[3]),
             committed_at=row[4],
+        )
+
+    @staticmethod
+    def _row_to_timer(row: Sequence[Any]) -> Timer:
+        # Row shape is fixed across due_timers/claim_due_timers:
+        # (run_id, timer_id, wake_at, claimed_at, payload).
+        return Timer(
+            run_id=row[0],
+            timer_id=row[1],
+            wake_at=row[2],
+            claimed_at=row[3],
+            payload=row[4],
         )
 
 

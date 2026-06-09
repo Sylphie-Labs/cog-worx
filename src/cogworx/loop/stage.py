@@ -8,7 +8,8 @@ Ported from biz-firm's composition primitives (Stage · Capability · Context ·
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from cogworx.coordination.events import Event
@@ -41,6 +42,9 @@ class StageContext(Protocol):
 
     @property
     def latent(self) -> LatentStore: ...
+
+    @property
+    def clock(self) -> Callable[[], datetime]: ...
 
     def emit(self, event: Event) -> None: ...
 

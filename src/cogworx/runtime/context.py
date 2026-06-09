@@ -9,6 +9,7 @@ unavailable capability (no registry, unknown, or disabled/lesioned) as a single
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from cogworx.capability.base import CapabilityUnavailable
@@ -36,6 +37,7 @@ class RunContext:
         budget: BudgetGuard,
         registry: Registry | None = None,
         event_sink: Callable[[Event], None] | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.run_id = run_id
         self.session_id = session_id
@@ -46,11 +48,18 @@ class RunContext:
         self._budget = budget
         self._registry = registry
         self._event_sink = event_sink
+        self._clock = clock
         self._events: list[Event] = []
 
     @property
     def budget(self) -> BudgetGuard:
         return self._budget
+
+    @property
+    def clock(self) -> Callable[[], datetime]:
+        """The engine's injected clock. A Wait-bearing stage computes ``wake_at = ctx.clock() +
+        delay`` from this, never wall-clock, so ``wake_at`` is deterministic + replay-safe (S6)."""
+        return self._clock
 
     @property
     def model(self) -> Model:

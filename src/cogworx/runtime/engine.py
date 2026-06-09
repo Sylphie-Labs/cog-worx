@@ -11,6 +11,28 @@ index, so a cyclic pathway that revisits a stage commits a distinct step per vis
 step ceiling (``max_steps``) FAILS a run that would loop forever — it pairs with ``BudgetGuard`` so
 cycles are bounded by construction (S9/S11). Cold cross-process resume rehydrates the graph from the
 ``PathwayRegistry`` using the run's stored ``pathway_id`` pointer (S2/S6) — no in-process graph.
+
+Durable sleep + pause/resume ride this same journal (S6). A ``Wait`` step parks the run: on its
+FRESH commit the engine arms one durable timer (id ``f"{run_id}:{step_index}"``), sets the run
+WAITING, and breaks; later the ``Sweeper`` leases the due timer and calls ``fire_timer``, which
+re-drives from the entry. The committed ``Wait`` then REPLAYS as a plain advance to ``to`` — it
+cancels its (now-superfluous) timer and never re-arms ``set_timer`` — so advancing past a ``Wait``
+is exactly-once even though the timer may fire at-least-once (a crashed lease goes stale and
+re-fires; the advance is idempotent on ``(run_id, step_index)``). A plain crash-``resume`` treats
+WAITING and PAUSED as non-advancing terminal-for-resume states: only the sweeper (``fire_timer``) or
+``unpause`` advance a parked run. Pause is COOPERATIVE: each ``_drive`` iteration reads the run's
+status (``get_run_status``, not a cached ``RunState``) at the top and breaks if PAUSED, so a pause
+from another process is honored at the next step boundary.
+
+Timer cleanup on stop is uniform across the parked/terminal paths: ``done``, terminal ``degraded``,
+the ``max_steps`` ceiling FAILED, AND ``await-human`` all ``cancel_timers_for_run`` so no orphaned
+timer can re-fire a finished or parked-for-human run. The two stops that must NOT cancel are the
+fresh ``Wait`` (WAITING — the timer is the wake mechanism) and the cooperative PAUSED break (the
+timer must survive so an ``unpause`` of a still-WAITING run keeps its wake). Re-driving a run is
+serialized by ``compare_and_set_run_status`` (the run-level mutual-exclusion primitive): a driver
+must win the CAS into RUNNING before executing uncommitted stages, so two concurrent sweepers /
+fire+unpause races cannot both call the model — exactly-once EXECUTION, not merely exactly-once
+commit.
 """
 
 from __future__ import annotations
@@ -28,7 +50,7 @@ from cogworx.loop.state import RunStatus
 from cogworx.model.base import Model
 from cogworx.runtime.context import RunContext
 from cogworx.substrate.graph_store import GraphStore
-from cogworx.substrate.journal import Journal, RunState, StepRecord
+from cogworx.substrate.journal import Journal, RunState, StepRecord, Timer
 from cogworx.substrate.latent import LatentStore
 
 Clock = Callable[[], datetime]
@@ -78,6 +100,7 @@ class Engine:
             budget=self._budget,
             registry=self._registry,
             event_sink=self._event_sink,
+            clock=self._clock,
         )
 
     def _emit(
@@ -146,7 +169,11 @@ class Engine:
             RunStatus.AWAITING_HUMAN,
             RunStatus.DEGRADED,
             RunStatus.FAILED,
+            RunStatus.WAITING,
+            RunStatus.PAUSED,
         ):
+            # WAITING/PAUSED are parked, not terminal: a plain crash-resume returns them as-is. Only
+            # the sweeper (fire_timer) or unpause advance a parked run (S6).
             return state
         graph = self._pathways.get(state.pathway_id, state.pathway_version)
         rehydrated_fingerprint = pathway_fingerprint(graph)
@@ -162,17 +189,121 @@ class Engine:
         ctx = self._build_context(run_id=run_id, session_id=state.session_id)
         return await self._drive(ctx, graph, current=graph.entry)
 
+    async def _rehydrate(self, run_id: str) -> tuple[RunState, StageGraph, RunContext]:
+        """Load a run + rehydrate its graph from the registry, guarding the structural fingerprint.
+
+        Shared by ``fire_timer``/``unpause`` (the parked-run re-drive entrypoints) and mirrors
+        ``resume``'s cold-resume contract: the graph comes from the ``PathwayRegistry`` via the
+        run's stored pathway pointer (no in-process graph), and an in-place structural edit under
+        the same ``(pathway_id, version)`` is refused with ``ResumeError`` rather than re-driving
+        the wrong graph.
+        """
+        state = await self._journal.load_run(run_id)
+        if state is None:
+            raise ResumeError(f"cannot drive unknown run {run_id!r}")
+        graph = self._pathways.get(state.pathway_id, state.pathway_version)
+        rehydrated_fingerprint = pathway_fingerprint(graph)
+        if rehydrated_fingerprint != state.pathway_fingerprint:
+            raise ResumeError(
+                f"pathway structure changed under driven run {run_id!r}: the rehydrated "
+                f"{state.pathway_id!r} v{state.pathway_version} graph fingerprints "
+                f"{rehydrated_fingerprint!r} but the run was started against "
+                f"{state.pathway_fingerprint!r}. Bump the pathway version instead of editing "
+                "in place."
+            )
+        ctx = self._build_context(run_id=run_id, session_id=state.session_id)
+        return state, graph, ctx
+
+    async def fire_timer(self, run_id: str) -> RunState:
+        """Re-drive a WAITING run after the sweeper leased its due timer (S6) — no commits of its
+        own (the ``Sweeper`` calls this once a timer is due).
+
+        The pre-drive action is a CAS WAITING->RUNNING — the run-level mutual-exclusion primitive
+        that makes this RUN (not merely its commits) exactly-once: a stale-lease re-delivery, a
+        fire on an already-terminal run, or a fire racing a pause/another sweeper LOSES the CAS and
+        is a no-op (the loser must NOT execute the uncommitted, model-bearing ``poll`` — that is the
+        F1 double-call fix). Only the winner drives; ``_drive`` then replays the committed prefix
+        (including the ``Wait`` step, which advances past its now-cancelled timer) WITHOUT
+        re-calling the model (at-least-once fire / exactly-once advance).
+        """
+        state, graph, ctx = await self._rehydrate(run_id)
+        if not await self._journal.compare_and_set_run_status(
+            run_id, expect=RunStatus.WAITING, new=RunStatus.RUNNING
+        ):
+            return state
+        return await self._drive(ctx, graph, current=graph.entry)
+
+    async def pause(self, run_id: str) -> bool:
+        """Cooperatively pause a run — flips to PAUSED only from RUNNING/WAITING (else a no-op).
+
+        Returns ``True`` iff this call transitioned the run to PAUSED (one of the conditional CAS
+        attempts won); ``False`` if the pause was a no-op because the run was unknown, terminal, or
+        in-transition (no CAS matched). Pause is COOPERATIVE, so a ``False`` is a DROPPED pause the
+        caller can detect and re-issue — there is no implicit retry here.
+
+        The flip is a CAS (RUNNING->PAUSED, falling back to WAITING->PAUSED), so a pause racing a
+        COMPLETED/terminal run can never clobber the terminal status (the F2 fix): both CASes lose,
+        ``False`` is returned, and pause is a no-op. ``_drive`` honors PAUSED at the next step
+        boundary (it reads the authoritative status at the top of each iteration), so an in-flight
+        drive stops cleanly after the current step commits.
+        """
+        state = await self._journal.load_run(run_id)
+        if state is None:
+            return False
+        flipped = await self._journal.compare_and_set_run_status(
+            run_id, expect=RunStatus.RUNNING, new=RunStatus.PAUSED
+        ) or await self._journal.compare_and_set_run_status(
+            run_id, expect=RunStatus.WAITING, new=RunStatus.PAUSED
+        )
+        if not flipped:
+            return False
+        ctx = self._build_context(run_id=run_id, session_id=state.session_id)
+        self._emit(ctx, EventType.RUN_PAUSED, run_id=run_id, session_id=state.session_id)
+        return True
+
+    async def unpause(self, run_id: str) -> RunState:
+        """Resume a PAUSED run: CAS PAUSED->RUNNING, re-drive from entry, return the terminal state.
+
+        unpause resumes the run IMMEDIATELY; if it was waiting on a timer, the pending wait is
+        discarded and the run advances past it now — do not pause a waiting run if the remaining
+        sleep must be preserved. A run PAUSED while WAITING-on-a-timer has a COMMITTED ``Wait``
+        step, which replays as a plain advance to its ``to`` (cancelling the now-superfluous timer);
+        the remaining sleep is NOT honored on unpause, the run proceeds at once.
+
+        The CAS is the run-level mutual exclusion: a fire/unpause race or a double unpause means
+        only one caller flips PAUSED->RUNNING and drives; a loser returns the current state without
+        driving (it must NOT execute uncommitted, model-bearing stages). ``_drive`` replays the
+        committed prefix (no model re-call, S6) and runs only the stages that had not yet committed
+        when the pause landed.
+        """
+        state, graph, ctx = await self._rehydrate(run_id)
+        if not await self._journal.compare_and_set_run_status(
+            run_id, expect=RunStatus.PAUSED, new=RunStatus.RUNNING
+        ):
+            return state
+        self._emit(
+            ctx, EventType.RUN_RESUMED, run_id=run_id, session_id=ctx.session_id
+        )
+        return await self._drive(ctx, graph, current=graph.entry)
+
     async def _drive(self, ctx: RunContext, graph: StageGraph, *, current: str) -> RunState:
         run_id = ctx.run_id
         session_id = ctx.session_id
         seq = 0
         while True:
+            # Cooperative pause: read the AUTHORITATIVE status (not a cached RunState) so a pause
+            # from another process is honored at this step boundary before the next stage runs.
+            if await self._journal.get_run_status(run_id) is RunStatus.PAUSED:
+                break
+
             if seq >= self._max_steps:
                 await self._journal.set_run_status(run_id, RunStatus.FAILED)
+                await self._journal.cancel_timers_for_run(run_id)
                 self._emit(ctx, EventType.RUN_FAILED, run_id=run_id, session_id=session_id)
                 break
 
             existing = await self._journal.read_step(run_id, seq)
+            replaying = existing is not None
             if existing is not None:
                 if existing.stage_name != current:
                     raise ResumeError(
@@ -200,15 +331,41 @@ class Engine:
             match result.kind:
                 case "done":
                     await self._journal.set_run_status(run_id, RunStatus.COMPLETED)
+                    await self._journal.cancel_timers_for_run(run_id)
                     self._emit(ctx, EventType.RUN_COMPLETED, run_id=run_id, session_id=session_id)
                     break
                 case "transition":
                     self._emit(ctx, EventType.STAGE_COMPLETED, run_id=run_id, session_id=session_id)
                     current = result.to
+                case "wait":
+                    # A committed Wait REPLAYS as a plain advance (cancel its timer, go to ``to``)
+                    # — never re-park, never re-arm set_timer (C6). A FRESH Wait arms one durable
+                    # timer and parks the run WAITING for the sweeper.
+                    if replaying:
+                        await self._journal.cancel_timer(f"{run_id}:{seq}")
+                        self._emit(
+                            ctx, EventType.STAGE_COMPLETED, run_id=run_id, session_id=session_id
+                        )
+                        current = result.to
+                    else:
+                        await self._journal.set_timer(
+                            Timer(
+                                run_id=run_id,
+                                timer_id=f"{run_id}:{seq}",
+                                wake_at=result.wake_at,
+                            )
+                        )
+                        await self._journal.set_run_status(run_id, RunStatus.WAITING)
+                        self._emit(
+                            ctx, EventType.STAGE_WAITING, run_id=run_id, session_id=session_id
+                        )
+                        self._emit(ctx, EventType.RUN_WAITING, run_id=run_id, session_id=session_id)
+                        break
                 case "degraded":
                     self._emit(ctx, EventType.STAGE_DEGRADED, run_id=run_id, session_id=session_id)
                     if result.to is None:
                         await self._journal.set_run_status(run_id, RunStatus.DEGRADED)
+                        await self._journal.cancel_timers_for_run(run_id)
                         break
                     current = result.to
                 case "await-human":
@@ -219,6 +376,7 @@ class Engine:
                         session_id=session_id,
                     )
                     await self._journal.set_run_status(run_id, RunStatus.AWAITING_HUMAN)
+                    await self._journal.cancel_timers_for_run(run_id)
                     break
 
             seq += 1
