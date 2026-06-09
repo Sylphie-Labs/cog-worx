@@ -10,12 +10,17 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Sequence
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from cogworx.claims.provenance import Artifact
 from cogworx.loop.retry import RetryPolicy
 from cogworx.loop.stage import Stage
-from cogworx.substrate.journal import RunState
+
+if TYPE_CHECKING:
+    # Annotation-only (``Loop`` Protocol signatures). A runtime import here is the edge of an
+    # import cycle: substrate.journal -> loop.result -> loop/__init__ -> graph -> substrate.journal
+    # (same shape as the stage.py edge — see the note there).
+    from cogworx.substrate.journal import RunState
 
 
 class StageGraphError(Exception):

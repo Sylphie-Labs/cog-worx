@@ -82,6 +82,21 @@ The configurable control loop everything else attaches to.
 > first execution. The exactly-once-EXECUTION docstring was scoped honestly (CAS-guarded entrypoints;
 > `resume(RUNNING)` is the deferred run-lease/reaper gap). **Next:** 1.4 fire-and-forget.
 
+> **Pod 1.4 (fire-and-forget with feedback) — DONE** ✅ (CANON-COMPLIANT WITH CONCERNS, red-team-
+> hardened): `Engine.start()` backgrounds the existing `run()` on a tracked task and returns a
+> **`RunHandle`** immediately (in-process only — the JOURNAL owns durability, S6); crash feedback
+> via a new **`RUN_CRASHED`** event from the task done-callback (a dropped handle never hides a
+> death); `aclose()` drain-loops every background task incl. mid-drain starts. Red-team caught 3
+> real defects pre-validation: an **unguarded double-start** (two live drivers, double model call —
+> now refused loud), a **pre-journal silent-loss window** (unknown pathway died backgrounded before
+> `start_run` — now validated synchronously at `start()`), and **guard overreach** (the old
+> start-scoped set missed sweeper-vs-resume + double-resume races — replaced by an in-process
+> **drive mutex** registered by EVERY drive entrypoint, before the CAS). Also fixed: a latent
+> import cycle (`import cogworx.runtime` first detonated; TYPE_CHECKING fix + 12 subprocess
+> first-import regression tests). Cross-INSTANCE exclusion stays honestly deferred (run-lease/
+> reaper ops pod). **Phase-1 spine features are all landed; next: the comprehensive Phase-1 gate
+> on the live substrate, then Phase 2.**
+
 - [ ] **Configurable graph loop** — DAG-of-stages + FSM-per-stage; **dev-authored pathways, graph by
       default**, not a fixed list. *(graph + dev-authored pathway registry done in 1.0; per-stage FSM
       retry/timeout transitions done in 1.2)*
@@ -89,7 +104,7 @@ The configurable control loop everything else attaches to.
       **pause/resume**, **fire-and-forget-with-feedback**, all on the Timescale journal (S6).
       *(cold/cyclic journaled resume done in 1.0; durable timers + sweeper + pause/resume done in 1.1;
       retries + per-stage timeouts done in 1.2; durable await-human resume done in 1.3;
-      fire-and-forget = pod 1.4)*
+      fire-and-forget with feedback done in 1.4)*
 - [ ] **First-class transitions** — `await-human` and `degraded` (S8). *(both are first-class results;
       `Wait` added as a 5th first-class result in 1.1; durable await-human resume done in 1.3 —
       `AwaitHuman.to` + `provide_human_input`)*

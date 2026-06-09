@@ -10,16 +10,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from cogworx.claims.provenance import Artifact
 from cogworx.coordination.events import Event
 from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.result import StageResult
 from cogworx.model.base import Model
-from cogworx.substrate.graph_store import GraphStore
-from cogworx.substrate.journal import Journal
-from cogworx.substrate.latent import LatentStore
+
+if TYPE_CHECKING:
+    # Annotation-only (Protocol property return types). A runtime import here is the edge of an
+    # import cycle: substrate.journal -> loop.result -> loop/__init__ -> stage -> substrate.journal,
+    # which detonates when cogworx.substrate (or cogworx.runtime) is the first package imported.
+    from cogworx.substrate.graph_store import GraphStore
+    from cogworx.substrate.journal import Journal
+    from cogworx.substrate.latent import LatentStore
 
 
 @runtime_checkable

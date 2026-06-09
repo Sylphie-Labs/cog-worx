@@ -29,13 +29,17 @@ the ``max_steps`` ceiling FAILED, AND ``await-human`` all ``cancel_timers_for_ru
 timer can re-fire a finished or parked-for-human run. The two stops that must NOT cancel are the
 fresh ``Wait`` (WAITING — the timer is the wake mechanism) and the cooperative PAUSED break (the
 timer must survive so an ``unpause`` of a still-WAITING run keeps its wake). Re-driving a run is
-serialized by ``compare_and_set_run_status`` (the run-level mutual-exclusion primitive): a driver
-must win the CAS into RUNNING before executing uncommitted stages — exactly-once EXECUTION for the
-CAS-guarded entrypoints (``fire_timer``, ``unpause``, ``provide_human_input``). A bare ``resume``
-of a still-RUNNING run does NOT take that CAS, so two concurrent crash-resumes of the same RUNNING
-run can double-execute an uncommitted stage's SIDE EFFECT (the journal commit stays exactly-once on
-``(run_id, step_index)``; the side effect is not protected). Single-flight crash-resume is the
-operator's responsibility until the run-lease/reaper lands (deferred ops pod).
+serialized at two scopes. WITHIN one Engine instance, the ``_driving`` mutex covers EVERY drive
+entrypoint (``run``/``resume``/``fire_timer``/``unpause``/``provide_human_input``): while one drive
+of a run is in flight here, a concurrent ``resume`` is a no-op and a concurrent ``run``/``start``
+fails loud — in-process double-execution is structurally excluded, including the
+``start()``-task-vs-``resume`` and sweeper-vs-``resume`` races. ACROSS instances/processes,
+``compare_and_set_run_status`` keeps the CAS-guarded entrypoints (``fire_timer``, ``unpause``,
+``provide_human_input``) exactly-once, but a bare ``resume`` of a still-RUNNING run from a
+DIFFERENT Engine instance takes no CAS and can double-execute an uncommitted stage's SIDE EFFECT
+(the journal commit stays exactly-once on ``(run_id, step_index)``; the side effect is not
+protected). Single-flight cross-instance crash-resume is the operator's responsibility until the
+run-lease/reaper lands (deferred ops pod).
 """
 
 from __future__ import annotations
@@ -56,6 +60,7 @@ from cogworx.loop.retry import DEFAULT_RETRY_POLICY, RetryPolicy
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import Model
 from cogworx.runtime.context import RunContext
+from cogworx.runtime.handle import RunHandle
 from cogworx.substrate.graph_store import GraphStore
 from cogworx.substrate.journal import Journal, RunState, StepRecord, Timer
 from cogworx.substrate.latent import LatentStore
@@ -95,6 +100,14 @@ class Engine:
         self._clock = clock
         self._max_steps = max_steps
         self._event_seq = 0
+        # Background tasks created via ``start``, keyed by run_id: GC protection, double-start
+        # refusal, and identity-checked eviction (a stale first task must not evict a newer one).
+        self._bg: dict[str, asyncio.Task[RunState]] = {}
+        # The in-process drive mutex: every drive entrypoint (run/resume/fire_timer/unpause/
+        # provide_human_input) registers the run_id here for the duration of its drive, so no two
+        # drives of the same run can overlap WITHIN this Engine instance. Cross-instance mutual
+        # exclusion is the deferred run-lease/reaper ops pod (S6/S7).
+        self._driving: set[str] = set()
 
     def _build_context(self, *, run_id: str, session_id: str) -> RunContext:
         return RunContext(
@@ -117,7 +130,12 @@ class Engine:
         *,
         run_id: str,
         session_id: str,
+        attributes: dict[str, Any] | None = None,
     ) -> None:
+        # Event ids are unique PER ENGINE INSTANCE (``_event_seq`` is instance state): two engines
+        # emitting over one sink can collide on id for DISTINCT events. Cross-instance id
+        # uniqueness/dedup is deferred with the rest of event idempotency (events are
+        # observational; the journal — never the event stream — is the authority).
         seq = self._event_seq
         self._event_seq += 1
         event = Event(
@@ -127,13 +145,12 @@ class Engine:
             subsystem=Subsystem.SPINE,
             session_id=session_id,
             run_id=run_id,
+            attributes=attributes if attributes is not None else {},
         )
         validate_event_boundary(event)
         ctx.emit(event)
 
-    def _exhaustion_degraded(
-        self, exc: BaseException, attempt: int, to: str | None
-    ) -> Degraded:
+    def _exhaustion_degraded(self, exc: BaseException, attempt: int, to: str | None) -> Degraded:
         """Build the first-class exhaustion ``Degraded`` (S8) committed at ``seq`` on retry-exhaust.
 
         The output artifact carries provenance with ``source="system"`` — a deterministic,
@@ -144,13 +161,102 @@ class Engine:
         artifact = Artifact(
             kind="retry-exhausted",
             produced_by="engine",
-            provenance=Provenance(
-                source="system", confidence=1.0, recorded_at=self._clock()
-            ),
+            provenance=Provenance(source="system", confidence=1.0, recorded_at=self._clock()),
             data={"failure_class": type(exc).__name__, "attempts": attempt},
         )
         reason = f"retry exhausted after {attempt} attempts: {type(exc).__name__}"
         return Degraded(reason=reason, output=artifact, to=to)
+
+    def start(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        pathway_id: str,
+        initial: Artifact,
+        pathway_version: int = 1,
+    ) -> RunHandle:
+        """Schedule ``self.run(...)`` on a tracked ``asyncio.Task`` and return immediately.
+
+        A JOURNALED run is never lost with its handle: once ``start_run`` commits, the run is
+        recoverable via ``Engine.resume`` or the ``Sweeper`` (S6) regardless of the handle. The
+        two pre-journal failure modes are closed structurally: an unknown pathway raises
+        ``PathwayError`` HERE, synchronously (never a background task that dies before anything
+        is journaled), and any unhandled exception in the background task is surfaced as a
+        ``RUN_CRASHED`` event on the sink (fire-and-forget-WITH-FEEDBACK) as well as re-raised by
+        ``handle.result()``.
+
+        A second ``start`` of a run_id with a live driver in this Engine raises ``ValueError``
+        loud — two background tasks attached to one run would double-execute its uncommitted,
+        model-bearing stage (``start_run`` is idempotent, so the journal would not object).
+
+        This method is SYNCHRONOUS: it does not await the run to a terminal state.  Callers
+        that need the result await ``handle.result()``, which resolves at the run's first
+        park-or-terminal (AWAITING_HUMAN, WAITING, COMPLETED, DEGRADED, FAILED, etc.).
+
+        No model call is added here; ``start`` merely backgrounds the existing ``run()``
+        coroutine, so the S1 write-path invariant is unchanged.
+        """
+        if run_id in self._bg or run_id in self._driving:
+            raise ValueError(
+                f"run {run_id!r} already has a live driver in this Engine instance; a "
+                "double-start would attach a second driver to the same run and double-execute "
+                "its uncommitted stage"
+            )
+        # Fail-fast at the call site (synchronous PathwayError): an unknown pathway must never
+        # become a background task that dies before ``start_run`` journals anything — with the
+        # handle dropped (the point of fire-and-forget), that would be a silently lost run.
+        self._pathways.get(pathway_id, pathway_version)
+
+        ctx = self._build_context(run_id=run_id, session_id=session_id)
+        task: asyncio.Task[RunState] = asyncio.create_task(
+            self.run(
+                run_id=run_id,
+                session_id=session_id,
+                pathway_id=pathway_id,
+                initial=initial,
+                pathway_version=pathway_version,
+            )
+        )
+        self._bg[run_id] = task
+
+        def _on_done(t: asyncio.Task[RunState]) -> None:
+            # Identity-checked eviction: only the task that owns the registry slot may free it.
+            if self._bg.get(run_id) is t:
+                del self._bg[run_id]
+            # Crash FEEDBACK: an unhandled exception in a backgrounded run must not vanish with
+            # a dropped handle. Reading ``t.exception()`` also marks it retrieved, replacing
+            # asyncio's unreliable "exception was never retrieved" log with a first-class event.
+            # The event is observational — the JOURNAL stays the authority on resumability (a
+            # crashed-mid-drive run is still RUNNING there and recoverable via ``resume``).
+            if not t.cancelled() and (exc := t.exception()) is not None:
+                self._emit(
+                    ctx,
+                    EventType.RUN_CRASHED,
+                    run_id=run_id,
+                    session_id=session_id,
+                    attributes={"error_type": type(exc).__name__, "error": str(exc)},
+                )
+
+        task.add_done_callback(_on_done)
+        return RunHandle(run_id, task)
+
+    async def aclose(self) -> None:
+        """Drain ALL background tasks created via ``start`` — including ones started mid-drain.
+
+        Loops until no task in the registry is pending, so a ``start`` issued while a previous
+        batch is being awaited is still drained. Exceptions are absorbed here
+        (``return_exceptions=True``) so one failed run cannot prevent the rest from draining —
+        each crash was already surfaced as a ``RUN_CRASHED`` event by its done-callback and
+        stays re-raisable via ``handle.result()`` (``gather`` does not consume it). ``aclose``
+        does NOT close the engine: a ``start`` AFTER it returns is permitted (and unsupervised
+        until the next ``aclose``).
+        """
+        while True:
+            pending = [t for t in self._bg.values() if not t.done()]
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def run(
         self,
@@ -161,17 +267,26 @@ class Engine:
         initial: Artifact,
         pathway_version: int = 1,
     ) -> RunState:
-        graph = self._pathways.get(pathway_id, pathway_version)
-        await self._journal.start_run(
-            run_id,
-            session_id,
-            pathway_id=pathway_id,
-            pathway_version=pathway_version,
-            pathway_fingerprint=pathway_fingerprint(graph),
-        )
-        ctx = self._build_context(run_id=run_id, session_id=session_id)
-        self._emit(ctx, EventType.RUN_STARTED, run_id=run_id, session_id=session_id)
-        return await self._drive(ctx, graph, current=graph.entry)
+        if run_id in self._driving:
+            raise ValueError(
+                f"run {run_id!r} is already being driven by this Engine instance; a second "
+                "concurrent run() would double-execute its uncommitted stage"
+            )
+        self._driving.add(run_id)
+        try:
+            graph = self._pathways.get(pathway_id, pathway_version)
+            await self._journal.start_run(
+                run_id,
+                session_id,
+                pathway_id=pathway_id,
+                pathway_version=pathway_version,
+                pathway_fingerprint=pathway_fingerprint(graph),
+            )
+            ctx = self._build_context(run_id=run_id, session_id=session_id)
+            self._emit(ctx, EventType.RUN_STARTED, run_id=run_id, session_id=session_id)
+            return await self._drive(ctx, graph, current=graph.entry)
+        finally:
+            self._driving.discard(run_id)
 
     async def resume(self, run_id: str) -> RunState:
         """Re-drive the run, replaying committed steps from the journal (S6 — no model re-call).
@@ -192,6 +307,15 @@ class Engine:
         state = await self._journal.load_run(run_id)
         if state is None:
             raise ResumeError(f"cannot resume unknown run {run_id!r}")
+        if run_id in self._driving:
+            # In-process single-driver guard: SOME drive of this run (a backgrounded ``start``,
+            # a sweeper ``fire_timer``, an ``unpause``, a ``provide_human_input``, or another
+            # ``resume``) is in flight in this Engine instance — a concurrent resume would
+            # double-execute the uncommitted, model-bearing stage. Return as-is; the in-flight
+            # driver owns this run. Cross-process crash-recovery (S6) is unaffected:
+            # ``_driving`` is empty on a fresh Engine, so ``engine_b.resume(orphaned_RUNNING)``
+            # drives normally (cross-INSTANCE exclusion is the deferred run-lease/reaper pod).
+            return state
         if state.status in (
             RunStatus.COMPLETED,
             RunStatus.AWAITING_HUMAN,
@@ -216,7 +340,14 @@ class Engine:
                 "version instead of editing in place."
             )
         ctx = self._build_context(run_id=run_id, session_id=state.session_id)
-        return await self._drive(ctx, graph, current=graph.entry)
+        # No awaits between the ``_driving`` membership check above and this registration other
+        # than ``load_run`` — and a stale read there only means returning a slightly old state,
+        # never a double-drive: registration itself is check-then-add with no await between.
+        self._driving.add(run_id)
+        try:
+            return await self._drive(ctx, graph, current=graph.entry)
+        finally:
+            self._driving.discard(run_id)
 
     async def _rehydrate(self, run_id: str) -> tuple[RunState, StageGraph, RunContext]:
         """Load a run + rehydrate its graph from the registry, guarding the structural fingerprint.
@@ -268,12 +399,24 @@ class Engine:
         parked = state.status
         if parked not in (RunStatus.WAITING, RunStatus.RETRYING):
             return state
-        if not await self._journal.compare_and_set_run_status(
-            run_id, expect=parked, new=RunStatus.RUNNING
-        ):
+        if run_id in self._driving:
+            # A drive of this run is in flight in this Engine (e.g. it JUST parked and its
+            # driver is finishing up). No-op WITHOUT cancelling the timer: the sweeper's
+            # stale-lease re-fire delivers the wake again later (at-least-once fire).
             return state
-        await self._journal.cancel_timers_for_run(run_id)
-        return await self._drive(ctx, graph, current=graph.entry)
+        # Register BEFORE the CAS (no await in between): once this driver flips the run to
+        # RUNNING, a concurrent in-process ``resume`` must already see the run as driven —
+        # otherwise it could slip into the CAS->drive window and double-execute (RT-1.4 H3).
+        self._driving.add(run_id)
+        try:
+            if not await self._journal.compare_and_set_run_status(
+                run_id, expect=parked, new=RunStatus.RUNNING
+            ):
+                return state
+            await self._journal.cancel_timers_for_run(run_id)
+            return await self._drive(ctx, graph, current=graph.entry)
+        finally:
+            self._driving.discard(run_id)
 
     async def pause(self, run_id: str) -> bool:
         """Cooperatively pause a run — flips to PAUSED only from RUNNING/WAITING (else a no-op).
@@ -319,14 +462,21 @@ class Engine:
         when the pause landed.
         """
         state, graph, ctx = await self._rehydrate(run_id)
-        if not await self._journal.compare_and_set_run_status(
-            run_id, expect=RunStatus.PAUSED, new=RunStatus.RUNNING
-        ):
+        if run_id in self._driving:
+            # A drive of this run is in flight in this Engine — no-op (see fire_timer).
             return state
-        self._emit(
-            ctx, EventType.RUN_RESUMED, run_id=run_id, session_id=ctx.session_id
-        )
-        return await self._drive(ctx, graph, current=graph.entry)
+        # Register BEFORE the CAS (no await in between) so a concurrent in-process ``resume``
+        # cannot slip into the CAS->drive window (RT-1.4 H3).
+        self._driving.add(run_id)
+        try:
+            if not await self._journal.compare_and_set_run_status(
+                run_id, expect=RunStatus.PAUSED, new=RunStatus.RUNNING
+            ):
+                return state
+            self._emit(ctx, EventType.RUN_RESUMED, run_id=run_id, session_id=ctx.session_id)
+            return await self._drive(ctx, graph, current=graph.entry)
+        finally:
+            self._driving.discard(run_id)
 
     async def provide_human_input(
         self,
@@ -353,47 +503,60 @@ class Engine:
         state, graph, ctx = await self._rehydrate(run_id)
         if state.status is not RunStatus.AWAITING_HUMAN:
             return state
+        if run_id in self._driving:
+            # A drive of this run is in flight in this Engine (e.g. it JUST parked
+            # AWAITING_HUMAN and its driver is finishing up). No-op BEFORE recording: the
+            # returned state is still AWAITING_HUMAN, so the caller can re-issue the answer
+            # (first-answer-wins makes the re-record harmless).
+            return state
+        # Register BEFORE the CAS (no await between the membership check above and this add)
+        # so a concurrent in-process ``resume`` cannot slip into the CAS->drive window
+        # (RT-1.4 H3).
+        self._driving.add(run_id)
+        try:
+            # The awaiting step is the last committed step (status guarantees it is an
+            # await-human).
+            last_step = state.steps[-1]
+            seq = last_step.step_index
 
-        # The awaiting step is the last committed step (status guarantees it is an await-human).
-        last_step = state.steps[-1]
-        seq = last_step.step_index
+            answer = Artifact(
+                kind=kind,
+                produced_by="human",
+                provenance=Provenance(
+                    source="human",
+                    confidence=confidence,
+                    recorded_at=self._clock(),
+                ),
+                data=payload,
+            )
 
-        answer = Artifact(
-            kind=kind,
-            produced_by="human",
-            provenance=Provenance(
-                source="human",
-                confidence=confidence,
-                recorded_at=self._clock(),
-            ),
-            data=payload,
-        )
+            # H3 hard ordering: persist BEFORE the CAS. A crash here leaves the answer committed
+            # but the run still AWAITING_HUMAN — a re-issued call finds the answer
+            # (first-answer-wins) and the CAS succeeds on the next attempt.
+            await self._journal.record_human_input(run_id, seq, answer)
 
-        # H3 hard ordering: persist BEFORE the CAS. A crash here leaves the answer committed but
-        # the run still AWAITING_HUMAN — a re-issued call finds the answer (first-answer-wins) and
-        # the CAS succeeds on the next attempt.
-        await self._journal.record_human_input(run_id, seq, answer)
+            self._emit(
+                ctx,
+                EventType.HUMAN_INPUT_RECEIVED,
+                run_id=run_id,
+                session_id=ctx.session_id,
+            )
 
-        self._emit(
-            ctx,
-            EventType.HUMAN_INPUT_RECEIVED,
-            run_id=run_id,
-            session_id=ctx.session_id,
-        )
+            if not await self._journal.compare_and_set_run_status(
+                run_id, expect=RunStatus.AWAITING_HUMAN, new=RunStatus.RUNNING
+            ):
+                # Another caller won the CAS — load and return the current state.
+                reloaded = await self._journal.load_run(run_id)
+                if reloaded is None:
+                    raise ResumeError(
+                        f"journal lost run {run_id!r} after CAS loss in provide_human_input"
+                    )
+                return reloaded
 
-        if not await self._journal.compare_and_set_run_status(
-            run_id, expect=RunStatus.AWAITING_HUMAN, new=RunStatus.RUNNING
-        ):
-            # Another caller won the CAS — load and return the current state.
-            reloaded = await self._journal.load_run(run_id)
-            if reloaded is None:
-                raise ResumeError(
-                    f"journal lost run {run_id!r} after CAS loss in provide_human_input"
-                )
-            return reloaded
-
-        self._emit(ctx, EventType.RUN_RESUMED, run_id=run_id, session_id=ctx.session_id)
-        return await self._drive(ctx, graph, current=graph.entry)
+            self._emit(ctx, EventType.RUN_RESUMED, run_id=run_id, session_id=ctx.session_id)
+            return await self._drive(ctx, graph, current=graph.entry)
+        finally:
+            self._driving.discard(run_id)
 
     async def _drive(self, ctx: RunContext, graph: StageGraph, *, current: str) -> RunState:
         run_id = ctx.run_id
@@ -579,4 +742,5 @@ __all__ = [
     "Clock",
     "Engine",
     "ResumeError",
+    "RunHandle",
 ]
