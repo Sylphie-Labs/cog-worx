@@ -36,8 +36,11 @@ class EventType(StrEnum):
     STAGE_DEGRADED = "stage_degraded"
     STAGE_AWAITING_HUMAN = "stage_awaiting_human"
     STAGE_WAITING = "stage_waiting"
+    STAGE_RETRYING = "stage_retrying"
+    STAGE_TIMED_OUT = "stage_timed_out"
     STEP_COMMITTED = "step_committed"
     RUN_WAITING = "run_waiting"
+    RUN_RETRYING = "run_retrying"
     RUN_PAUSED = "run_paused"
     RUN_RESUMED = "run_resumed"
     CLAIM_WRITTEN = "claim_written"
@@ -77,8 +80,11 @@ EVENT_BOUNDARY_MAP: dict[EventType, Subsystem] = {
     EventType.STAGE_DEGRADED: Subsystem.SPINE,
     EventType.STAGE_AWAITING_HUMAN: Subsystem.SPINE,
     EventType.STAGE_WAITING: Subsystem.SPINE,
+    EventType.STAGE_RETRYING: Subsystem.SPINE,
+    EventType.STAGE_TIMED_OUT: Subsystem.SPINE,
     EventType.STEP_COMMITTED: Subsystem.SPINE,
     EventType.RUN_WAITING: Subsystem.SPINE,
+    EventType.RUN_RETRYING: Subsystem.SPINE,
     EventType.RUN_PAUSED: Subsystem.SPINE,
     EventType.RUN_RESUMED: Subsystem.SPINE,
     EventType.TIMER_SET: Subsystem.SPINE,

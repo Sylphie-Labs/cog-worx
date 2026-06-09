@@ -13,12 +13,29 @@ from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
 from cogworx.claims.provenance import Artifact
+from cogworx.loop.retry import RetryPolicy
 from cogworx.loop.stage import Stage
 from cogworx.substrate.journal import RunState
 
 
 class StageGraphError(Exception):
     """Raised when a ``StageGraph`` would violate a structural invariant."""
+
+
+def _edges(stage: Stage) -> tuple[str, ...]:
+    """Every static edge out of a stage: its declared ``transitions`` PLUS the implicit
+    retry-exhaustion edge ``retry_policy.exhausted_to`` (S8 degraded-onward routes there). Treating
+    exhaustion as a real edge keeps the dangling-edge + reachability + termination checks honest for
+    a stage whose only path to its fallback is retry exhaustion.
+
+    This is the SINGLE source of truth for a stage's structural edge set, consumed by both graph
+    validation (here) and the resume fingerprint (``StageGraph.edges_from`` ->
+    ``pathway_fingerprint``) so an ``exhausted_to`` edit can never be a structural blind spot (S6).
+    """
+    policy: RetryPolicy | None = getattr(stage, "retry_policy", None)
+    if policy is not None and policy.exhausted_to is not None:
+        return (*stage.transitions, policy.exhausted_to)
+    return stage.transitions
 
 
 class StageGraph:
@@ -38,7 +55,7 @@ class StageGraph:
             raise StageGraphError(f"entry {entry!r} is not a known stage")
 
         for stage in stages:
-            for target in stage.transitions:
+            for target in _edges(stage):
                 if target not in by_name:
                     raise StageGraphError(
                         f"stage {stage.name!r} transitions to unknown stage {target!r}"
@@ -63,7 +80,7 @@ class StageGraph:
         queue: deque[str] = deque([entry])
         while queue:
             name = queue.popleft()
-            for target in by_name[name].transitions:
+            for target in _edges(by_name[name]):
                 if target not in seen:
                     seen.add(target)
                     queue.append(target)
@@ -82,7 +99,16 @@ class StageGraph:
         return self._stages[name]
 
     def transitions_from(self, name: str) -> tuple[str, ...]:
+        """The stage's DECLARED transitions only (the ``Done``/``Transition`` routing edges)."""
         return self.get(name).transitions
+
+    def edges_from(self, name: str) -> tuple[str, ...]:
+        """The stage's FULL structural edge set: declared transitions PLUS the retry-exhaustion edge
+        (``retry_policy.exhausted_to``). This is the same edge set graph validation/reachability
+        trusts (``_edges``) and is what the resume fingerprint canonicalises over — so an in-place
+        ``exhausted_to`` edit changes the structural fingerprint (S6), unlike ``transitions_from``.
+        """
+        return _edges(self.get(name))
 
     def is_terminal(self, name: str) -> bool:
         return self.get(name).transitions == ()

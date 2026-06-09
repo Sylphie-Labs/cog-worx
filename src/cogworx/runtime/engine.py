@@ -37,15 +37,18 @@ commit.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
 
 from cogworx.capability.registry import Registry
-from cogworx.claims.provenance import Artifact
+from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.coordination.events import Event, EventType, Subsystem, validate_event_boundary
 from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayRegistry, pathway_fingerprint
+from cogworx.loop.result import Degraded
+from cogworx.loop.retry import DEFAULT_RETRY_POLICY, RetryPolicy
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import Model
 from cogworx.runtime.context import RunContext
@@ -124,6 +127,27 @@ class Engine:
         validate_event_boundary(event)
         ctx.emit(event)
 
+    def _exhaustion_degraded(
+        self, exc: BaseException, attempt: int, to: str | None
+    ) -> Degraded:
+        """Build the first-class exhaustion ``Degraded`` (S8) committed at ``seq`` on retry-exhaust.
+
+        The output artifact carries provenance with ``source="system"`` — a deterministic,
+        zero-model engine/control-plane event, NOT model cognition (S1 reserves
+        "reflection"/"inference" for model-heavy work; S5: every write provenanced AND the source
+        honest). ``to`` is the policy ``exhausted_to`` (``None`` => the run terminates DEGRADED).
+        """
+        artifact = Artifact(
+            kind="retry-exhausted",
+            produced_by="engine",
+            provenance=Provenance(
+                source="system", confidence=1.0, recorded_at=self._clock()
+            ),
+            data={"failure_class": type(exc).__name__, "attempts": attempt},
+        )
+        reason = f"retry exhausted after {attempt} attempts: {type(exc).__name__}"
+        return Degraded(reason=reason, output=artifact, to=to)
+
     async def run(
         self,
         *,
@@ -170,10 +194,11 @@ class Engine:
             RunStatus.DEGRADED,
             RunStatus.FAILED,
             RunStatus.WAITING,
+            RunStatus.RETRYING,
             RunStatus.PAUSED,
         ):
-            # WAITING/PAUSED are parked, not terminal: a plain crash-resume returns them as-is. Only
-            # the sweeper (fire_timer) or unpause advance a parked run (S6).
+            # WAITING/RETRYING/PAUSED are parked, not terminal: a plain crash-resume returns them
+            # as-is. Only the sweeper (fire_timer) or unpause advance a parked run (S6).
             return state
         graph = self._pathways.get(state.pathway_id, state.pathway_version)
         rehydrated_fingerprint = pathway_fingerprint(graph)
@@ -215,22 +240,35 @@ class Engine:
         return state, graph, ctx
 
     async def fire_timer(self, run_id: str) -> RunState:
-        """Re-drive a WAITING run after the sweeper leased its due timer (S6) — no commits of its
-        own (the ``Sweeper`` calls this once a timer is due).
+        """Re-drive a parked (WAITING **or** RETRYING) run after the sweeper leased its due timer
+        (S6) — no commits of its own (the ``Sweeper`` calls this once a timer is due).
 
-        The pre-drive action is a CAS WAITING->RUNNING — the run-level mutual-exclusion primitive
-        that makes this RUN (not merely its commits) exactly-once: a stale-lease re-delivery, a
-        fire on an already-terminal run, or a fire racing a pause/another sweeper LOSES the CAS and
-        is a no-op (the loser must NOT execute the uncommitted, model-bearing ``poll`` — that is the
-        F1 double-call fix). Only the winner drives; ``_drive`` then replays the committed prefix
-        (including the ``Wait`` step, which advances past its now-cancelled timer) WITHOUT
-        re-calling the model (at-least-once fire / exactly-once advance).
+        The pre-drive action is a CAS ``<parked status> -> RUNNING`` — the run-level
+        mutual-exclusion primitive that makes this RUN (not its commits alone) exactly-once: a
+        stale-lease
+        re-delivery, a fire on an already-terminal run, or a fire racing a pause/another sweeper
+        LOSES the CAS and is a no-op (the loser must NOT execute the uncommitted, model-bearing
+        stage — the F1 / R7 double-execution fix). The CAS reads the run's CURRENT parked status
+        first (a WAITING wake and a RETRYING re-attempt share this path), so the expect matches the
+        run rather than hardcoding WAITING.
+
+        On winning, the run's timer(s) are cancelled (``cancel_timers_for_run``): the timer has
+        served its purpose, and dropping it avoids a stale retry timer re-firing the same ``seq``.
+        Then ``_drive`` walks from the entry: a WAITING re-drive replays the committed ``Wait`` and
+        advances past it (its own ``cancel_timer`` is now a redundant no-op — behaviour-equivalent
+        to 1.1); a RETRYING re-drive finds ``read_step(seq) is None`` and RE-ATTEMPTS the stage at
+        the same frozen ``seq`` with the journaled attempt count. No model re-call on a committed
+        prefix (at-least-once fire / exactly-once advance).
         """
         state, graph, ctx = await self._rehydrate(run_id)
+        parked = state.status
+        if parked not in (RunStatus.WAITING, RunStatus.RETRYING):
+            return state
         if not await self._journal.compare_and_set_run_status(
-            run_id, expect=RunStatus.WAITING, new=RunStatus.RUNNING
+            run_id, expect=parked, new=RunStatus.RUNNING
         ):
             return state
+        await self._journal.cancel_timers_for_run(run_id)
         return await self._drive(ctx, graph, current=graph.entry)
 
     async def pause(self, run_id: str) -> bool:
@@ -315,7 +353,53 @@ class Engine:
             else:
                 self._emit(ctx, EventType.STAGE_ENTERED, run_id=run_id, session_id=session_id)
                 stage = graph.get(current)
-                result = await stage.run(ctx)
+                policy: RetryPolicy = getattr(stage, "retry_policy", DEFAULT_RETRY_POLICY)
+                # Classification is STRUCTURAL (S9): only a timeout or a type in the dev-authored
+                # ``retryable`` allowlist enters the retry machine; anything else is a BUG and
+                # propagates loud (fail-loud) — uncaught here, no increment, no timer, no FAILED.
+                retryable: tuple[type[BaseException], ...] = (TimeoutError, *policy.retryable)
+                try:
+                    if policy.timeout is not None:
+                        result = await asyncio.wait_for(
+                            stage.run(ctx), policy.timeout.total_seconds()
+                        )
+                    else:
+                        result = await stage.run(ctx)
+                except retryable as exc:
+                    # A FAILED attempt commits NOTHING — only the durable attempt counter climbs at
+                    # a frozen ``seq`` (the (run_id, step_index) exactly-once invariant stays
+                    # pristine). The increment is the authority for exhaustion across a crash (S6).
+                    attempt = await self._journal.increment_attempt(run_id, seq)
+                    if attempt >= policy.max_attempts:
+                        if policy.on_exhausted == "fail":
+                            await self._journal.set_run_status(run_id, RunStatus.FAILED)
+                            await self._journal.cancel_timers_for_run(run_id)
+                            self._emit(
+                                ctx, EventType.RUN_FAILED, run_id=run_id, session_id=session_id
+                            )
+                            break
+                        # Degraded-onward (S8 default): synthesize a provenance-bearing exhaustion
+                        # artifact (source="system" — a deterministic engine/control event, NOT a
+                        # model inference) and commit it at ``seq``; the existing ``degraded`` match
+                        # arm then routes onward / terminates.
+                        result = self._exhaustion_degraded(exc, attempt, policy.exhausted_to)
+                    else:
+                        await self._journal.set_timer(
+                            Timer(
+                                run_id=run_id,
+                                timer_id=f"{run_id}:{seq}:retry:{attempt}",
+                                wake_at=self._clock() + policy.backoff(attempt),
+                                payload={"action": "retry", "step_index": seq},
+                            )
+                        )
+                        await self._journal.set_run_status(run_id, RunStatus.RETRYING)
+                        self._emit(
+                            ctx, EventType.STAGE_RETRYING, run_id=run_id, session_id=session_id
+                        )
+                        self._emit(
+                            ctx, EventType.RUN_RETRYING, run_id=run_id, session_id=session_id
+                        )
+                        break
                 record = StepRecord(
                     run_id=run_id,
                     step_index=seq,

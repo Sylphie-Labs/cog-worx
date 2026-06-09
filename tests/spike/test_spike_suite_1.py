@@ -700,6 +700,12 @@ class _CrashAfterStageVisitJournal:
     ) -> bool:
         return await self._inner.compare_and_set_run_status(run_id, expect=expect, new=new)
 
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.increment_attempt(run_id, step_index)
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.read_attempt(run_id, step_index)
+
 
 async def test_criterion_4_cyclic_per_visit_durability_cold_resume(
     settings: SubstrateSettings,

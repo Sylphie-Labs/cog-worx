@@ -42,6 +42,8 @@ class InMemoryJournal:
     def __init__(self) -> None:
         self._runs: dict[str, _RunLog] = {}
         self._timers: dict[str, Timer] = {}
+        # The FAILURE counter keyed (run_id, step_index) — mirrors the adapter's step_attempts row.
+        self._attempts: dict[tuple[str, int], int] = {}
 
     async def start_run(
         self,
@@ -141,6 +143,17 @@ class InMemoryJournal:
     async def get_run_status(self, run_id: str) -> RunStatus | None:
         log = self._runs.get(run_id)
         return log.status if log is not None else None
+
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        # Atomic under asyncio (no await between read and write) — mirrors the adapter's single
+        # INSERT … ON CONFLICT DO UPDATE attempt = attempt + 1 RETURNING attempt.
+        key = (run_id, step_index)
+        count = self._attempts.get(key, 0) + 1
+        self._attempts[key] = count
+        return count
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        return self._attempts.get((run_id, step_index), 0)
 
 
 class InMemoryGraphStore:

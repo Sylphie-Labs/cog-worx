@@ -13,7 +13,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 EpistemicType = Literal["observation", "inference", "confirmed"]
-ProvenanceSource = Literal["human", "sensor", "tool", "extraction", "reflection", "inference"]
+# "system" = engine/control-plane-originated, zero-model (exhaustion degradations, timeouts,
+# ceiling-fails). Distinct from "reflection"/"inference"/"extraction", which S1 reserves for
+# model-heavy cognition — a deterministic control event must not borrow that epistemic weight.
+ProvenanceSource = Literal[
+    "human", "sensor", "tool", "extraction", "reflection", "inference", "system"
+]
 
 
 class Provenance(BaseModel):

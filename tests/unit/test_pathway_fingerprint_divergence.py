@@ -19,7 +19,7 @@ the per-step guard was a dead check — disabling it left every test green).
 from __future__ import annotations
 
 import contextlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -27,6 +27,7 @@ from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayRegistry, pathway_fingerprint
 from cogworx.loop.result import Done, StageResult, Transition
+from cogworx.loop.retry import RetryPolicy
 from cogworx.loop.stage import StageContext
 from cogworx.runtime.engine import Engine, ResumeError
 from cogworx.substrate.journal import Journal, StepRecord
@@ -100,6 +101,42 @@ def _rewired_graph() -> StageGraph:
     return StageGraph([_IntakeStage(), _RewiredMiddleStage(), _CloseStage()], entry="intake")
 
 
+# A graph identical to the original in stage names AND declared transitions, differing ONLY in
+# ``middle``'s ``retry_policy.exhausted_to`` (``None`` in the original, ``"close"`` here). The
+# exhaustion route is a REAL structural edge the engine validates + routes on (``_edges`` /
+# ``StageGraph.edges_from``), so an in-place edit of it under the same ``(pathway_id, version)`` is
+# a structural divergence the fingerprint must catch — the blind spot the red-team flagged when the
+# fingerprint canonicalised over ``transitions_from`` (which omits ``exhausted_to``) instead of
+# ``edges_from``.
+
+
+def _retry_policy(exhausted_to: str | None) -> RetryPolicy:
+    return RetryPolicy(
+        max_attempts=1,
+        backoff=lambda n: timedelta(seconds=n),
+        retryable=(),
+        exhausted_to=exhausted_to,
+    )
+
+
+class _ExhaustingMiddleStage:
+    name: str = "middle"
+    transitions: tuple[str, ...] = ("close",)
+
+    def __init__(self, *, exhausted_to: str | None) -> None:
+        self.retry_policy = _retry_policy(exhausted_to)
+
+    async def run(self, ctx: StageContext) -> StageResult:
+        return Transition(to="close", output=_artifact("middle"))
+
+
+def _exhausting_graph(*, exhausted_to: str | None) -> StageGraph:
+    return StageGraph(
+        [_IntakeStage(), _ExhaustingMiddleStage(exhausted_to=exhausted_to), _CloseStage()],
+        entry="intake",
+    )
+
+
 def _build_engine(journal: Journal, model: ReplayModel, pathways: PathwayRegistry) -> Engine:
     return Engine(
         model=model,
@@ -121,6 +158,20 @@ def test_fingerprint_distinguishes_rewired_same_name_graph() -> None:
     them; this is what catches an in-place rewire under the same ``(pathway_id, version)``.
     """
     assert pathway_fingerprint(_original_graph()) != pathway_fingerprint(_rewired_graph())
+
+
+def test_fingerprint_distinguishes_exhausted_to_edit() -> None:
+    """The fingerprint differs when only ``retry_policy.exhausted_to`` changes (FINDING 1).
+
+    Same stage names, same DECLARED transitions — the two graphs differ ONLY in ``middle``'s
+    exhaustion route (``None`` vs ``"close"``). Because the fingerprint canonicalises over
+    ``edges_from`` (which includes ``exhausted_to``), not ``transitions_from`` (which omits it), it
+    must SPLIT them. Mutation evidence: canonicalising over ``transitions_from`` makes these two
+    fingerprints identical and this test fails — the exact red-team blind spot.
+    """
+    assert pathway_fingerprint(
+        _exhausting_graph(exhausted_to=None)
+    ) != pathway_fingerprint(_exhausting_graph(exhausted_to="close"))
 
 
 def test_fingerprint_is_deterministic_across_rebuilds() -> None:
@@ -168,6 +219,50 @@ async def test_resume_refuses_structurally_diverged_pathway() -> None:
 
     with pytest.raises(ResumeError, match="pathway structure changed"):
         await engine_b.resume("div-1")
+
+
+async def test_resume_refuses_in_place_exhausted_to_edit() -> None:
+    """Resume against an in-place ``exhausted_to`` edit at the same ``(id, version)`` raises (S6).
+
+    Engine A drives the ``exhausted_to=None`` graph and crashes after ``middle`` durably commits.
+    Engine B resumes with a registry whose SAME ``(pathway_id, version)`` now maps to the graph
+    whose ``middle.retry_policy.exhausted_to`` is ``"close"`` — same stage names, same declared
+    transitions, only the exhaustion route differs. The stored fingerprint no longer matches the
+    rehydrated graph's, so ``resume`` refuses with ``ResumeError`` BEFORE re-driving — an exhaustion
+    route can no longer slip past the resume divergence guard (FINDING 1, the pod-1.0D guard).
+
+    Mutation evidence: canonicalise the fingerprint over ``transitions_from`` (dropping
+    ``exhausted_to``) and this test fails — the two graphs fingerprint identically and resume
+    proceeds silently against the wrong exhaustion route.
+    """
+    shared_journal = InMemoryJournal()
+    original_pathways = PathwayRegistry()
+    original_pathways.register(_PATHWAY_ID, _exhausting_graph(exhausted_to=None))
+
+    crash_journal = CrashAfterStepJournal(inner=shared_journal, crash_after_stage="middle")
+    engine_a = _build_engine(crash_journal, ReplayModel([]), original_pathways)
+    crashed = False
+    try:
+        await engine_a.run(
+            run_id="exh-1",
+            session_id="exh-sess",
+            pathway_id=_PATHWAY_ID,
+            initial=_initial(),
+        )
+    except SimulatedCrash:
+        crashed = True
+    assert crashed
+
+    mid = await shared_journal.load_run("exh-1")
+    assert mid is not None
+    assert mid.pathway_fingerprint == pathway_fingerprint(_exhausting_graph(exhausted_to=None))
+
+    edited_pathways = PathwayRegistry()
+    edited_pathways.register(_PATHWAY_ID, _exhausting_graph(exhausted_to="close"))
+    engine_b = _build_engine(shared_journal, ReplayModel([]), edited_pathways)
+
+    with pytest.raises(ResumeError, match="pathway structure changed"):
+        await engine_b.resume("exh-1")
 
 
 async def test_resume_succeeds_when_fingerprint_matches() -> None:

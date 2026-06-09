@@ -30,6 +30,15 @@ SET status = new WHERE run_id = id AND status = expect RETURNING`` whose row loc
 winning driver even across concurrent sweepers. It is what makes a RUN exactly-once (not merely its
 commits), so two racers cannot both execute an uncommitted, model-bearing stage.
 
+``cogworx_step_attempts`` is the durable retry FAILURE counter keyed ``(run_id, step_index)``:
+``increment_attempt`` is a single atomic ``INSERT … ON CONFLICT (run_id, step_index) DO UPDATE
+attempt = attempt + 1 RETURNING attempt``, so N concurrent callers row-lock the conflicting row and
+bump serially, each getting a DISTINCT value (no lost update). The count is incremented ONLY on a
+retryable failure/timeout — a failed attempt commits no step, so the count alone distinguishes a
+retry (no committed step at a frozen ``seq``) from a wait (a committed ``Wait`` at ``seq``). It
+survives a crash (never resets, never over-counts), so a cold resume re-attempts with the journaled
+count, not a reset.
+
 Hypertable-vs-exactly-once trade-off: a TimescaleDB hypertable requires the time partitioning column
 to appear in every UNIQUE constraint. A UNIQUE on ``(run_id, step_index, committed_at)`` would NOT
 give exactly-once — a replay computes a fresh ``committed_at`` and the same position would slip in
@@ -42,7 +51,7 @@ metrics hypertable) without weakening this guarantee.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
@@ -88,6 +97,15 @@ CREATE TABLE IF NOT EXISTS cogworx_timers (
 
 CREATE INDEX IF NOT EXISTS cogworx_timers_wake ON cogworx_timers (wake_at);
 CREATE INDEX IF NOT EXISTS cogworx_timers_run ON cogworx_timers (run_id);
+
+CREATE TABLE IF NOT EXISTS cogworx_step_attempts (
+    run_id text NOT NULL,
+    step_index bigint NOT NULL,
+    attempt integer NOT NULL,
+    last_failure_class text,
+    last_failed_at timestamptz,
+    CONSTRAINT cogworx_step_attempts_pk PRIMARY KEY (run_id, step_index)
+);
 """
 
 
@@ -270,13 +288,52 @@ class TimescaleJournal:
             return None
         return RunStatus(row[0])
 
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        # The atomic FAILURE counter: a single INSERT … ON CONFLICT DO UPDATE attempt = attempt + 1
+        # RETURNING attempt. Under READ COMMITTED the conflicting row is locked per caller, so N
+        # concurrent increments serialize and each receives a DISTINCT value (no lost update). The
+        # first failure inserts attempt = 1. last_failure_class/last_failed_at are observability —
+        # the control signal is the run status + the journal, not these columns.
+        conn = await self._connection()
+        cursor = await conn.execute(
+            "INSERT INTO cogworx_step_attempts "
+            "(run_id, step_index, attempt, last_failure_class, last_failed_at) "
+            "VALUES (%s, %s, 1, %s, %s) "
+            "ON CONFLICT (run_id, step_index) DO UPDATE SET "
+            "attempt = cogworx_step_attempts.attempt + 1, "
+            "last_failure_class = EXCLUDED.last_failure_class, "
+            "last_failed_at = EXCLUDED.last_failed_at "
+            "RETURNING attempt",
+            (run_id, step_index, None, datetime.now(UTC)),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"increment_attempt did not RETURN a count for ({run_id!r}, {step_index})"
+            )
+        attempt: int = row[0]
+        return attempt
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        conn = await self._connection()
+        cursor = await conn.execute(
+            "SELECT attempt FROM cogworx_step_attempts WHERE run_id = %s AND step_index = %s",
+            (run_id, step_index),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return 0
+        count: int = row[0]
+        return count
+
     async def reset(self) -> None:
         # Test-only ephemeral isolation: DROP + recreate (not TRUNCATE) so the per-case schema is
         # always current — robust to schema evolution across phases. Never called in production.
         conn = await self._connection()
         await conn.execute(
             "DROP TABLE IF EXISTS "
-            "cogworx_journal_steps, cogworx_journal_runs, cogworx_timers CASCADE"
+            "cogworx_journal_steps, cogworx_journal_runs, cogworx_timers, "
+            "cogworx_step_attempts CASCADE"
         )
         await conn.execute(_SCHEMA)
 

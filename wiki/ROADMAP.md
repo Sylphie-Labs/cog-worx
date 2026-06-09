@@ -60,13 +60,22 @@ The configurable control loop everything else attaches to.
 > recovers a dead `RUNNING` run — §3/S7). **Next:** 1.2 retries+FSM timeouts · 1.3 await-human resume ·
 > 1.4 fire-and-forget.
 
+> **Pod 1.2 (retries + per-stage FSM timeouts) — DONE** ✅ (CANON-COMPLIANT, red-team-hardened): a
+> declarative per-stage **`RetryPolicy`** + durable retries — a **failed attempt commits nothing** (only
+> a success-class result lands at `seq`, so exactly-once stays pristine), a per-`(run_id, step_index)`
+> **attempt counter** survives crashes, backoff reuses the 1.1 timer/sweeper/CAS, and a distinct
+> **`RETRYING`** status. **In-process timeouts** (`asyncio.wait_for`); exhaustion **degrades-onward** by
+> default (policy-overridable to FAILED); non-retryable exceptions **propagate loud**. Red-team caught +
+> fixed a HIGH: the new `exhausted_to` graph edge is now folded into the `pathway_fingerprint` so the S6
+> resume divergence guard isn't blind to it. **Next:** 1.3 await-human resume · 1.4 fire-and-forget.
+
 - [ ] **Configurable graph loop** — DAG-of-stages + FSM-per-stage; **dev-authored pathways, graph by
       default**, not a fixed list. *(graph + dev-authored pathway registry done in 1.0; per-stage FSM
-      timeouts in 1.2)*
+      retry/timeout transitions done in 1.2)*
 - [ ] **Durability** — journaled resume, durable timers (`wake_at` + sweeper), **retries**,
       **pause/resume**, **fire-and-forget-with-feedback**, all on the Timescale journal (S6).
       *(cold/cyclic journaled resume done in 1.0; durable timers + sweeper + pause/resume done in 1.1;
-      retries = pod 1.2, fire-and-forget = pod 1.4)*
+      retries + per-stage timeouts done in 1.2; fire-and-forget = pod 1.4)*
 - [ ] **First-class transitions** — `await-human` and `degraded` (S8). *(both are first-class results;
       `Wait` added as a 5th first-class result in 1.1; durable await-human resume is pod 1.3)*
 - [ ] **⛓ Spike** — durability/chaos test: kill mid-step → resume → exactly-once, **no model re-call**.

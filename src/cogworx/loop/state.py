@@ -3,9 +3,12 @@
 The loop is a graph of stages by default; each stage and each run carries an explicit status.
 ``await-human`` and ``degraded`` are first-class transitions, so HITL_WAIT/AWAITING_HUMAN and
 DEGRADED are first-class states. ``WAITING`` (parked on a durable timer, advanced only by the
-sweeper) and ``PAUSED`` (parked manually, advanced only by ``unpause``) are the two NON-terminal
+sweeper), ``RETRYING`` (parked on a durable retry timer after a retryable failure, advanced only by
+the sweeper), and ``PAUSED`` (parked manually, advanced only by ``unpause``) are the NON-terminal
 parked states a plain crash-resume must return as-is (S6) — only the sweeper / ``unpause`` advance
-them.
+them. ``StageStatus`` stays UN-persisted: it labels retry/timeout EVENTS only; the FSM is derived
+from ``{committed step at seq?}`` and ``{attempt count}``, not materialized (S6 — durable iff
+resume needs it).
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ class StageStatus(StrEnum):
     DEGRADED = "degraded"
     WAITING = "waiting"
     PAUSED = "paused"
+    RETRYING = "retrying"
+    TIMED_OUT = "timed_out"
 
 
 class RunStatus(StrEnum):
@@ -33,6 +38,7 @@ class RunStatus(StrEnum):
     DEGRADED = "degraded"
     WAITING = "waiting"
     PAUSED = "paused"
+    RETRYING = "retrying"
 
 
 __all__ = [

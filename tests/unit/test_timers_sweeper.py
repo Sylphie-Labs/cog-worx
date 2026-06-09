@@ -264,6 +264,12 @@ class SetTimerSpyJournal:
     async def get_run_status(self, run_id: str) -> RunStatus | None:
         return await self._inner.get_run_status(run_id)
 
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.increment_attempt(run_id, step_index)
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.read_attempt(run_id, step_index)
+
 
 class PauseAfterStepJournal:
     """A ``Journal`` wrapper that flips the run to PAUSED right after a chosen stage commits.
@@ -333,6 +339,12 @@ class PauseAfterStepJournal:
 
     async def get_run_status(self, run_id: str) -> RunStatus | None:
         return await self._inner.get_run_status(run_id)
+
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.increment_attempt(run_id, step_index)
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.read_attempt(run_id, step_index)
 
 
 # --------------------------------------------------------------------------------------------------

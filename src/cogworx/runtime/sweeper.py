@@ -15,6 +15,15 @@ every ``lease_ttl`` and the ``fire_timer`` CAS (WAITING->RUNNING) no-ops on it (
 not WAITING) — harmless churn, never a model re-call. An optional future optimization is to skip
 firing timers whose run is PAUSED, or cancel-on-pause + re-arm-on-unpause.
 
+Carry-forward (orphan retry-timer on a crashed-RUNNING strand — FINDING 2, LOW): a ``fire_timer``
+winner that crashes AFTER the CAS->RUNNING but BEFORE ``cancel_timers_for_run`` leaves the run
+stranded RUNNING with its retry timer still armed. The sweeper reclaims the stale lease every
+``lease_ttl`` and the CAS no-ops (the run is RUNNING, not WAITING|RETRYING) — no re-execution, no
+over-count — but the orphan timer RE-FIRES forever until an explicit ``resume``. This is the same
+family as the deferred crashed-RUNNING strand (it needs the run-lease + stranded-RUNNING reaper of
+the future ops pod), made self-perpetuating by the retry timer. No behavior change here; recorded as
+part of that deferred ops-pod carry-forward.
+
 Concurrency: the run-status CAS in the engine (``compare_and_set_run_status``) serializes drivers,
 so even with MANY sweepers racing the same due run, exactly one wins the WAITING->RUNNING flip and
 executes — exactly-once EXECUTION (not merely exactly-once commit; the model is called once). What

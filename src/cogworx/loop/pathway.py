@@ -24,14 +24,20 @@ def pathway_fingerprint(graph: StageGraph) -> str:
     """A deterministic hash of a ``StageGraph``'s STRUCTURE (CANON S6 — resume integrity).
 
     Canonicalises the graph as ``entry`` plus, for every stage sorted by name, the stage's name and
-    its transitions (themselves sorted), then ``sha256``-es that canonical string and returns the
-    leading hex digits. Deterministic across processes — no clock, no ``random``, no object identity
-    — so a cold resume in a fresh process can compare the rehydrated graph's fingerprint against the
-    one stored at ``start_run`` time.
+    its FULL structural edge set via ``graph.edges_from`` (declared transitions PLUS the
+    retry-exhaustion edge ``retry_policy.exhausted_to`` — the same edges graph validation trusts),
+    themselves sorted, then ``sha256``-es that canonical string and returns the leading hex digits.
+    Canonicalising over ``edges_from`` (not ``transitions_from``) closes the blind spot where an
+    in-place ``exhausted_to`` edit — a real structural rewire the engine routes on — left the
+    fingerprint unchanged. Deterministic across processes — no clock, no ``random``, no object
+    identity — so a cold resume in a fresh process can compare the rehydrated graph's fingerprint
+    against the one stored at ``start_run`` time. A graph with NO ``exhausted_to`` edges
+    fingerprints identically to before (``edges_from`` == ``transitions_from`` there), so
+    pre-existing runs/fingerprints are unaffected.
 
     What it CATCHES: STRUCTURAL divergence under a resumed run — a stage added, removed, renamed, or
-    rewired (transitions changed) — even when the ``(pathway_id, version)`` pointer is unchanged
-    (an in-place edit that forgot to bump the version).
+    rewired (transitions OR ``exhausted_to`` changed) — even when the ``(pathway_id, version)``
+    pointer is unchanged (an in-place edit that forgot to bump the version).
 
     What it does NOT catch: PURELY BEHAVIOURAL changes — same stages, same transitions, but a
     stage's ``run()`` logic was edited. The structure is byte-identical, so the fingerprint matches.
@@ -41,8 +47,8 @@ def pathway_fingerprint(graph: StageGraph) -> str:
     """
     parts: list[str] = [f"entry={graph.entry}"]
     for name in sorted(graph.names()):
-        transitions = ",".join(sorted(graph.transitions_from(name)))
-        parts.append(f"{name}->[{transitions}]")
+        edges = ",".join(sorted(graph.edges_from(name)))
+        parts.append(f"{name}->[{edges}]")
     canonical = "|".join(parts)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:_FINGERPRINT_HEX_LEN]
 

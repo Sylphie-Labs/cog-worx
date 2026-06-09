@@ -128,6 +128,12 @@ class CommitSpyJournal:
     async def get_run_status(self, run_id: str) -> RunStatus | None:
         return await self._inner.get_run_status(run_id)
 
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.increment_attempt(run_id, step_index)
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.read_attempt(run_id, step_index)
+
 
 async def assert_no_model_on_write_path(
     *,
@@ -294,6 +300,12 @@ class CrashAfterStepJournal:
 
     async def get_run_status(self, run_id: str) -> RunStatus | None:
         return await self._inner.get_run_status(run_id)
+
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.increment_attempt(run_id, step_index)
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        return await self._inner.read_attempt(run_id, step_index)
 
 
 _TERMINAL_STATUSES = (

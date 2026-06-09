@@ -161,6 +161,28 @@ class Journal(Protocol):
         """Cheap AUTHORITATIVE status poll (no step fan-out) for the cooperative pause check."""
         ...
 
+    async def increment_attempt(self, run_id: str, step_index: int) -> int:
+        """Atomically bump the FAILURE counter for ``(run_id, step_index)``; return the NEW count.
+
+        Keyed per-``(run_id, step_index)`` and called ONLY on a retryable failure (or timeout) — a
+        successful (re-)attempt never increments. The first failure returns 1. Backed by a single
+        ``INSERT … VALUES (…, 1, …) ON CONFLICT (run_id, step_index) DO UPDATE SET attempt =
+        attempt + 1 … RETURNING attempt`` so N concurrent callers row-lock the conflicting row and
+        each gets a DISTINCT value (no lost update) — the durable, exactly-once attempt count that
+        survives a crash (never resets, never over-counts; a failed attempt commits no step, so the
+        count alone distinguishes a retry from a wait at a frozen ``seq``).
+        """
+        ...
+
+    async def read_attempt(self, run_id: str, step_index: int) -> int:
+        """Read the durable FAILURE count for ``(run_id, step_index)`` (0 if never incremented).
+
+        The authority a re-driven stage reads to know how many prior attempts failed — so a cold
+        resume on a fresh stage instance fails/succeeds correctly off the journaled count, never an
+        in-process counter (S6).
+        """
+        ...
+
 
 __all__ = [
     "Journal",
