@@ -97,19 +97,28 @@ The configurable control loop everything else attaches to.
 > reaper ops pod). **Phase-1 spine features are all landed; next: the comprehensive Phase-1 gate
 > on the live substrate, then Phase 2.**
 
-- [ ] **Configurable graph loop** — DAG-of-stages + FSM-per-stage; **dev-authored pathways, graph by
+- [x] **Configurable graph loop** — DAG-of-stages + FSM-per-stage; **dev-authored pathways, graph by
       default**, not a fixed list. *(graph + dev-authored pathway registry done in 1.0; per-stage FSM
       retry/timeout transitions done in 1.2)*
-- [ ] **Durability** — journaled resume, durable timers (`wake_at` + sweeper), **retries**,
+- [x] **Durability** — journaled resume, durable timers (`wake_at` + sweeper), **retries**,
       **pause/resume**, **fire-and-forget-with-feedback**, all on the Timescale journal (S6).
       *(cold/cyclic journaled resume done in 1.0; durable timers + sweeper + pause/resume done in 1.1;
       retries + per-stage timeouts done in 1.2; durable await-human resume done in 1.3;
       fire-and-forget with feedback done in 1.4)*
-- [ ] **First-class transitions** — `await-human` and `degraded` (S8). *(both are first-class results;
+- [x] **First-class transitions** — `await-human` and `degraded` (S8). *(both are first-class results;
       `Wait` added as a 5th first-class result in 1.1; durable await-human resume done in 1.3 —
       `AwaitHuman.to` + `provide_human_input`)*
-- [ ] **⛓ Spike** — durability/chaos test: kill mid-step → resume → exactly-once, **no model re-call**.
-      *(core PASSED on live substrate — cold + cyclic; the full gate spans the operation pods)*
+- [x] **⛓ GATE — Spike** — durability/chaos test: kill mid-step → resume → exactly-once, **no model
+      re-call**. ✅ **PASSED on the live substrate, end-to-end across the operation pods**
+      (`tests/integration/test_phase1_gate_live.py`): G1 Wait → durable timer row → fresh-engine
+      Sweeper cold-wake → COMPLETED · G2 pause beats the fired timer (CAS loses), unpause advances
+      past the committed `Wait` · G3 two durable retries across fresh engines, success at the frozen
+      `seq`, failed attempts commit nothing · G4 backgrounded crash → `RUN_CRASHED` feedback → cold
+      resume COMPLETED — every engine on `ReplayModel([])`, so any model call anywhere fails loud
+      (S6/S1 at the live tier). Plus Spike Suite 1 (1.0 core) + the live primitive suites
+      (timer-lease, attempt-counter, human-input first-answer-wins). **Phase 1 is COMPLETE; Phase 2
+      is unblocked.** Cross-instance run-lease/reaper + event dedup remain the documented ops-pod
+      carry-forwards (not Phase-1 gaps).
 
 ---
 
