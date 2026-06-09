@@ -28,7 +28,7 @@ otlp = ["opentelemetry-exporter-otlp-proto-http>=1.42.1"]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.8.0",
+    "ruff>=0.15.16,<0.16",
     "mypy>=1.13.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=1.4.0",

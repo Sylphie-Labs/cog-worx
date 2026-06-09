@@ -169,9 +169,9 @@ def test_fingerprint_distinguishes_exhausted_to_edit() -> None:
     must SPLIT them. Mutation evidence: canonicalising over ``transitions_from`` makes these two
     fingerprints identical and this test fails — the exact red-team blind spot.
     """
-    assert pathway_fingerprint(
-        _exhausting_graph(exhausted_to=None)
-    ) != pathway_fingerprint(_exhausting_graph(exhausted_to="close"))
+    assert pathway_fingerprint(_exhausting_graph(exhausted_to=None)) != pathway_fingerprint(
+        _exhausting_graph(exhausted_to="close")
+    )
 
 
 def test_fingerprint_is_deterministic_across_rebuilds() -> None:

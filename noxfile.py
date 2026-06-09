@@ -19,7 +19,7 @@ PYTHON_VERSIONS = ["3.13"]
 
 @nox.session(python=PYTHON_VERSIONS)
 def lint(session: nox.Session) -> None:
-    session.install("ruff>=0.8.0")
+    session.install("ruff>=0.15.16,<0.16")
     session.run("ruff", "check", "src", "tests")
     session.run("ruff", "format", "--check", "src", "tests")
 

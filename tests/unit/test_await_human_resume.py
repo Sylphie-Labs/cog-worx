@@ -287,16 +287,12 @@ class _RecordHumanInputSpyJournal:
     async def read_attempt(self, run_id: str, step_index: int) -> int:
         return await self._inner.read_attempt(run_id, step_index)
 
-    async def record_human_input(
-        self, run_id: str, step_index: int, answer: Artifact
-    ) -> None:
+    async def record_human_input(self, run_id: str, step_index: int, answer: Artifact) -> None:
         # Track calls BEFORE delegating so concurrent callers are both counted.
         self.record_calls.append(answer)
         await self._inner.record_human_input(run_id, step_index, answer)
 
-    async def read_human_input(
-        self, run_id: str, step_index: int
-    ) -> Artifact | None:
+    async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
 
 
@@ -386,14 +382,10 @@ class _CrashBeforeCASJournal:
     async def read_attempt(self, run_id: str, step_index: int) -> int:
         return await self._inner.read_attempt(run_id, step_index)
 
-    async def record_human_input(
-        self, run_id: str, step_index: int, answer: Artifact
-    ) -> None:
+    async def record_human_input(self, run_id: str, step_index: int, answer: Artifact) -> None:
         await self._inner.record_human_input(run_id, step_index, answer)
 
-    async def read_human_input(
-        self, run_id: str, step_index: int
-    ) -> Artifact | None:
+    async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
 
 
@@ -431,9 +423,7 @@ async def test_h1_approve_path_parks_then_advances_via_approved_branch() -> None
     assert ask_step.result.kind == "await-human"
 
     # --- Provide the approve answer ---
-    final = await engine.provide_human_input(
-        "h1-approve", payload={"decision": "approve"}
-    )
+    final = await engine.provide_human_input("h1-approve", payload={"decision": "approve"})
     assert final.status is RunStatus.COMPLETED
 
     # The answer is journaled with source="human".
@@ -478,9 +468,7 @@ async def test_h1b_reject_path_parks_then_advances_via_reject_branch() -> None:
     )
     assert state.status is RunStatus.AWAITING_HUMAN
 
-    final = await engine.provide_human_input(
-        "h1b-reject", payload={"decision": "reject"}
-    )
+    final = await engine.provide_human_input("h1b-reject", payload={"decision": "reject"})
     assert final.status is RunStatus.COMPLETED
 
     recorded = await journal.read_human_input("h1b-reject", _ASK_STEP_INDEX)
@@ -883,9 +871,7 @@ async def test_s6_resume_across_await_human_boundary_no_model_recall() -> None:
     mid = await shared.load_run("s6-human")
     assert mid is not None
     assert mid.status == RunStatus.RUNNING or mid.status == RunStatus.COMPLETED
-    decide_committed = next(
-        (s for s in mid.steps if s.stage_name == "decide"), None
-    )
+    decide_committed = next((s for s in mid.steps if s.stage_name == "decide"), None)
     assert decide_committed is not None, "decide must have committed before the crash"
 
     # Cold resume on FRESH engine + zero-response model: any re-call raises.
@@ -966,9 +952,7 @@ async def test_s9_branch_independent_of_model_text() -> None:
         f"S9 violation: committed path differed across model texts ({path_a} vs {path_b}); "
         "branch must be structural (data['decision']), never model-text-driven"
     )
-    assert path_a == ("ask", "decide", "approve"), (
-        f"Expected approve path, got {path_a!r}"
-    )
+    assert path_a == ("ask", "decide", "approve"), f"Expected approve path, got {path_a!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1004,7 @@ async def test_structural_await_human_to_must_be_in_transitions() -> None:
     ``transitions_from`` instead of ``edges_from`` — would falsely reject the engine's own
     exhaustion-degraded route.
     """
+
     class _BadAskStage:
         name: str = "ask"
         transitions: tuple[str, ...] = ("decide",)

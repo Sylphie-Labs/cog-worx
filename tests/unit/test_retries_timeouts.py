@@ -435,9 +435,7 @@ async def test_r3_exhaustion_degrades_onward_to_fallback() -> None:
 
     work = FailingWorkStage(
         fail_times=max_attempts + 5,  # always fails
-        retry_policy=_retryable_policy(
-            max_attempts=max_attempts, exhausted_to="fallback"
-        ),
+        retry_policy=_retryable_policy(max_attempts=max_attempts, exhausted_to="fallback"),
     )
     registry = PathwayRegistry()
     registry.register(
@@ -668,9 +666,7 @@ async def test_r5_in_process_timeout_counts_as_retryable_failure() -> None:
     assert timers[0].timer_id == "r5:1:retry:1"
 
     # Fire after backoff: the re-attempt reads attempts==1 (>= 1), so it returns immediately.
-    sweeper = Sweeper(
-        journal=journal, fire=engine.fire_timer, clock=_fixed_clock(_AFTER_BACKOFF_1)
-    )
+    sweeper = Sweeper(journal=journal, fire=engine.fire_timer, clock=_fixed_clock(_AFTER_BACKOFF_1))
     fired = await sweeper.tick(_AFTER_BACKOFF_1, lease_ttl=_LEASE_TTL)
     assert fired == 1
 
@@ -1026,9 +1022,7 @@ class _AlwaysFailAfterModelStage:
 
     async def run(self, ctx: StageContext) -> StageResult:
         ctx.budget.check()  # raises BudgetExceededError once the ceiling is reached (non-retryable)
-        response = await ctx.model.complete(
-            messages=[ChatMessage(role="user", content="work")]
-        )
+        response = await ctx.model.complete(messages=[ChatMessage(role="user", content="work")])
         ctx.budget.record(response.usage)
         raise _RetryableError("always fails after spending a model call")
 

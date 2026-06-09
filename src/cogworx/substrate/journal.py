@@ -184,9 +184,7 @@ class Journal(Protocol):
         """
         ...
 
-    async def record_human_input(
-        self, run_id: str, step_index: int, answer: Artifact
-    ) -> None:
+    async def record_human_input(self, run_id: str, step_index: int, answer: Artifact) -> None:
         """Idempotent FIRST-ANSWER-WINS persist for the S5 provenance-bearing HITL input.
 
         The first caller commits the answer; all subsequent callers for the same
@@ -198,9 +196,7 @@ class Journal(Protocol):
         """
         ...
 
-    async def read_human_input(
-        self, run_id: str, step_index: int
-    ) -> Artifact | None:
+    async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         """Return the HITL answer committed at ``(run_id, step_index)``, or ``None`` if absent.
 
         Used by downstream stages via ``ctx.read_human_input`` (the PULL model): a stage reads the

@@ -337,9 +337,7 @@ class TimescaleJournal:
         count: int = row[0]
         return count
 
-    async def record_human_input(
-        self, run_id: str, step_index: int, answer: Artifact
-    ) -> None:
+    async def record_human_input(self, run_id: str, step_index: int, answer: Artifact) -> None:
         conn = await self._connection()
         answer_json = _ARTIFACT_ADAPTER.dump_python(answer, mode="json")
         await conn.execute(
@@ -349,9 +347,7 @@ class TimescaleJournal:
             (run_id, step_index, Jsonb(answer_json), datetime.now(UTC)),
         )
 
-    async def read_human_input(
-        self, run_id: str, step_index: int
-    ) -> Artifact | None:
+    async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         conn = await self._connection()
         cursor = await conn.execute(
             "SELECT answer FROM cogworx_human_inputs WHERE run_id = %s AND step_index = %s",

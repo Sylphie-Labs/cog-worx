@@ -134,14 +134,10 @@ class CommitSpyJournal:
     async def read_attempt(self, run_id: str, step_index: int) -> int:
         return await self._inner.read_attempt(run_id, step_index)
 
-    async def record_human_input(
-        self, run_id: str, step_index: int, answer: Artifact
-    ) -> None:
+    async def record_human_input(self, run_id: str, step_index: int, answer: Artifact) -> None:
         await self._inner.record_human_input(run_id, step_index, answer)
 
-    async def read_human_input(
-        self, run_id: str, step_index: int
-    ) -> Artifact | None:
+    async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
 
 
@@ -317,14 +313,10 @@ class CrashAfterStepJournal:
     async def read_attempt(self, run_id: str, step_index: int) -> int:
         return await self._inner.read_attempt(run_id, step_index)
 
-    async def record_human_input(
-        self, run_id: str, step_index: int, answer: Artifact
-    ) -> None:
+    async def record_human_input(self, run_id: str, step_index: int, answer: Artifact) -> None:
         await self._inner.record_human_input(run_id, step_index, answer)
 
-    async def read_human_input(
-        self, run_id: str, step_index: int
-    ) -> Artifact | None:
+    async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
 
 

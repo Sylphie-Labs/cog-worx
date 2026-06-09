@@ -157,16 +157,12 @@ class InMemoryJournal:
     async def read_attempt(self, run_id: str, step_index: int) -> int:
         return self._attempts.get((run_id, step_index), 0)
 
-    async def record_human_input(
-        self, run_id: str, step_index: int, answer: Artifact
-    ) -> None:
+    async def record_human_input(self, run_id: str, step_index: int, answer: Artifact) -> None:
         # FIRST-ANSWER-WINS: setdefault is atomic under asyncio (no await between read and write) —
         # mirrors the adapter's ON CONFLICT (run_id, step_index) DO NOTHING.
         self._human_inputs.setdefault((run_id, step_index), answer)
 
-    async def read_human_input(
-        self, run_id: str, step_index: int
-    ) -> Artifact | None:
+    async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return self._human_inputs.get((run_id, step_index))
 
 

@@ -81,9 +81,7 @@ async def test_concurrent_increment_attempt_no_lost_update(
     """
     others = [TimescaleJournal(settings=settings) for _ in range(_CONCURRENCY)]
     try:
-        results = await asyncio.gather(
-            *(j.increment_attempt(_RUN_ID, _STEP_INDEX) for j in others)
-        )
+        results = await asyncio.gather(*(j.increment_attempt(_RUN_ID, _STEP_INDEX) for j in others))
     finally:
         for j in others:
             await j.aclose()
