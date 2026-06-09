@@ -44,6 +44,15 @@ def pathway_fingerprint(graph: StageGraph) -> str:
     Those are the responsibility of the version-bump convention (bump ``pathway_version`` when stage
     behaviour changes), not the fingerprint. The fingerprint is a structural backstop, not a
     behaviour oracle.
+
+    Runtime result destinations — ``Transition.to``, ``Wait.to``, ``AwaitHuman.to``, and
+    ``Degraded.to`` — are also outside the structural fingerprint's domain. They are constructed
+    inside ``stage.run()`` at runtime, not part of the static graph, so a stage that routes to a
+    *different already-declared* transition is a behavioural change covered by the version-bump
+    convention. A committed result replays its journaled ``to``, so a parked run's route is
+    immutable regardless of an in-place edit. Routing to a destination that is NOT in
+    ``edges_from`` at all is caught by the runtime declared-route guard in the engine (fresh branch
+    only, before ``commit_step``) — not by this fingerprint.
     """
     parts: list[str] = [f"entry={graph.entry}"]
     for name in sorted(graph.names()):

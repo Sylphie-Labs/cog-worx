@@ -69,15 +69,30 @@ The configurable control loop everything else attaches to.
 > fixed a HIGH: the new `exhausted_to` graph edge is now folded into the `pathway_fingerprint` so the S6
 > resume divergence guard isn't blind to it. **Next:** 1.3 await-human resume · 1.4 fire-and-forget.
 
+> **Pod 1.3 (durable await-human resume) — DONE** ✅ (CANON-COMPLIANT, red-team-hardened over two
+> passes): `AwaitHuman` gained a `to` (a committed await-human now REPLAYS as a plain advance to `to`,
+> mirroring `Wait`); a journal seam **`record_human_input`/`read_human_input`** keyed
+> `(run_id, step_index)` (**first-answer-wins**, `ON CONFLICT DO NOTHING`, new `cogworx_human_inputs`
+> table); pull-based **`ctx.read_human_input`** so a downstream stage routes **structurally** on the
+> answer (S9), never on model text; and **`Engine.provide_human_input`** — record the
+> `Provenance(source="human")` answer **BEFORE** the CAS `AWAITING_HUMAN→RUNNING` (S5/S6 hard
+> ordering), then re-drive exactly-once with no model re-call. Red-team caught + fixed a MED: a stage
+> routing to an **undeclared** `to` could strand a run mid-HITL — now a runtime **declared-route guard**
+> (`result.to ∈ graph.edges_from(current)`, before commit, all `to`-bearing results) fails it loud at
+> first execution. The exactly-once-EXECUTION docstring was scoped honestly (CAS-guarded entrypoints;
+> `resume(RUNNING)` is the deferred run-lease/reaper gap). **Next:** 1.4 fire-and-forget.
+
 - [ ] **Configurable graph loop** — DAG-of-stages + FSM-per-stage; **dev-authored pathways, graph by
       default**, not a fixed list. *(graph + dev-authored pathway registry done in 1.0; per-stage FSM
       retry/timeout transitions done in 1.2)*
 - [ ] **Durability** — journaled resume, durable timers (`wake_at` + sweeper), **retries**,
       **pause/resume**, **fire-and-forget-with-feedback**, all on the Timescale journal (S6).
       *(cold/cyclic journaled resume done in 1.0; durable timers + sweeper + pause/resume done in 1.1;
-      retries + per-stage timeouts done in 1.2; fire-and-forget = pod 1.4)*
+      retries + per-stage timeouts done in 1.2; durable await-human resume done in 1.3;
+      fire-and-forget = pod 1.4)*
 - [ ] **First-class transitions** — `await-human` and `degraded` (S8). *(both are first-class results;
-      `Wait` added as a 5th first-class result in 1.1; durable await-human resume is pod 1.3)*
+      `Wait` added as a 5th first-class result in 1.1; durable await-human resume done in 1.3 —
+      `AwaitHuman.to` + `provide_human_input`)*
 - [ ] **⛓ Spike** — durability/chaos test: kill mid-step → resume → exactly-once, **no model re-call**.
       *(core PASSED on live substrate — cold + cyclic; the full gate spans the operation pods)*
 

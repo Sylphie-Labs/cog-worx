@@ -59,9 +59,12 @@ from psycopg.types.json import Jsonb
 from pydantic import TypeAdapter
 
 from cogworx.adapters.config import SubstrateSettings
+from cogworx.claims.provenance import Artifact
 from cogworx.loop.result import StageResult
 from cogworx.loop.state import RunStatus
 from cogworx.substrate.journal import RunState, StepRecord, Timer
+
+_ARTIFACT_ADAPTER: TypeAdapter[Artifact] = TypeAdapter(Artifact)
 
 _RESULT_ADAPTER: TypeAdapter[StageResult] = TypeAdapter(StageResult)
 
@@ -105,6 +108,14 @@ CREATE TABLE IF NOT EXISTS cogworx_step_attempts (
     last_failure_class text,
     last_failed_at timestamptz,
     CONSTRAINT cogworx_step_attempts_pk PRIMARY KEY (run_id, step_index)
+);
+
+CREATE TABLE IF NOT EXISTS cogworx_human_inputs (
+    run_id text NOT NULL,
+    step_index bigint NOT NULL,
+    answer jsonb NOT NULL,
+    recorded_at timestamptz NOT NULL,
+    CONSTRAINT cogworx_human_inputs_pk PRIMARY KEY (run_id, step_index)
 );
 """
 
@@ -326,6 +337,31 @@ class TimescaleJournal:
         count: int = row[0]
         return count
 
+    async def record_human_input(
+        self, run_id: str, step_index: int, answer: Artifact
+    ) -> None:
+        conn = await self._connection()
+        answer_json = _ARTIFACT_ADAPTER.dump_python(answer, mode="json")
+        await conn.execute(
+            "INSERT INTO cogworx_human_inputs (run_id, step_index, answer, recorded_at) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (run_id, step_index) DO NOTHING",
+            (run_id, step_index, Jsonb(answer_json), datetime.now(UTC)),
+        )
+
+    async def read_human_input(
+        self, run_id: str, step_index: int
+    ) -> Artifact | None:
+        conn = await self._connection()
+        cursor = await conn.execute(
+            "SELECT answer FROM cogworx_human_inputs WHERE run_id = %s AND step_index = %s",
+            (run_id, step_index),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return _ARTIFACT_ADAPTER.validate_python(row[0])
+
     async def reset(self) -> None:
         # Test-only ephemeral isolation: DROP + recreate (not TRUNCATE) so the per-case schema is
         # always current — robust to schema evolution across phases. Never called in production.
@@ -333,7 +369,7 @@ class TimescaleJournal:
         await conn.execute(
             "DROP TABLE IF EXISTS "
             "cogworx_journal_steps, cogworx_journal_runs, cogworx_timers, "
-            "cogworx_step_attempts CASCADE"
+            "cogworx_step_attempts, cogworx_human_inputs CASCADE"
         )
         await conn.execute(_SCHEMA)
 

@@ -4,9 +4,10 @@ A stage returns one of five results — ``transition`` / ``done`` / ``await-huma
 ``wait`` — making HITL, graceful degradation, AND durable sleep first-class loop transitions rather
 than error states. ``wait`` is the S6 durable-timer transition: a stage parks the run on an absolute
 ``wake_at`` and the sweeper re-drives it later (a committed ``Wait`` replays as a plain advance to
-``to``, never re-parking). These are the most-reused loop types, so they live in a leaf module that
-depends only on ``claims`` (the journal commits a ``StageResult``, and the journal must not import
-the stage seam).
+``to``, never re-parking). ``await-human`` parks the run AWAITING_HUMAN; ``to`` names the stage
+the engine advances to once the human answers (replays as a plain advance, never re-parks). These
+are the most-reused loop types, so they live in a leaf module that depends only on ``claims`` (the
+commits a ``StageResult``, and the journal must not import the stage seam).
 """
 
 from __future__ import annotations
@@ -35,10 +36,18 @@ class Done(BaseModel):
 
 
 class AwaitHuman(BaseModel):
+    """Park the run AWAITING_HUMAN. ``to`` names the stage to advance to once the answer lands.
+
+    A committed ``AwaitHuman`` replays as a plain advance to ``to`` — the engine does NOT re-park or
+    re-ask the question. The ``to`` field survives Pydantic round-trip (S6: the journal commits the
+    full result and the replay branch reads ``result.to`` to route).
+    """
+
     model_config = ConfigDict(frozen=True)
 
     kind: Literal["await-human"] = "await-human"
     question: str
+    to: str
     output: Artifact | None = None
 
 

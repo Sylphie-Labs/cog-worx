@@ -35,8 +35,9 @@ def test_done_parses() -> None:
 
 
 def test_await_human_parses() -> None:
-    result = _ADAPTER.validate_python({"kind": "await-human", "question": "ok?"})
+    result = _ADAPTER.validate_python({"kind": "await-human", "question": "ok?", "to": "next"})
     assert isinstance(result, AwaitHuman)
+    assert result.to == "next"
 
 
 def test_degraded_parses() -> None:

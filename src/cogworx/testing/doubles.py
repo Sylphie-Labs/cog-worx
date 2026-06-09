@@ -13,7 +13,7 @@ import math
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
-from cogworx.claims.provenance import Claim
+from cogworx.claims.provenance import Artifact, Claim
 from cogworx.loop.state import RunStatus
 from cogworx.substrate.journal import RunState, StepRecord, Timer
 from cogworx.substrate.latent import LatentMatch, LatentRecord
@@ -44,6 +44,8 @@ class InMemoryJournal:
         self._timers: dict[str, Timer] = {}
         # The FAILURE counter keyed (run_id, step_index) — mirrors the adapter's step_attempts row.
         self._attempts: dict[tuple[str, int], int] = {}
+        # HITL answers keyed (run_id, step_index) — FIRST-ANSWER-WINS (setdefault, never overwrite).
+        self._human_inputs: dict[tuple[str, int], Artifact] = {}
 
     async def start_run(
         self,
@@ -154,6 +156,18 @@ class InMemoryJournal:
 
     async def read_attempt(self, run_id: str, step_index: int) -> int:
         return self._attempts.get((run_id, step_index), 0)
+
+    async def record_human_input(
+        self, run_id: str, step_index: int, answer: Artifact
+    ) -> None:
+        # FIRST-ANSWER-WINS: setdefault is atomic under asyncio (no await between read and write) —
+        # mirrors the adapter's ON CONFLICT (run_id, step_index) DO NOTHING.
+        self._human_inputs.setdefault((run_id, step_index), answer)
+
+    async def read_human_input(
+        self, run_id: str, step_index: int
+    ) -> Artifact | None:
+        return self._human_inputs.get((run_id, step_index))
 
 
 class InMemoryGraphStore:

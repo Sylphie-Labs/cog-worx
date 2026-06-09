@@ -14,6 +14,7 @@ from typing import Any
 
 from cogworx.capability.base import CapabilityUnavailable
 from cogworx.capability.registry import Registry, RegistryError
+from cogworx.claims.provenance import Artifact
 from cogworx.coordination.events import Event, validate_event_boundary
 from cogworx.cost.budget import BudgetGuard
 from cogworx.model.base import Model
@@ -95,6 +96,15 @@ class RunContext:
             # degradation-aware stage catches one error type regardless of the failure mode.
             raise CapabilityUnavailable(f"capability {capability!r} is unavailable: {exc}") from exc
         return await cap.invoke(args)
+
+    async def read_human_input(self, step_index: int) -> Artifact | None:
+        """Return the HITL answer committed at ``step_index`` for this run, or ``None`` if absent.
+
+        PULL-based: stages pull the answer from the journal; the engine never pushes a
+        ``ctx.human_input`` attribute. This means cold resume works correctly — the answer is
+        in the journal and any stage can read it without the engine re-injecting it (S6/S9).
+        """
+        return await self._journal.read_human_input(self.run_id, step_index)
 
     @property
     def events(self) -> tuple[Event, ...]:

@@ -30,9 +30,12 @@ timer can re-fire a finished or parked-for-human run. The two stops that must NO
 fresh ``Wait`` (WAITING — the timer is the wake mechanism) and the cooperative PAUSED break (the
 timer must survive so an ``unpause`` of a still-WAITING run keeps its wake). Re-driving a run is
 serialized by ``compare_and_set_run_status`` (the run-level mutual-exclusion primitive): a driver
-must win the CAS into RUNNING before executing uncommitted stages, so two concurrent sweepers /
-fire+unpause races cannot both call the model — exactly-once EXECUTION, not merely exactly-once
-commit.
+must win the CAS into RUNNING before executing uncommitted stages — exactly-once EXECUTION for the
+CAS-guarded entrypoints (``fire_timer``, ``unpause``, ``provide_human_input``). A bare ``resume``
+of a still-RUNNING run does NOT take that CAS, so two concurrent crash-resumes of the same RUNNING
+run can double-execute an uncommitted stage's SIDE EFFECT (the journal commit stays exactly-once on
+``(run_id, step_index)``; the side effect is not protected). Single-flight crash-resume is the
+operator's responsibility until the run-lease/reaper lands (deferred ops pod).
 """
 
 from __future__ import annotations
@@ -40,12 +43,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from cogworx.capability.registry import Registry
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.coordination.events import Event, EventType, Subsystem, validate_event_boundary
 from cogworx.cost.budget import BudgetGuard
-from cogworx.loop.graph import StageGraph
+from cogworx.loop.graph import StageGraph, StageGraphError
 from cogworx.loop.pathway import PathwayRegistry, pathway_fingerprint
 from cogworx.loop.result import Degraded
 from cogworx.loop.retry import DEFAULT_RETRY_POLICY, RetryPolicy
@@ -324,6 +328,73 @@ class Engine:
         )
         return await self._drive(ctx, graph, current=graph.entry)
 
+    async def provide_human_input(
+        self,
+        run_id: str,
+        *,
+        payload: dict[str, Any],
+        kind: str = "human-input",
+        confidence: float = 1.0,
+    ) -> RunState:
+        """Record a human answer and re-drive the run from the entry (S6, S5, H3).
+
+        If the run is not in ``AWAITING_HUMAN`` status this is a no-op and returns the current
+        state unchanged (idempotent on a non-parked or already-completed run).
+
+        The ordering is HARD (H3): ``record_human_input`` persists the answer BEFORE the CAS
+        flips ``AWAITING_HUMAN -> RUNNING``. If the process dies between the two calls, a
+        re-issued ``provide_human_input`` finds the answer already committed and completes without
+        overwriting it (first-answer-wins idempotency in the adapter).
+
+        The answer ``Artifact`` carries ``provenance.source="human"`` — the honest epistemic label
+        for a human-supplied input (S5). ``kind`` and ``confidence`` are caller-supplied (defaults
+        match the S5 human-input convention).
+        """
+        state, graph, ctx = await self._rehydrate(run_id)
+        if state.status is not RunStatus.AWAITING_HUMAN:
+            return state
+
+        # The awaiting step is the last committed step (status guarantees it is an await-human).
+        last_step = state.steps[-1]
+        seq = last_step.step_index
+
+        answer = Artifact(
+            kind=kind,
+            produced_by="human",
+            provenance=Provenance(
+                source="human",
+                confidence=confidence,
+                recorded_at=self._clock(),
+            ),
+            data=payload,
+        )
+
+        # H3 hard ordering: persist BEFORE the CAS. A crash here leaves the answer committed but
+        # the run still AWAITING_HUMAN — a re-issued call finds the answer (first-answer-wins) and
+        # the CAS succeeds on the next attempt.
+        await self._journal.record_human_input(run_id, seq, answer)
+
+        self._emit(
+            ctx,
+            EventType.HUMAN_INPUT_RECEIVED,
+            run_id=run_id,
+            session_id=ctx.session_id,
+        )
+
+        if not await self._journal.compare_and_set_run_status(
+            run_id, expect=RunStatus.AWAITING_HUMAN, new=RunStatus.RUNNING
+        ):
+            # Another caller won the CAS — load and return the current state.
+            reloaded = await self._journal.load_run(run_id)
+            if reloaded is None:
+                raise ResumeError(
+                    f"journal lost run {run_id!r} after CAS loss in provide_human_input"
+                )
+            return reloaded
+
+        self._emit(ctx, EventType.RUN_RESUMED, run_id=run_id, session_id=ctx.session_id)
+        return await self._drive(ctx, graph, current=graph.entry)
+
     async def _drive(self, ctx: RunContext, graph: StageGraph, *, current: str) -> RunState:
         run_id = ctx.run_id
         session_id = ctx.session_id
@@ -400,6 +471,26 @@ class Engine:
                             ctx, EventType.RUN_RETRYING, run_id=run_id, session_id=session_id
                         )
                         break
+                # Declared-route guard (S9/S6): a fresh result that routes to an undeclared stage
+                # is rejected BEFORE commit — a bad ``to`` must never reach the journal, or it
+                # re-detonates on every future resume. Guards ALL to-bearing results: Transition,
+                # Wait, AwaitHuman, and Degraded when to is not None. Done and Degraded(to=None)
+                # are terminal and have no ``to`` to check. Replay is intentionally excluded: a
+                # committed ``to`` was valid at write time; re-validating against a version-bumped
+                # graph could falsely reject a legitimately parked run (S6 trusts the journal).
+                # Uses edges_from (not transitions_from) so the engine's own exhaustion-degraded
+                # route (policy.exhausted_to, present in edges_from but not transitions_from)
+                # passes the guard correctly.
+                declared_to: str | None = getattr(result, "to", None)
+                if declared_to is not None:
+                    allowed = graph.edges_from(current)
+                    if declared_to not in allowed:
+                        raise StageGraphError(
+                            f"stage {current!r} returned a result routing to {declared_to!r}, "
+                            f"which is not in its declared edge set {sorted(allowed)!r}; "
+                            "add the target to the stage's transitions (or exhausted_to for a "
+                            "retry-exhaustion route) before running"
+                        )
                 record = StepRecord(
                     run_id=run_id,
                     step_index=seq,
@@ -453,15 +544,28 @@ class Engine:
                         break
                     current = result.to
                 case "await-human":
-                    self._emit(
-                        ctx,
-                        EventType.STAGE_AWAITING_HUMAN,
-                        run_id=run_id,
-                        session_id=session_id,
-                    )
-                    await self._journal.set_run_status(run_id, RunStatus.AWAITING_HUMAN)
-                    await self._journal.cancel_timers_for_run(run_id)
-                    break
+                    # A committed AwaitHuman REPLAYS as a plain advance to ``to`` — never re-park,
+                    # never re-await. FRESH: park AWAITING_HUMAN, cancel timers (same cleanup rule
+                    # as Wait/done/degraded), and break. REPLAY: advance to ``result.to`` exactly
+                    # like a Transition (emit STAGE_COMPLETED, set current, continue).
+                    if replaying:
+                        self._emit(
+                            ctx,
+                            EventType.STAGE_COMPLETED,
+                            run_id=run_id,
+                            session_id=session_id,
+                        )
+                        current = result.to
+                    else:
+                        self._emit(
+                            ctx,
+                            EventType.STAGE_AWAITING_HUMAN,
+                            run_id=run_id,
+                            session_id=session_id,
+                        )
+                        await self._journal.set_run_status(run_id, RunStatus.AWAITING_HUMAN)
+                        await self._journal.cancel_timers_for_run(run_id)
+                        break
 
             seq += 1
 

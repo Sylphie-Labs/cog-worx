@@ -706,6 +706,16 @@ class _CrashAfterStageVisitJournal:
     async def read_attempt(self, run_id: str, step_index: int) -> int:
         return await self._inner.read_attempt(run_id, step_index)
 
+    async def record_human_input(
+        self, run_id: str, step_index: int, answer: Artifact
+    ) -> None:
+        await self._inner.record_human_input(run_id, step_index, answer)
+
+    async def read_human_input(
+        self, run_id: str, step_index: int
+    ) -> Artifact | None:
+        return await self._inner.read_human_input(run_id, step_index)
+
 
 async def test_criterion_4_cyclic_per_visit_durability_cold_resume(
     settings: SubstrateSettings,

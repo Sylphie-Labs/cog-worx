@@ -23,6 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from cogworx.claims.provenance import Artifact
 from cogworx.loop.result import StageResult
 from cogworx.loop.state import RunStatus
 
@@ -183,8 +184,34 @@ class Journal(Protocol):
         """
         ...
 
+    async def record_human_input(
+        self, run_id: str, step_index: int, answer: Artifact
+    ) -> None:
+        """Idempotent FIRST-ANSWER-WINS persist for the S5 provenance-bearing HITL input.
+
+        The first caller commits the answer; all subsequent callers for the same
+        ``(run_id, step_index)`` are silent no-ops (``INSERT … ON CONFLICT (run_id, step_index) DO
+        NOTHING``). This is a pure write — no model-heavy work on the hot path (S1). The answer is
+        persisted BEFORE the re-drive CAS (H3 hard ordering constraint): if the process dies between
+        record and CAS, a re-issued ``provide_human_input`` finds the answer already in the journal
+        and completes without overwriting it.
+        """
+        ...
+
+    async def read_human_input(
+        self, run_id: str, step_index: int
+    ) -> Artifact | None:
+        """Return the HITL answer committed at ``(run_id, step_index)``, or ``None`` if absent.
+
+        Used by downstream stages via ``ctx.read_human_input`` (the PULL model): a stage reads the
+        journaled answer structurally — the engine never pushes ``ctx.human_input`` — so cold resume
+        works correctly without the engine re-injecting the answer.
+        """
+        ...
+
 
 __all__ = [
+    "Artifact",
     "Journal",
     "RunState",
     "StepRecord",

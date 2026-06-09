@@ -52,6 +52,7 @@ class EventType(StrEnum):
     LESION_DISABLED = "lesion_disabled"
     TIMER_SET = "timer_set"
     TIMER_FIRED = "timer_fired"
+    HUMAN_INPUT_RECEIVED = "human_input_received"
 
 
 class Event(BaseModel):
@@ -89,6 +90,7 @@ EVENT_BOUNDARY_MAP: dict[EventType, Subsystem] = {
     EventType.RUN_RESUMED: Subsystem.SPINE,
     EventType.TIMER_SET: Subsystem.SPINE,
     EventType.TIMER_FIRED: Subsystem.SPINE,
+    EventType.HUMAN_INPUT_RECEIVED: Subsystem.SPINE,
     EventType.CLAIM_WRITTEN: Subsystem.MEMORY,
     EventType.CAPABILITY_INVOKED: Subsystem.COGNITION,
     EventType.BUDGET_EXCEEDED: Subsystem.OPERATIONS,

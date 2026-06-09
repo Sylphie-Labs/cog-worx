@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
+from cogworx.claims.provenance import Artifact
 from cogworx.coordination.events import Event
 from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.result import StageResult
@@ -49,6 +50,14 @@ class StageContext(Protocol):
     def emit(self, event: Event) -> None: ...
 
     async def dispatch(self, capability: str, args: Mapping[str, Any]) -> Any: ...
+
+    async def read_human_input(self, step_index: int) -> Artifact | None:
+        """Return the HITL answer committed at ``step_index`` for this run, or ``None`` if absent.
+
+        PULL-based: stages pull answers from the journal. The engine never pushes a
+        ``ctx.human_input`` attribute, so cold resume works without re-injection (S6/S9).
+        """
+        ...
 
 
 @runtime_checkable
