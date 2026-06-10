@@ -187,13 +187,26 @@ already done in biz-firm, so this is port + generalize.
 >   in-scope. Carry-forwards: runner-up margin/confidence gate (CF-1 → 2.6); ANN index tuning
 >   (CF-3); d-constant empirical tuning (CF-5). See session log
 >   `docs/sessions/2026-06-10-phase-2-pod-2.2.md`.
-> - **Pod 2.3 — Episodic memory + conversation capture.** Synchronous cheap capture (S1 write
->   path), episode storage/classification; **async, batched** extraction → 2.0 claims (model work
->   strictly off the write path). **PRECONDITION (S9, 2.0 carry-forward):** the structural source
->   registry — `source_id`/`source_authority` assigned by framework code, never by model output —
->   must land before extraction writes model-derived claims.
-> - **Pod 2.4 — World model + user model.** Long-term/user knowledge as governed views over the 2.0
->   claim layer (scoping, write-token discipline per S7).
+> - **Pod 2.3 — Episodic memory + conversation capture — DESIGN LOCKED / IMPLEMENTED** ✅
+>   (2026-06-10, Jim sign-offs F1–F4): synchronous cheap capture and async batched extraction.
+>   Key design decisions: ① **Capture = turn-stamping into step output** (`stamp_turns` writes into
+>   the `StepOutput.data` dict on the write path via `D1`; a direct `EpisodeStore.append` call on
+>   the write path would be a phantom-turn defect — avoided structurally); ② **`EpisodeProjector`**
+>   sweeper polls the Timescale journal (`committed_at > cursor − lookback_lag`) and writes
+>   `cogworx_episodes` rows in Postgres — mirrors the 2.1 TrialProjector pattern (visibility-fenced
+>   cursor advanced in the same PG txn as the episode MERGE, `MERGE`-idempotent on `(run_id,
+>   step_index)`); ③ **`ClaimExtractor`** sweeper polls the `cogworx_episodes` table, fires the
+>   model off-path (S1), and writes claims into the entity KG via the new `project_claims` additive
+>   seam method (F1 approved by Jim); ④ **`SourceRegistry`** enforces S9 structurally —
+>   `SourceDeclaration` type-enforces `source_id` / `source_authority` assignment by framework
+>   code, never by model output; the 2.0 carry-forward precondition is satisfied; ⑤ new
+>   `EvidenceType` **`"extraction"`** (base_weight 1.0) registered in `EVIDENCE_BASE_WEIGHTS`;
+>   ⑥ `project_claims` is an **additive** method on the `EntityKG` seam (F1) — existing callers
+>   unaffected (C3 contract-evolution rule). Carry-forwards: CF-1 through CF-11 (see session log
+>   `docs/sessions/2026-06-10-phase-2-pod-2.3.md`).
+>   **Carry-forwards from 2.0 now satisfied:** structural source registry landed; model-derived
+>   claims reach the write surface only through `ClaimExtractor` (off-path, S1-clean).
+> - **Pod 2.4 — World model + user model — DONE** ✅ (CANON-COMPLIANT, Jim-approved F1–F4, red-team PASS, 572 unit+spike tests green): `Claim.scope: str = "agent"` (additive, migration-free) with scope joining claim identity (conditional 4th hash part — pre-2.4 IDs byte-identical); `ScopeRegistry`+`ScopeWriteToken` clone the Pod 2.3 `SourceRegistry` discipline (S7 in-process, exactly one writer per scope); `ScopedKG` is a `@final` governed-view class over the unchanged `EntityKG` seam — `assert_fact` mints scoped Claims internally (callers never construct); `world_model`/`user_model` factory functions. `ClaimExtractor` unchanged (routing extraction into user scope = model-as-scope-routing-signal, S9). Spike SC-1–SC-7: scope isolation, shared-entity topology, evidence segregation, token discipline, back-compat, S8 lesion, S1 isolation. Red-team caught + fixed a CRITICAL (vacuous K4 accumulation `>= 1` → `== 2` + negative control) and a HIGH (SC-4 multi-registry same-process S7 bypass now explicitly tested + verdict corrected). **Carry-forwards:** CF-1 (direct token construction, not blocked structurally); CF-3 (vector over-fetch re-query floor); CF-4 (automated agent→user/world promotion → Pod 2.7); CF-5 (cross-process S7 exclusivity → ops pod); CF-6 (multi-registry same-process gap, documented in spike); CF-7 (non-canonical scope strings at Claim boundary).
 > - **Pod 2.5 — Recall stack.** dense + BM25 + graph + temporal channels → Reciprocal Rank Fusion →
 >   rerank seam → token-budget assembly with lost-in-the-middle ordering (per biz-firm c3/c1).
 > - **Pod 2.6 — Memory injection.** Per-stage recall riding 2.5 into `StageContext` (token-budget,
@@ -210,14 +223,14 @@ already done in biz-firm, so this is port + generalize.
       greedy shipped / Thompson deferred. Carry-forwards: S6 FAILED-at-seq failure-trial gap (xfail,
       needs a run-status projection seam); S5 epistemic-type-as-field (C3); recommended future
       durability item already taken via commit_xid)*
-- [ ] **World model** (long-term memory) · **User model** *(Pod 2.4)*
-- [ ] **Episodic memory** *(Pod 2.3)*
-- [ ] **Latent space on pgvector** — hot/cold tiering *(Pod 2.2 — DESIGN LOCKED, implementation in
-      progress 2026-06-10)*
+- [x] **World model** (long-term memory) · **User model** *(Pod 2.4 ✅ DONE — see above)*
+- [x] **Episodic memory** *(Pod 2.3 ✅ DONE — VALIDATED 2026-06-10 (red-team PASS: 4 HIGH/CRITICAL issues found and fixed — fail-stall contract, PgEpisodeStore cursor monotonicity, test isolation, mutation-resistant negative controls))*
+- [x] **Latent space on pgvector** — hot/cold tiering *(Pod 2.2 ✅ DONE — validated 2026-06-10:
+      ACT-R activation, single-table tier column, LatentTierSweeper, seam split put/record_use)*
 - [ ] **Recall stack** — dense + BM25 + graph + temporal → rank fusion → rerank → token-budget assembly
       *(Pod 2.5)*
 - [ ] **Memory injection** *(Pod 2.6)*
-- [ ] **Conversation extraction / classification / storage** *(Pod 2.3)*
+- [x] **Conversation extraction / classification / storage** *(Pod 2.3 ✅ DONE — see above)*
 - [ ] **Coherence** — async/batched reconciler; **surface, don't silently delete** *(Pod 2.7)*
 - [ ] **⛓ Spike** — recall-quality eval (LongMemEval-style) + provenance/epistemic-typing invariant (S5)
 

@@ -16,6 +16,7 @@ Graph semantics (enforced by BOTH the real adapter AND :class:`InMemoryEntityKG`
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
@@ -24,11 +25,21 @@ from pydantic import BaseModel, ConfigDict
 from cogworx.claims.provenance import Claim
 from cogworx.knowledge.confidence import ClaimConfidence
 from cogworx.knowledge.evidence import EvidenceEvent
+from cogworx.substrate.journal import ProjectionCursor
 
 __all__ = [
+    "ClaimProjection",
     "EntityKG",
     "ScoredClaim",
 ]
+
+
+@dataclass(frozen=True)
+class ClaimProjection:
+    """One (claim, evidence) pair for atomic batch projection into the entity KG."""
+
+    claim: Claim
+    evidence: EvidenceEvent
 
 
 class ScoredClaim(BaseModel):
@@ -43,6 +54,8 @@ class ScoredClaim(BaseModel):
     Equals own confidence when the claim has no ancestors."""
     similarity: float | None = None
     """Raw cosine similarity in [-1, 1] when the claim was retrieved via the vector channel."""
+    text_score: float | None = None
+    """BM25 score when the claim was retrieved via the full-text channel."""
 
 
 @runtime_checkable
@@ -138,8 +151,14 @@ class EntityKG(Protocol):
         *,
         limit: int = 20,
         as_of: datetime | None = None,
+        scope: str | None = None,
     ) -> Sequence[ScoredClaim]:
-        """Return scored claims where ``entity`` is subject or object, newest-first."""
+        """Return scored claims where ``entity`` is subject or object, newest-first.
+
+        ``scope``: when not ``None``, restricts results to claims whose ``scope`` field equals
+        the given string (using ``coalesce(c.scope, 'agent')`` so pre-2.4 nodes without a
+        ``scope`` property are treated as ``'agent'``).  ``None`` (default) returns all scopes.
+        """
         ...
 
     async def claims_by_similarity(
@@ -148,8 +167,32 @@ class EntityKG(Protocol):
         *,
         k: int = 10,
         min_score: float = 0.70,
+        scope: str | None = None,
     ) -> Sequence[ScoredClaim]:
-        """Return up to ``k`` scored claims nearest to ``embedding`` (raw cosine >= min_score)."""
+        """Return up to ``k`` scored claims nearest to ``embedding`` (raw cosine >= min_score).
+
+        ``scope``: when not ``None``, post-filters results to the given scope after an over-fetch
+        from the vector index (the index cannot pre-filter by scope).  The adapter fetches
+        ``max(4 * k, 64)`` candidates and trims to ``k`` in Python.  If fewer than ``k`` survive
+        the scope filter, the short result is returned as-is (v1: no re-query).  ``None`` returns
+        all scopes.
+        """
+        ...
+
+    async def claims_full_text(
+        self,
+        query: str,
+        *,
+        k: int = 10,
+        scope: str | None = None,
+        as_of: datetime | None = None,
+    ) -> Sequence[ScoredClaim]:
+        """BM25 full-text search over claim subject/predicate/payload.
+
+        Score is implementation-defined positive; only descending rank is contractual.
+        Empty/whitespace-only query returns []. Skeleton nodes excluded (same as claims_about).
+        scope/as_of: same over-fetch + post-filter discipline as claims_by_similarity.
+        """
         ...
 
     async def resolution_candidates(
@@ -159,8 +202,14 @@ class EntityKG(Protocol):
         *,
         embedding: Sequence[float] | None = None,
         k: int = 5,
+        scope: str | None = None,
     ) -> Sequence[Claim]:
-        """Return candidate claims for judge-based resolution (no confidence scoring)."""
+        """Return candidate claims for judge-based resolution (no confidence scoring).
+
+        ``scope``: when not ``None``, restricts both the exact-topic pass and the vector-fallback
+        pass to claims whose ``scope`` matches (``coalesce(c.scope, 'agent')``).  ``None`` returns
+        candidates across all scopes.
+        """
         ...
 
     async def write_contradiction(self, claim_id_a: str, claim_id_b: str) -> None:
@@ -175,5 +224,36 @@ class EntityKG(Protocol):
         """Set valid_to on the claim (first-invalidation-wins; later calls are no-ops).
 
         Raises ``ValueError`` if ``claim_id`` is not known.
+        """
+        ...
+
+    async def read_cursor(self, consumer: str) -> ProjectionCursor | None:
+        """Return the consumer's Neo4j (:ProjectionCursor) position, or None on cold start.
+
+        Used by the ClaimExtractor to read its own watermark before a tick.  The cursor is
+        written by :meth:`project_claims` in the SAME atomic Neo4j transaction as the claims,
+        so read and write always see a consistent view of which steps have been extracted.
+        """
+        ...
+
+    async def project_claims(
+        self,
+        consumer: str,
+        writes: Sequence[ClaimProjection],
+        progress: ProjectionCursor | None,
+    ) -> None:
+        """ATOMICALLY write a batch of (claim, evidence) pairs and advance the cursor.
+
+        ONE managed Neo4j transaction: for each ClaimProjection, applies write_claim semantics
+        (identity-discipline check + coalesce-populate MERGE + evidence CREATE). Then advances
+        the Neo4j (:ProjectionCursor {consumer: consumer}) to ordinal_max(current, progress).
+
+        A crash before commit leaves NO claims and NO cursor advance — exactly-once state even
+        when the upstream model (the ClaimExtractor) is non-deterministic (D6).
+
+        progress=None: no cursor advance (useful for one-shot imports).
+        writes=[]: a no-op (cursor still advances if progress is not None).
+
+        Raises ValueError if any claim.id fails identity-discipline check.
         """
         ...

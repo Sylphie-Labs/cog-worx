@@ -6,7 +6,8 @@ kept as its own typed seam. The only abstraction is this thin internal one for t
 
 from __future__ import annotations
 
-from cogworx.substrate.entity_kg import EntityKG, ScoredClaim
+from cogworx.substrate.entity_kg import ClaimProjection, EntityKG, ScoredClaim
+from cogworx.substrate.episodes import Episode, EpisodeStore
 from cogworx.substrate.graph_store import GraphStore
 from cogworx.substrate.journal import (
     Journal,
@@ -29,8 +30,11 @@ from cogworx.substrate.procedural_kg import (
 )
 
 __all__ = [
+    "ClaimProjection",
     "CursorAdvance",
     "EntityKG",
+    "Episode",
+    "EpisodeStore",
     "GraphStore",
     "Journal",
     "LatentMatch",

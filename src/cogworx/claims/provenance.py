@@ -8,9 +8,11 @@ contract types — claims and the artifacts that carry them are immutable.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+DEFAULT_SCOPE: Final[str] = "agent"
 
 EpistemicType = Literal["observation", "inference", "confirmed"]
 # "system" = engine/control-plane-originated, zero-model (exhaustion degradations, timeouts,
@@ -53,6 +55,9 @@ class Claim(BaseModel):
     # KG and is used as object_repr in claim_id_for (CANON S5, entity-KG identity discipline).
     # Default None: additive, backward-compatible with all Phase-0 callers.
     object_entity: str | None = None
+    # Which governed view owns this claim: "agent" (unscoped default), "world", or "user:<id>".
+    # Default "agent" is backward-compatible — all pre-2.4 claims are unscoped.
+    scope: str = DEFAULT_SCOPE
 
 
 class Artifact(BaseModel):
@@ -67,6 +72,7 @@ class Artifact(BaseModel):
 
 
 __all__ = [
+    "DEFAULT_SCOPE",
     "Artifact",
     "Claim",
     "EpistemicType",

@@ -11,7 +11,10 @@ import hashlib
 import re
 import unicodedata
 
+from cogworx.claims.provenance import DEFAULT_SCOPE as DEFAULT_SCOPE
+
 __all__ = [
+    "DEFAULT_SCOPE",
     "claim_id_for",
     "normalize_topic_part",
 ]
@@ -49,22 +52,32 @@ def normalize_topic_part(s: str) -> str:
     return s
 
 
-def claim_id_for(subject: str, predicate: str, object_repr: str) -> str:
-    """Deterministic content-hash id for a (subject, predicate, object) triple.
+def claim_id_for(
+    subject: str,
+    predicate: str,
+    object_repr: str,
+    *,
+    scope: str = DEFAULT_SCOPE,
+) -> str:
+    """Deterministic content-hash id for a (subject, predicate, object[, scope]) tuple.
 
     ``object_repr`` is ``claim.object_entity`` when the object is itself an entity, otherwise the
     payload text. Two stage writes that derive the same triple collide by design — MERGE on this id
     makes the second write idempotent (evidence accumulates on the existing node).
 
+    ``scope`` partitions the id space between governed views (world model, user model) and the
+    default unscoped surface ("agent"). When scope is DEFAULT_SCOPE the output is byte-identical
+    to the pre-2.4 three-part hash — no existing claim ids change.
+
     Returns the first 32 hex characters of the SHA-256 digest, matching tess's convention.
 
     Encoding: each component is first normalized via :func:`normalize_topic_part` (NFC + lowercase
     + whitespace collapse + punctuation strip), then length-prefixed (``len:<value>``) and separated
-    by the ASCII unit separator (``\\x1f``). Length-prefix + distinct separator together prevent the
-    pipe-collision bug where a field containing the separator character could produce the same raw
-    bytes as a different split (e.g. subject="a|b", predicate="c" vs subject="a", predicate="b|c"
-    with a plain "|" separator). Normalization ensures that "Has Mass", "has mass", and "has  mass"
-    all produce the same id — identity matches the resolution-column notion of "same topic".
+    by the ASCII unit separator (``\\x1f``). For scoped claims a 4th length-prefixed part is
+    appended. Length-prefix + distinct separator together prevent the pipe-collision bug where a
+    field containing the separator character could produce the same raw bytes as a different split.
+    The 3-part (unscoped) and 4-part (scoped) encodings cannot collide because the boundary is
+    unambiguous in the length-prefix scheme.
     """
     parts = [
         f"{len(s)}:{s}"
@@ -74,5 +87,8 @@ def claim_id_for(subject: str, predicate: str, object_repr: str) -> str:
             normalize_topic_part(object_repr),
         )
     ]
+    if scope != DEFAULT_SCOPE:
+        scope_norm = normalize_topic_part(scope)
+        parts.append(f"{len(scope_norm)}:{scope_norm}")
     raw = "\x1f".join(parts).encode()
     return hashlib.sha256(raw).hexdigest()[:32]

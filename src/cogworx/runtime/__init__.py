@@ -9,8 +9,10 @@ off-write-path poller that leases due durable timers and re-drives their parked 
 
 from __future__ import annotations
 
+from cogworx.runtime.claim_extractor import DEFAULT_EXTRACTION_CONSUMER, ClaimExtractor
 from cogworx.runtime.context import RunContext
 from cogworx.runtime.engine import Clock, Engine, ResumeError, RunHandle
+from cogworx.runtime.episode_projector import DEFAULT_EPISODE_CONSUMER, EpisodeProjector
 from cogworx.runtime.projector import (
     DEFAULT_PROJECTION_CONSUMER,
     ResolvedOutcome,
@@ -20,9 +22,13 @@ from cogworx.runtime.projector import (
 from cogworx.runtime.sweeper import Sweeper
 
 __all__ = [
+    "DEFAULT_EPISODE_CONSUMER",
+    "DEFAULT_EXTRACTION_CONSUMER",
     "DEFAULT_PROJECTION_CONSUMER",
+    "ClaimExtractor",
     "Clock",
     "Engine",
+    "EpisodeProjector",
     "ResolvedOutcome",
     "ResumeError",
     "RunContext",

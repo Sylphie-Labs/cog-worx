@@ -10,9 +10,11 @@ from __future__ import annotations
 from cogworx.adapters.neo4j_entity_kg import Neo4jEntityKG
 from cogworx.adapters.neo4j_graph import Neo4jGraphStore
 from cogworx.adapters.neo4j_procedural_kg import Neo4jProceduralKG
+from cogworx.adapters.pg_episodes import PgEpisodeStore
 
 __all__ = [
     "Neo4jEntityKG",
     "Neo4jGraphStore",
     "Neo4jProceduralKG",
+    "PgEpisodeStore",
 ]

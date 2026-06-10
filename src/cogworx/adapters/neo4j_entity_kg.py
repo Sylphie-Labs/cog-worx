@@ -8,6 +8,7 @@ Schema additions over the base adapter (applied by :meth:`ensure_schema`):
   - UNIQUE (:Evidence {id}) — evidence events are globally unique.
   - Composite index on (:Claim {subject_norm, predicate_norm}) — drives resolution candidates.
   - Optional VECTOR INDEX ``claim_embedding`` on (:Claim {embedding}) with cosine similarity.
+  - FULLTEXT INDEX ``claim_fulltext`` on (:Claim {subject, predicate, payload}) — BM25 recall.
 
 Evidence events ACCUMULATE (CREATE, never MERGE). Confidence is NEVER stored — it is re-derived at
 read time from all accumulated evidence via :func:`cogworx.knowledge.confidence.claim_confidence`.
@@ -26,6 +27,7 @@ All stored ISO strings share the +00:00 offset so lexicographic order == tempora
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -36,12 +38,13 @@ from cogworx.claims.provenance import Claim, Provenance
 from cogworx.knowledge.confidence import ClaimConfidence, claim_confidence
 from cogworx.knowledge.evidence import EvidenceEvent
 from cogworx.knowledge.identity import claim_id_for, normalize_topic_part
-from cogworx.substrate.entity_kg import ScoredClaim
+from cogworx.substrate.entity_kg import ClaimProjection, ScoredClaim
+from cogworx.substrate.journal import ProjectionCursor
 
 if TYPE_CHECKING:
     from neo4j import AsyncManagedTransaction, Record
 
-__all__ = ["Neo4jEntityKG"]
+__all__ = ["Neo4jEntityKG", "sanitize_lucene_query"]
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +86,23 @@ CREATE INDEX claim_topic_composite IF NOT EXISTS
 FOR (c:Claim) ON (c.subject_norm, c.predicate_norm)
 """
 
+# Scope indexes — support scope-filtered reads without full scans.
+# claim_scope: point-lookup by scope for claims_about and resolution_candidates.
+# claim_scope_subject: composite for scope + subject_norm lookups (world-model entity reads).
+# Both are idempotent (IF NOT EXISTS) and migration-free — existing nodes without a scope
+# property are simply not indexed under those values until their next write touches them.
+# Why NOT a partial index on scope IS NOT NULL: Neo4j 5.x partial indexes are not yet stable for
+# property filters; a full single-property index is correct and the query planner uses it.
+_CLAIM_SCOPE_INDEX = """
+CREATE INDEX claim_scope IF NOT EXISTS
+FOR (c:Claim) ON (c.scope)
+"""
+
+_CLAIM_SCOPE_SUBJECT_INDEX = """
+CREATE INDEX claim_scope_subject IF NOT EXISTS
+FOR (c:Claim) ON (c.scope, c.subject_norm)
+"""
+
 # Vector index is created only when ensure_schema is called with embedding_dim; the base
 # claim_id unique constraint is inherited from Neo4jGraphStore.ensure_schema().
 _CLAIM_VECTOR_INDEX = """
@@ -92,6 +112,14 @@ OPTIONS {{indexConfig: {{
   `vector.dimensions`:  {dim},
   `vector.similarity_function`: 'cosine'
 }}}}
+"""
+
+# Fulltext (BM25) index over the three text properties surfaced by claims_full_text.
+# Why NOT a composite B-tree index: B-tree supports equality/range, not ranked token search.
+# Why NOT vector-only recall: BM25 is lexically exact — complementary recall channel for RRF.
+_CLAIM_FULLTEXT_INDEX = """
+CREATE FULLTEXT INDEX claim_fulltext IF NOT EXISTS
+FOR (c:Claim) ON EACH [c.subject, c.predicate, c.payload]
 """
 
 # ---------------------------------------------------------------------------
@@ -138,7 +166,8 @@ SET c.subject          = coalesce(c.subject, $subject),
     c.prov_source_ref  = coalesce(c.prov_source_ref, $prov_source_ref),
     c.prov_confidence  = coalesce(c.prov_confidence, $prov_confidence),
     c.prov_evidence    = coalesce(c.prov_evidence, $prov_evidence),
-    c.prov_recorded_at = coalesce(c.prov_recorded_at, $prov_recorded_at)
+    c.prov_recorded_at = coalesce(c.prov_recorded_at, $prov_recorded_at),
+    c.scope            = coalesce(c.scope, $scope)
 MERGE (s)-[:HAS_CLAIM]->(c)
 MERGE (c)-[:REFERS_TO]->(o)
 CREATE (ev:Evidence {
@@ -175,7 +204,8 @@ SET c.subject          = coalesce(c.subject, $subject),
     c.prov_source_ref  = coalesce(c.prov_source_ref, $prov_source_ref),
     c.prov_confidence  = coalesce(c.prov_confidence, $prov_confidence),
     c.prov_evidence    = coalesce(c.prov_evidence, $prov_evidence),
-    c.prov_recorded_at = coalesce(c.prov_recorded_at, $prov_recorded_at)
+    c.prov_recorded_at = coalesce(c.prov_recorded_at, $prov_recorded_at),
+    c.scope            = coalesce(c.scope, $scope)
 MERGE (s)-[:HAS_CLAIM]->(c)
 CREATE (ev:Evidence {
   id:               $ev_id,
@@ -247,7 +277,7 @@ OPTIONAL MATCH (c2:Claim)-[:REFERS_TO]->(e)
 WITH collect(DISTINCT c1) + collect(DISTINCT c2) AS claims_raw
 UNWIND claims_raw AS c
 WITH DISTINCT c
-WHERE c IS NOT NULL AND c.payload IS NOT NULL{as_of_filter}
+WHERE c IS NOT NULL AND c.payload IS NOT NULL{as_of_filter}{scope_filter}
 OPTIONAL MATCH (c)-[:HAS_EVIDENCE]->(ev:Evidence)
 WITH c, collect({{
   id:               ev.id,
@@ -287,6 +317,7 @@ RETURN c.id             AS claim_id,
        c.ingest_time    AS ingest_time,
        c.created_by     AS created_by,
        c.embedding      AS embedding,
+       c.scope          AS scope,
        c.prov_source    AS prov_source,
        c.prov_source_ref    AS prov_source_ref,
        c.prov_confidence    AS prov_confidence,
@@ -303,8 +334,11 @@ LIMIT $limit
 # "WHERE c IS NOT NULL AND c.valid_from <= ..." (one WHERE clause, not two).
 _AS_OF_FILTER = " AND c.valid_from <= $as_of AND (c.valid_to IS NULL OR c.valid_to > $as_of)"
 
-_CLAIMS_ABOUT_CYPHER = _CLAIMS_ABOUT_BASE.format(as_of_filter="")
-_CLAIMS_ABOUT_AS_OF_CYPHER = _CLAIMS_ABOUT_BASE.format(as_of_filter=_AS_OF_FILTER)
+# Base variants pre-formatted with no scope filter; the scope-aware versions are built at call
+# time inside claims_about() so each (as_of, scope) combination is constructed on demand rather
+# than pre-expanding all four variants as module-level constants.
+_CLAIMS_ABOUT_CYPHER = _CLAIMS_ABOUT_BASE.format(as_of_filter="", scope_filter="")
+_CLAIMS_ABOUT_AS_OF_CYPHER = _CLAIMS_ABOUT_BASE.format(as_of_filter=_AS_OF_FILTER, scope_filter="")
 
 # ---------------------------------------------------------------------------
 # Read-path Cypher — claims_by_similarity (vector index)
@@ -355,6 +389,7 @@ RETURN c.id             AS claim_id,
        c.ingest_time    AS ingest_time,
        c.created_by     AS created_by,
        c.embedding      AS embedding,
+       c.scope          AS scope,
        c.prov_source    AS prov_source,
        c.prov_source_ref    AS prov_source_ref,
        c.prov_confidence    AS prov_confidence,
@@ -374,7 +409,7 @@ _RESOLUTION_BY_TOPIC_CYPHER = """
 MATCH (c:Claim)
 WHERE c.subject_norm   = $subject_norm
   AND c.predicate_norm = $predicate_norm
-  AND c.payload IS NOT NULL
+  AND c.payload IS NOT NULL{scope_filter}
 RETURN c.id             AS claim_id,
        c.subject        AS subject,
        c.predicate      AS predicate,
@@ -386,6 +421,7 @@ RETURN c.id             AS claim_id,
        c.ingest_time    AS ingest_time,
        c.created_by     AS created_by,
        c.embedding      AS embedding,
+       c.scope          AS scope,
        c.prov_source    AS prov_source,
        c.prov_source_ref    AS prov_source_ref,
        c.prov_confidence    AS prov_confidence,
@@ -411,6 +447,7 @@ RETURN c.id             AS claim_id,
        c.ingest_time    AS ingest_time,
        c.created_by     AS created_by,
        c.embedding      AS embedding,
+       c.scope          AS scope,
        c.prov_source    AS prov_source,
        c.prov_source_ref    AS prov_source_ref,
        c.prov_confidence    AS prov_confidence,
@@ -418,6 +455,81 @@ RETURN c.id             AS claim_id,
        c.prov_recorded_at   AS prov_recorded_at
 ORDER BY score DESC
 """
+
+# ---------------------------------------------------------------------------
+# Read-path Cypher — claims_full_text (Lucene BM25 via fulltext index)
+# ---------------------------------------------------------------------------
+
+# Cypher for full-text (BM25) recall.  The CALL yields (node, score) from the Lucene index;
+# the WHERE guard enforces skeleton exclusion (payload IS NOT NULL) and the bi-temporal as_of
+# filter when supplied.  We collect own evidence + ancestor evidence exactly as
+# _CLAIMS_BY_SIMILARITY_CYPHER does so the same _derive_confidence helper works on both.
+# Note: braces in the collect({…}) map literals are NOT Python format placeholders — they are
+# literal Cypher map syntax and must not be doubled.
+_CLAIMS_FULL_TEXT_CYPHER = """
+CALL db.index.fulltext.queryNodes('claim_fulltext', $q)
+YIELD node AS c, score
+WHERE c.payload IS NOT NULL
+AND ($as_of IS NULL
+     OR (c.valid_from <= $as_of
+         AND (c.valid_to IS NULL OR c.valid_to > $as_of)))
+OPTIONAL MATCH (c)-[:HAS_EVIDENCE]->(ev:Evidence)
+WITH c, score, collect({
+  id:               ev.id,
+  type:             ev.type,
+  polarity:         ev.polarity,
+  source_id:        ev.source_id,
+  source_authority: ev.source_authority,
+  base_weight:      ev.base_weight,
+  run_id:           ev.run_id,
+  stage:            ev.stage,
+  recorded_at:      ev.recorded_at
+}) AS own_evidence
+OPTIONAL MATCH (c)-[:DERIVED_FROM*1..5]->(anc:Claim)
+OPTIONAL MATCH (anc)-[:HAS_EVIDENCE]->(anc_ev:Evidence)
+WITH c, score, own_evidence, anc,
+     collect({
+       id:               anc_ev.id,
+       type:             anc_ev.type,
+       polarity:         anc_ev.polarity,
+       source_id:        anc_ev.source_id,
+       source_authority: anc_ev.source_authority,
+       base_weight:      anc_ev.base_weight,
+       run_id:           anc_ev.run_id,
+       stage:            anc_ev.stage,
+       recorded_at:      anc_ev.recorded_at
+     }) AS anc_evidence
+WITH c, score, own_evidence,
+     collect(DISTINCT { claim_id: anc.id, evidence: anc_evidence }) AS ancestors
+RETURN c.id             AS claim_id,
+       c.subject        AS subject,
+       c.predicate      AS predicate,
+       c.payload        AS payload,
+       c.object_entity  AS object_entity,
+       c.epistemic_type AS epistemic_type,
+       c.valid_from     AS valid_from,
+       c.valid_to       AS valid_to,
+       c.ingest_time    AS ingest_time,
+       c.created_by     AS created_by,
+       c.embedding      AS embedding,
+       c.scope          AS scope,
+       c.prov_source    AS prov_source,
+       c.prov_source_ref    AS prov_source_ref,
+       c.prov_confidence    AS prov_confidence,
+       c.prov_evidence      AS prov_evidence,
+       c.prov_recorded_at   AS prov_recorded_at,
+       own_evidence     AS own_evidence,
+       ancestors        AS ancestors,
+       score            AS text_score
+ORDER BY score DESC
+LIMIT $fetch_k
+"""
+
+# Lucene special characters that must be escaped before passing user input to the fulltext index.
+# These are the Lucene query-parser specials documented for Neo4j's Lucene-backed fulltext index.
+# Why NOT parameterised Lucene terms: Neo4j fulltext takes a raw Lucene query string, not a
+# param-per-term binding — sanitization in Python is the only safe boundary (S8).
+_LUCENE_SPECIAL_RE = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
 
 # ---------------------------------------------------------------------------
 # Contradiction Cypher
@@ -445,6 +557,7 @@ RETURN DISTINCT
        other.ingest_time    AS ingest_time,
        other.created_by     AS created_by,
        other.embedding      AS embedding,
+       other.scope          AS scope,
        other.prov_source    AS prov_source,
        other.prov_source_ref    AS prov_source_ref,
        other.prov_confidence    AS prov_confidence,
@@ -464,12 +577,76 @@ SET c.valid_to = CASE WHEN c.valid_to IS NULL THEN $valid_to ELSE c.valid_to END
 RETURN c.id AS claim_id
 """
 
+# Advance a projection cursor MONOTONICALLY by the lexicographic (commit_ordinal, run_id,
+# step_index) tuple — mirrors the procedural KG's _ADVANCE_CURSOR_CYPHER exactly. Run in the SAME
+# managed transaction as the claim MERGEs so the cursor and the claims commit atomically (S6, D6).
+# $commit_ordinal null-guard covers the progress=None case (no advance).
+_ADVANCE_CURSOR_CYPHER = """
+MERGE (c:ProjectionCursor {consumer: $consumer})
+WITH c, ($commit_ordinal IS NOT NULL AND
+         (c.commit_ordinal IS NULL OR
+          [c.commit_ordinal, c.cursor_run_id, c.cursor_step_index]
+            < [$commit_ordinal, $cursor_run_id, $cursor_step_index])) AS advance
+SET c.commit_ordinal    = CASE WHEN advance THEN $commit_ordinal    ELSE c.commit_ordinal END,
+    c.cursor_run_id     = CASE WHEN advance THEN $cursor_run_id     ELSE c.cursor_run_id END,
+    c.cursor_step_index = CASE WHEN advance THEN $cursor_step_index ELSE c.cursor_step_index END
+"""
+
+# Read the current cursor for a consumer — mirrors _READ_CURSOR_CYPHER in neo4j_procedural_kg.
+_READ_CURSOR_CYPHER = """
+MATCH (c:ProjectionCursor {consumer: $consumer})
+RETURN c.commit_ordinal    AS commit_ordinal,
+       c.cursor_run_id     AS cursor_run_id,
+       c.cursor_step_index AS cursor_step_index
+"""
+
 # Reset: wipe Entity + Evidence nodes in addition to base Claim wipe (integration fixture).
 _RESET_ENTITY_CYPHER = "MATCH (e:Entity) DETACH DELETE e"
 _RESET_EVIDENCE_CYPHER = "MATCH (ev:Evidence) DETACH DELETE ev"
 
 # Min raw cosine for the vector fallback in resolution_candidates. Mirrors tess.kg convention.
 _RESOLUTION_MIN_RAW_COSINE: float = 0.70
+
+
+def _scope_filter(scope: str | None) -> str:
+    """Return the Cypher WHERE fragment that restricts results to one scope.
+
+    Returns an empty string when ``scope`` is ``None`` (no filter — all scopes).
+    When not ``None``, returns a fragment that can be appended to an existing WHERE clause.
+
+    The ``coalesce(c.scope, 'agent')`` expression handles pre-2.4 nodes that were written before
+    the ``scope`` property was introduced — they are treated as ``'agent'`` scope without any
+    migration or ALTER TABLE.  This is the migration-free read contract (Pod 2.4 design).
+
+    Why NOT a Cypher parameter for the fallback literal:  the coalesce fallback ``'agent'`` must
+    be a Cypher literal because parameterising it would require a second parameter name per query
+    site, adding complexity for zero benefit — the fallback value is a framework constant, not
+    caller data.
+    """
+    if scope is None:
+        return ""
+    return " AND coalesce(c.scope, 'agent') = $scope"
+
+
+def sanitize_lucene_query(query: str) -> str:
+    """Escape Lucene special characters and rewrite a user query as an OR-of-terms expression.
+
+    Algorithm (S8 compliance):
+      1. Escape each Lucene special character with a preceding backslash.
+      2. Split on whitespace into terms.
+      3. Rejoin with `` OR `` — a partial match on any term is better than requiring all.
+      4. Return ``""`` if the result is empty/whitespace-only (caller must guard on empty).
+
+    Why OR-of-terms instead of AND: for recall, returning claims that match ANY query term is
+    more useful than strict intersection; downstream RRF re-ranks by relevance anyway.
+    Why NOT raw pass-through: Lucene special characters in user strings crash ``queryNodes``
+    with a parse exception — they must be escaped before the string reaches the index.
+    """
+    escaped = _LUCENE_SPECIAL_RE.sub(r"\\\1", query)
+    terms = escaped.split()
+    if not terms:
+        return ""
+    return " OR ".join(terms)
 
 
 def _entity_kg_record_to_claim(record: Any) -> Claim:
@@ -495,6 +672,9 @@ def _entity_kg_record_to_claim(record: Any) -> Claim:
         recorded_at=datetime.fromisoformat(data["prov_recorded_at"]),
     )
     valid_to_raw = data["valid_to"]
+    # scope: coalesce to 'agent' for pre-2.4 nodes that have no scope property stored.
+    # The stored value is authoritative when present; None means the node predates Pod 2.4.
+    scope_raw = data.get("scope")
     return Claim(
         id=str(data["id"]),
         subject=str(data["subject"]),
@@ -508,6 +688,7 @@ def _entity_kg_record_to_claim(record: Any) -> Claim:
         ingest_time=datetime.fromisoformat(data["ingest_time"]),
         created_by=str(data["created_by"]),
         embedding=embedding,
+        scope=str(scope_raw) if scope_raw is not None else "agent",
     )
 
 
@@ -543,6 +724,9 @@ class Neo4jEntityKG(Neo4jGraphStore):
             await tx.run(_ENTITY_CONSTRAINT)
             await tx.run(_EVIDENCE_CONSTRAINT)
             await tx.run(_CLAIM_TOPIC_INDEX)
+            await tx.run(_CLAIM_SCOPE_INDEX)
+            await tx.run(_CLAIM_SCOPE_SUBJECT_INDEX)
+            await tx.run(_CLAIM_FULLTEXT_INDEX)
 
         async with self._connection.session() as session:
             await session.execute_write(_write_ddl)
@@ -668,18 +852,27 @@ class Neo4jEntityKG(Neo4jGraphStore):
         *,
         limit: int = 20,
         as_of: datetime | None = None,
+        scope: str | None = None,
     ) -> Sequence[ScoredClaim]:
         """Return scored claims where ``entity`` is subject or object, newest-first.
 
         ``as_of`` filter: valid_from <= as_of AND (valid_to IS NULL OR valid_to > as_of).
+        ``scope``: when not ``None``, restricts to claims matching that scope.
         Confidence is derived at read — never stored.
         """
-        cypher = _CLAIMS_ABOUT_AS_OF_CYPHER if as_of is not None else _CLAIMS_ABOUT_CYPHER
+        # Build the Cypher string with both optional filters injected.
+        sf = _scope_filter(scope)
+        cypher = _CLAIMS_ABOUT_BASE.format(
+            as_of_filter=_AS_OF_FILTER if as_of is not None else "",
+            scope_filter=sf,
+        )
         params: dict[str, Any] = {"entity": entity, "limit": limit}
         if as_of is not None:
             # UTC-normalise so the ISO string comparison in Cypher is correct regardless of the
             # caller's offset. Stored datetimes are always +00:00 after FIX 4 normalisation.
             params["as_of"] = to_utc(as_of).isoformat()
+        if scope is not None:
+            params["scope"] = scope
 
         async def _work(tx: AsyncManagedTransaction) -> list[Record]:
             result = await tx.run(cypher, **params)
@@ -695,16 +888,26 @@ class Neo4jEntityKG(Neo4jGraphStore):
         *,
         k: int = 10,
         min_score: float = 0.70,
+        scope: str | None = None,
     ) -> Sequence[ScoredClaim]:
         """Return up to ``k`` scored claims nearest to ``embedding`` (raw cosine >= min_score).
 
         Translates min_score (raw cosine) → Neo4j (1+cos)/2 on the way in, and converts returned
         Neo4j scores → raw cosine on the way out (already done in Cypher: 2*score-1).
+
+        ``scope``: when not ``None``, the vector index is over-fetched (``max(4*k, 64)`` candidates)
+        and the results are post-filtered in Python by scope.  The vector index cannot pre-filter by
+        property, so over-fetch is the only correct strategy.  If fewer than ``k`` results survive
+        the filter the short result is returned — v1 documented floor, no re-query.
         """
         min_neo4j = (1.0 + min_score) / 2.0
+        # Over-fetch when scope is set: the vector index returns the nearest k_prime nodes without
+        # regard to scope; we filter in Python and return up to k.  When scope is None we fetch
+        # exactly k (current behaviour, no change).
+        k_fetch = max(4 * k, 64) if scope is not None else k
         params: dict[str, Any] = {
             "embedding": list(embedding),
-            "k": k,
+            "k": k_fetch,
             "min_neo4j_score": min_neo4j,
         }
 
@@ -714,7 +917,62 @@ class Neo4jEntityKG(Neo4jGraphStore):
 
         async with self._connection.session() as session:
             records = await session.execute_read(_work)
-        return tuple(_record_to_scored_claim(r, similarity_key="raw_similarity") for r in records)
+
+        raw = [_record_to_scored_claim(r, similarity_key="raw_similarity") for r in records]
+        if scope is not None:
+            # Post-filter: keep only results whose scope matches (coalesce None → 'agent').
+            # v1: if fewer than k results survive, return the short list — no re-query attempted.
+            raw = [sc for sc in raw if (sc.claim.scope or "agent") == scope]
+        return tuple(raw[:k])
+
+    async def claims_full_text(
+        self,
+        query: str,
+        *,
+        k: int = 10,
+        scope: str | None = None,
+        as_of: datetime | None = None,
+    ) -> Sequence[ScoredClaim]:
+        """BM25 full-text search over claim subject/predicate/payload (CANON S3, S8, S9).
+
+        Sanitizes the query string before sending to Lucene (S8 — raw user input must never
+        crash the call). Empty/whitespace-only query returns []. Score is implementation-defined
+        (Lucene BM25); only descending rank is contractual (S9 — exposed as ``text_score``).
+
+        ``scope``: when not ``None``, the fulltext index is over-fetched (``max(4*k, 64)``
+        candidates, matching the CF-3 precedent from ``claims_by_similarity``) and results are
+        post-filtered in Python.  If fewer than ``k`` survive the filter the short result is
+        returned as-is — no re-query (same v1 floor as the vector channel).
+        ``as_of``: temporal filter applied in Cypher (valid_from <= as_of AND valid_to is NULL
+        or valid_to > as_of). Skeleton nodes (payload IS NULL) are always excluded.
+        """
+        lucene_q = sanitize_lucene_query(query)
+        if not lucene_q:
+            return ()
+
+        # Over-fetch when scope is set so post-Python-filter still yields up to k results.
+        # When scope is None, fetch exactly k (same discipline as claims_by_similarity).
+        fetch_k = max(4 * k, 64) if scope is not None else k
+
+        params: dict[str, Any] = {
+            "q": lucene_q,
+            "fetch_k": fetch_k,
+            "as_of": to_utc(as_of).isoformat() if as_of is not None else None,
+        }
+
+        async def _work(tx: AsyncManagedTransaction) -> list[Any]:
+            result = await tx.run(_CLAIMS_FULL_TEXT_CYPHER, **params)
+            return [r async for r in result]
+
+        async with self._connection.session() as session:
+            records = await session.execute_read(_work)
+
+        raw = [_record_to_scored_claim(r, text_score_key="text_score") for r in records]
+        if scope is not None:
+            # Post-filter: keep only results whose scope matches (coalesce None → 'agent').
+            # v1: if fewer than k results survive, return the short list — no re-query.
+            raw = [sc for sc in raw if (sc.claim.scope or "agent") == scope]
+        return tuple(raw[:k])
 
     async def resolution_candidates(
         self,
@@ -723,23 +981,31 @@ class Neo4jEntityKG(Neo4jGraphStore):
         *,
         embedding: Sequence[float] | None = None,
         k: int = 5,
+        scope: str | None = None,
     ) -> Sequence[Claim]:
         """Return candidate claims for judge-based resolution (plain Claims, no confidence).
 
         Primary: exact match on (subject_norm, predicate_norm), newest-first, up to ``k``.
         If primary yields fewer than ``k`` AND ``embedding`` is given, fills from the vector
         channel (min raw cosine 0.70), deduped by id, still capped at ``k``.
+
+        ``scope``: when not ``None``, applies ``coalesce(c.scope, 'agent') = $scope`` to the topic
+        pass (Cypher WHERE) and post-filters the vector fallback in Python.
         """
         subject_norm = normalize_topic_part(subject)
         predicate_norm = normalize_topic_part(predicate)
+        # Inject the scope filter into the topic query's WHERE clause.
+        topic_cypher = _RESOLUTION_BY_TOPIC_CYPHER.format(scope_filter=_scope_filter(scope))
+        topic_params: dict[str, Any] = {
+            "subject_norm": subject_norm,
+            "predicate_norm": predicate_norm,
+            "k": k,
+        }
+        if scope is not None:
+            topic_params["scope"] = scope
 
         async def _topic_work(tx: AsyncManagedTransaction) -> list[Record]:
-            result = await tx.run(
-                _RESOLUTION_BY_TOPIC_CYPHER,
-                subject_norm=subject_norm,
-                predicate_norm=predicate_norm,
-                k=k,
-            )
+            result = await tx.run(topic_cypher, **topic_params)
             return [r async for r in result]
 
         async with self._connection.session() as session:
@@ -770,11 +1036,15 @@ class Neo4jEntityKG(Neo4jGraphStore):
 
             for r in vector_records:
                 claim = self._record_to_claim(r)
-                if claim.id not in seen:
-                    seen.add(claim.id)
-                    candidates.append(claim)
-                    if len(candidates) >= k or len(candidates) - len(topic_records) >= need:
-                        break
+                if claim.id in seen:
+                    continue
+                # Post-filter by scope in Python (vector index cannot pre-filter by property).
+                if scope is not None and (claim.scope or "agent") != scope:
+                    continue
+                seen.add(claim.id)
+                candidates.append(claim)
+                if len(candidates) >= k or len(candidates) - len(topic_records) >= need:
+                    break
 
         return tuple(candidates[:k])
 
@@ -818,6 +1088,66 @@ class Neo4jEntityKG(Neo4jGraphStore):
         if record is None:
             raise ValueError(f"invalidate_claim: unknown claim_id {claim_id!r}")
 
+    async def project_claims(
+        self,
+        consumer: str,
+        writes: Sequence[ClaimProjection],
+        progress: ProjectionCursor | None,
+    ) -> None:
+        """ATOMICALLY write a batch of (claim, evidence) pairs and advance the cursor (D6, S6).
+
+        Validates all claim ids up front (fail-fast before any I/O). Then in ONE managed Neo4j
+        transaction: MERGEs each claim (coalesce-populate + evidence CREATE, DERIVED_FROM edges)
+        and advances the (:ProjectionCursor {consumer}) to ordinal_max(current, progress).
+
+        A crash before commit leaves NO claims and NO cursor advance — exactly-once state even
+        when the upstream (the ClaimExtractor) is non-deterministic (D6).
+        """
+        for cp in writes:
+            _assert_identity(cp.claim)
+
+        batch_params = [
+            (
+                _WRITE_CLAIM_WITH_ENTITY_CYPHER
+                if cp.claim.object_entity is not None
+                else _WRITE_CLAIM_NO_ENTITY_CYPHER,
+                _write_claim_params(cp.claim, cp.evidence),
+                cp.claim,
+            )
+            for cp in writes
+        ]
+        cursor_params = _write_cursor_params(consumer, progress)
+
+        async def _work(tx: AsyncManagedTransaction) -> None:
+            for cypher, params, claim in batch_params:
+                await tx.run(cypher, **params)
+                for parent_id in claim.provenance.evidence:
+                    await tx.run(_LINK_DERIVED_FROM_CYPHER, child_id=claim.id, parent_id=parent_id)
+            await tx.run(_ADVANCE_CURSOR_CYPHER, **cursor_params)
+
+        async with self._connection.session() as session:
+            await session.execute_write(_work)
+
+    async def read_cursor(self, consumer: str) -> ProjectionCursor | None:
+        """Return the ClaimExtractor's projection cursor from Neo4j (None if never advanced)."""
+
+        async def _work(tx: AsyncManagedTransaction) -> Record | None:
+            result = await tx.run(_READ_CURSOR_CYPHER, consumer=consumer)
+            return await result.single()
+
+        async with self._connection.session() as session:
+            record = await session.execute_read(_work)
+        if record is None:
+            return None
+        data = record.data() if hasattr(record, "data") else dict(record)
+        if data["commit_ordinal"] is None:
+            return None
+        return ProjectionCursor(
+            commit_ordinal=int(data["commit_ordinal"]),
+            run_id=str(data["cursor_run_id"]),
+            step_index=int(data["cursor_step_index"]),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -825,17 +1155,22 @@ class Neo4jEntityKG(Neo4jGraphStore):
 
 
 def _assert_identity(claim: Claim) -> None:
-    """Enforce identity discipline: claim.id must equal claim_id_for(...).
+    """Enforce identity discipline: claim.id must equal claim_id_for(..., scope=claim.scope).
 
     Raises ``ValueError`` before any I/O so caller receives a loud error rather than a silently
     misrouted evidence event.
+
+    ``scope`` is forwarded to ``claim_id_for`` so that a scoped claim whose id was computed
+    without scope (or with the wrong scope) fails loudly here rather than being silently stored
+    under the wrong node.
     """
     object_repr = claim.object_entity if claim.object_entity is not None else claim.payload
-    expected = claim_id_for(claim.subject, claim.predicate or "", object_repr)
+    expected = claim_id_for(claim.subject, claim.predicate or "", object_repr, scope=claim.scope)
     if claim.id != expected:
         raise ValueError(
             f"claim.id {claim.id!r} does not match expected "
-            f"claim_id_for({claim.subject!r}, {claim.predicate!r}, {object_repr!r}) = {expected!r}"
+            f"claim_id_for({claim.subject!r}, {claim.predicate!r}, {object_repr!r}, "
+            f"scope={claim.scope!r}) = {expected!r}"
         )
 
 
@@ -883,9 +1218,28 @@ def _write_claim_params(claim: Claim, ev: EvidenceEvent) -> dict[str, Any]:
         "prov_confidence": prov.confidence,
         "prov_evidence": list(prov.evidence),
         "prov_recorded_at": to_utc(prov.recorded_at).isoformat(),
+        # scope: stamped once on first write via coalesce; a re-derive in the same scope is
+        # idempotent because the same $scope value is presented each time. A re-derive in a
+        # different scope produces a different claim.id (different hash) so it merges a NEW node
+        # — that node gets its own scope stamped here.
+        "scope": claim.scope,
     }
     params.update(_ev_params(ev))
     return params
+
+
+def _write_cursor_params(consumer: str, progress: ProjectionCursor | None) -> dict[str, Any]:
+    """Build the nullable cursor parameter dict for _ADVANCE_CURSOR_CYPHER.
+
+    Mirrors Neo4jProceduralKG._write_cursor_params: a null commit_ordinal leaves the stored cursor
+    unchanged (progress=None means no advance). commit_ordinal is a plain integer (commit_xid).
+    """
+    return {
+        "consumer": consumer,
+        "commit_ordinal": progress.commit_ordinal if progress is not None else None,
+        "cursor_run_id": progress.run_id if progress is not None else None,
+        "cursor_step_index": progress.step_index if progress is not None else None,
+    }
 
 
 def _evidence_items_from_rows(rows: list[dict[str, Any]]) -> list[EvidenceEvent]:
@@ -947,19 +1301,30 @@ def _record_to_scored_claim(
     record: Any,
     *,
     similarity_key: str | None = None,
+    text_score_key: str | None = None,
 ) -> ScoredClaim:
-    """Rebuild a ScoredClaim from a Cypher result row that includes own_evidence + ancestors."""
+    """Rebuild a ScoredClaim from a Cypher result row that includes own_evidence + ancestors.
+
+    ``similarity_key``: name of the column carrying the raw cosine score (vector channel).
+    ``text_score_key``: name of the column carrying the Lucene BM25 score (fulltext channel).
+    Both default to ``None`` — when absent, the corresponding ScoredClaim field is ``None``.
+    """
     claim = _entity_kg_record_to_claim(record)
     own_conf, lineage_min = _derive_confidence(record)
     similarity: float | None = None
     if similarity_key is not None:
         raw = record.get(similarity_key)
         similarity = float(raw) if raw is not None else None
+    text_score: float | None = None
+    if text_score_key is not None:
+        raw_ts = record.get(text_score_key)
+        text_score = float(raw_ts) if raw_ts is not None else None
     return ScoredClaim(
         claim=claim,
         confidence=own_conf,
         lineage_min_confidence=lineage_min,
         similarity=similarity,
+        text_score=text_score,
     )
 
 

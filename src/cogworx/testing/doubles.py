@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import math
 import random
+import re
+import unicodedata
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 
@@ -27,7 +29,8 @@ from cogworx.knowledge.procedural_confidence import (
 )
 from cogworx.knowledge.procedural_promotion import PromotionPolicy
 from cogworx.loop.state import RunStatus
-from cogworx.substrate.entity_kg import ScoredClaim
+from cogworx.substrate.entity_kg import ClaimProjection, ScoredClaim
+from cogworx.substrate.episodes import Episode
 from cogworx.substrate.journal import (
     ProjectedStep,
     ProjectionCursor,
@@ -45,6 +48,7 @@ from cogworx.substrate.procedural_kg import (
     Trial,
     TrialWrite,
     ordinal_ge,
+    ordinal_max,
 )
 from cogworx.substrate.procedural_selection import DEFAULT_PROMOTION_POLICY
 
@@ -383,6 +387,8 @@ class InMemoryEntityKG:
         self._evidence: dict[str, list[EvidenceEvent]] = {}
         # contradiction pairs stored as frozenset so both directions query the same set
         self._contradictions: set[frozenset[str]] = set()
+        # projection cursors keyed by consumer — mirrors InMemoryProceduralKG._progress
+        self._cursors: dict[str, ProjectionCursor] = {}
 
     async def upsert_claim(self, claim: Claim) -> str:
         """Sealed: raises NotImplementedError. Use write_claim instead.
@@ -427,8 +433,13 @@ class InMemoryEntityKG:
         *,
         limit: int = 20,
         as_of: datetime | None = None,
+        scope: str | None = None,
     ) -> Sequence[ScoredClaim]:
-        """Return scored claims where entity is subject or object, newest-first."""
+        """Return scored claims where entity is subject or object, newest-first.
+
+        ``scope``: when not ``None``, restricts results to claims where
+        ``coalesce(claim.scope, 'agent') == scope``.  ``None`` returns all scopes.
+        """
         # UTC-normalise as_of so naive datetimes are accepted (matches adapter contract).
         as_of_utc = _to_utc_mem(as_of) if as_of is not None else None
         results: list[ScoredClaim] = []
@@ -447,6 +458,9 @@ class InMemoryEntityKG:
                     continue
                 if claim.valid_to is not None and _to_utc_mem(claim.valid_to) <= as_of_utc:
                     continue
+            # Scope filter: coalesce None → 'agent' (pre-2.4 compatibility).
+            if scope is not None and (getattr(claim, "scope", None) or "agent") != scope:
+                continue
             seen.add(claim.id)
             own_conf = claim_confidence(self._evidence.get(claim.id, []))
             lineage_min = self._lineage_min(claim.id, own_conf.confidence, depth=5)
@@ -467,8 +481,16 @@ class InMemoryEntityKG:
         *,
         k: int = 10,
         min_score: float = 0.70,
+        scope: str | None = None,
     ) -> Sequence[ScoredClaim]:
-        """Return up to k scored claims nearest to embedding by raw cosine (>= min_score)."""
+        """Return up to k scored claims nearest to embedding by raw cosine (>= min_score).
+
+        ``scope``: when not ``None``, filters results to claims where
+        ``coalesce(claim.scope, 'agent') == scope`` AFTER ranking.  The in-memory double has no
+        vector index, so the scope filter is applied in Python identically to the over-fetch
+        strategy the real adapter uses — the semantics are the same (short results are returned
+        as-is with no re-query, v1 floor).
+        """
         query = tuple(embedding)
         query_norm = math.sqrt(sum(v * v for v in query))
         if query_norm == 0.0:
@@ -496,7 +518,100 @@ class InMemoryEntityKG:
             )
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return tuple(sc for _, sc in scored[:k])
+        results = [sc for _, sc in scored]
+        if scope is not None:
+            # Post-filter by scope: coalesce None → 'agent' (pre-2.4 compatibility).
+            results = [
+                sc for sc in results if (getattr(sc.claim, "scope", None) or "agent") == scope
+            ]
+        return tuple(results[:k])
+
+    async def claims_full_text(
+        self,
+        query: str,
+        *,
+        k: int = 10,
+        scope: str | None = None,
+        as_of: datetime | None = None,
+    ) -> Sequence[ScoredClaim]:
+        """BM25 full-text search over claim subject/predicate/payload (k1=1.2, b=0.75).
+
+        Empty/whitespace-only query returns []. Skeleton nodes (payload is None) excluded.
+        scope/as_of: same post-filter discipline as claims_by_similarity.
+        """
+        k1 = 1.2
+        b = 0.75
+
+        def _tokenize(text: str) -> list[str]:
+            return re.findall(r"\w+", unicodedata.normalize("NFC", text).casefold())
+
+        def _doc_text(claim: Claim) -> str:
+            payload_str = str(claim.payload) if claim.payload is not None else ""
+            return f"{claim.subject} {claim.predicate} {payload_str}"
+
+        q_terms = _tokenize(query)
+        if not q_terms:
+            return ()
+
+        corpus = [c for c in self._claims.values() if c.payload is not None]
+        if not corpus:
+            return ()
+
+        n = len(corpus)
+        doc_tokens: list[list[str]] = [_tokenize(_doc_text(c)) for c in corpus]
+        doc_lengths = [len(toks) for toks in doc_tokens]
+        avgdl = sum(doc_lengths) / n if n > 0 else 1.0
+
+        df: dict[str, int] = {}
+        for toks in doc_tokens:
+            for term in set(toks):
+                df[term] = df.get(term, 0) + 1
+
+        as_of_utc = _to_utc_mem(as_of) if as_of is not None else datetime.now(UTC)
+
+        scored: list[tuple[float, Claim]] = []
+        for idx, claim in enumerate(corpus):
+            toks = doc_tokens[idx]
+            dl = doc_lengths[idx]
+            score = 0.0
+            tf_map: dict[str, int] = {}
+            for term in toks:
+                tf_map[term] = tf_map.get(term, 0) + 1
+            for term in q_terms:
+                if term not in tf_map:
+                    continue
+                tf = tf_map[term]
+                df_t = df.get(term, 0)
+                idf = math.log((n - df_t + 0.5) / (df_t + 0.5) + 1.0)
+                tf_sat = tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * dl / avgdl))
+                score += idf * tf_sat
+            if score > 0.0:
+                scored.append((score, claim))
+
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+
+        results: list[ScoredClaim] = []
+        for score, claim in scored:
+            vf = _to_utc_mem(claim.valid_from)
+            if vf > as_of_utc:
+                continue
+            if claim.valid_to is not None and _to_utc_mem(claim.valid_to) <= as_of_utc:
+                continue
+            if scope is not None and (getattr(claim, "scope", None) or "agent") != scope:
+                continue
+            own_conf = claim_confidence(self._evidence.get(claim.id, []))
+            lineage_min = self._lineage_min(claim.id, own_conf.confidence, depth=5)
+            results.append(
+                ScoredClaim(
+                    claim=claim,
+                    confidence=own_conf,
+                    lineage_min_confidence=lineage_min,
+                    text_score=score,
+                )
+            )
+            if len(results) >= k:
+                break
+        return tuple(results)
 
     async def resolution_candidates(
         self,
@@ -505,10 +620,20 @@ class InMemoryEntityKG:
         *,
         embedding: Sequence[float] | None = None,
         k: int = 5,
+        scope: str | None = None,
     ) -> Sequence[Claim]:
-        """Return candidate claims by exact topic-column match, topped up by vector if needed."""
+        """Return candidate claims by exact topic-column match, topped up by vector if needed.
+
+        ``scope``: when not ``None``, restricts both the topic pass and the vector fallback to
+        claims where ``coalesce(claim.scope, 'agent') == scope``.
+        """
         subject_norm = normalize_topic_part(subject)
         predicate_norm = normalize_topic_part(predicate)
+
+        def _matches_scope(c: Claim) -> bool:
+            if scope is None:
+                return True
+            return (getattr(c, "scope", None) or "agent") == scope
 
         # Primary: exact (subject_norm, predicate_norm), newest first
         topic_hits = sorted(
@@ -517,6 +642,7 @@ class InMemoryEntityKG:
                 for c in self._claims.values()
                 if normalize_topic_part(c.subject) == subject_norm
                 and normalize_topic_part(c.predicate or "") == predicate_norm
+                and _matches_scope(c)
             ],
             key=lambda c: c.ingest_time,
             reverse=True,
@@ -532,6 +658,8 @@ class InMemoryEntityKG:
                 vec_hits: list[tuple[float, Claim]] = []
                 for claim in self._claims.values():
                     if claim.id in seen or claim.embedding is None:
+                        continue
+                    if not _matches_scope(claim):
                         continue
                     raw = _cosine_sim(query, query_norm, claim.embedding)
                     if raw is not None and raw >= 0.70:
@@ -573,6 +701,28 @@ class InMemoryEntityKG:
         # First-invalidation-wins: only update if currently None.
         if claim.valid_to is None:
             self._claims[claim_id] = claim.model_copy(update={"valid_to": _to_utc_mem(valid_to)})
+
+    async def read_cursor(self, consumer: str) -> ProjectionCursor | None:
+        """Return the consumer's cursor, or None on cold start."""
+        return self._cursors.get(consumer)
+
+    async def project_claims(
+        self,
+        consumer: str,
+        writes: Sequence[ClaimProjection],
+        progress: ProjectionCursor | None,
+    ) -> None:
+        """Write a batch of (claim, evidence) pairs then advance the cursor (D6, S6).
+
+        The in-memory double has no partial-failure scenario, so the atomicity guarantee is
+        behavioural: all writes happen before the cursor advances, mirroring the adapter's
+        single-txn contract. Identity discipline is enforced via write_claim (raises ValueError
+        on failure).
+        """
+        for cp in writes:
+            await self.write_claim(cp.claim, evidence=cp.evidence)
+        if progress is not None:
+            self._cursors[consumer] = ordinal_max(self._cursors.get(consumer), progress) or progress
 
     def _lineage_min(
         self,
@@ -623,13 +773,18 @@ class InMemoryEntityKG:
 
 
 def _assert_identity_mem(claim: Claim) -> None:
-    """Enforce identity discipline in the in-memory double (same rule as the real adapter)."""
+    """Enforce identity discipline in the in-memory double (same rule as the real adapter).
+
+    ``scope`` is forwarded to ``claim_id_for`` so that a scoped claim whose id was computed
+    without scope (or with the wrong scope) fails loudly here — same discipline as the adapter.
+    """
     object_repr = claim.object_entity if claim.object_entity is not None else claim.payload
-    expected = claim_id_for(claim.subject, claim.predicate or "", object_repr)
+    expected = claim_id_for(claim.subject, claim.predicate or "", object_repr, scope=claim.scope)
     if claim.id != expected:
         raise ValueError(
             f"claim.id {claim.id!r} does not match expected "
-            f"claim_id_for({claim.subject!r}, {claim.predicate!r}, {object_repr!r}) = {expected!r}"
+            f"claim_id_for({claim.subject!r}, {claim.predicate!r}, {object_repr!r}, "
+            f"scope={claim.scope!r}) = {expected!r}"
         )
 
 
@@ -874,8 +1029,72 @@ class InMemoryProceduralKG:
         )
 
 
+class InMemoryEpisodeStore:
+    """In-memory :class:`~cogworx.substrate.episodes.EpisodeStore` for deterministic tests.
+
+    Holds episodes and projection cursors entirely in dicts — no Postgres, no network. Implements
+    the full EpisodeStore Protocol contract:
+
+    - ``project_episodes`` inserts all episodes (ON CONFLICT = no-op via ``setdefault``) and
+      advances the cursor, atomically under asyncio (no ``await`` between them).
+    - ``read_cursor`` returns the stored cursor, or None on cold start.
+    - ``episodes_for_session`` filters by session_id and sorts by (step_index, turn_index).
+    - ``get_episode`` looks up by episode_id.
+    """
+
+    def __init__(self) -> None:
+        self._episodes: dict[str, Episode] = {}
+        self._cursors: dict[str, ProjectionCursor] = {}
+
+    async def project_episodes(
+        self,
+        consumer: str,
+        episodes: Sequence[Episode],
+        progress: ProjectionCursor,
+    ) -> None:
+        """Insert episodes (first-write-wins) and advance cursor — atomic under asyncio."""
+        for ep in episodes:
+            self._episodes.setdefault(ep.episode_id, ep)
+        self._cursors[consumer] = progress
+
+    async def read_cursor(self, consumer: str) -> ProjectionCursor | None:
+        """Return the last-scanned cursor for this consumer, or None on cold start."""
+        return self._cursors.get(consumer)
+
+    async def episodes_for_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[Episode]:
+        """Return episodes for a session ordered by (step_index, turn_index) ASC."""
+        hits = [ep for ep in self._episodes.values() if ep.session_id == session_id]
+        hits.sort(key=lambda ep: (ep.step_index, ep.turn_index))
+        return tuple(hits[:limit])
+
+    async def get_episode(self, episode_id: str) -> Episode | None:
+        """Return an episode by id, or None."""
+        return self._episodes.get(episode_id)
+
+    async def recent_episodes(
+        self,
+        session_id: str,
+        *,
+        limit: int = 20,
+        before: datetime | None = None,
+    ) -> Sequence[Episode]:
+        """Return the most-recent episodes for a session, newest-first."""
+        episodes = [e for e in self._episodes.values() if e.session_id == session_id]
+        if before is not None:
+            before_utc = _to_utc_mem(before)
+            episodes = [e for e in episodes if _to_utc_mem(e.occurred_at) < before_utc]
+        episodes.sort(key=lambda e: (e.step_index, e.turn_index), reverse=True)
+        return tuple(episodes[:limit])
+
+
 __all__ = [
     "InMemoryEntityKG",
+    "InMemoryEpisodeStore",
     "InMemoryGraphStore",
     "InMemoryJournal",
     "InMemoryLatentStore",
