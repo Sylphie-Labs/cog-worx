@@ -138,9 +138,9 @@ async def test_run_carries_pathway_pointer_for_cold_resume() -> None:
 
 async def test_latent_search_returns_nearest_first() -> None:
     store = InMemoryLatentStore()
-    await store.upsert(LatentRecord(id="near", embedding=(1.0, 0.0)))
-    await store.upsert(LatentRecord(id="far", embedding=(0.0, 1.0)))
-    await store.upsert(LatentRecord(id="mid", embedding=(1.0, 1.0)))
+    await store.put(LatentRecord(id="near", embedding=(1.0, 0.0)))
+    await store.put(LatentRecord(id="far", embedding=(0.0, 1.0)))
+    await store.put(LatentRecord(id="mid", embedding=(1.0, 1.0)))
 
     matches = await store.search((1.0, 0.0), k=3)
     assert tuple(m.record.id for m in matches) == ("near", "mid", "far")
@@ -151,15 +151,17 @@ async def test_latent_search_empty_and_zero_vector() -> None:
     store = InMemoryLatentStore()
     assert await store.search((1.0, 0.0)) == ()
 
-    await store.upsert(LatentRecord(id="x", embedding=(1.0, 0.0)))
+    await store.put(LatentRecord(id="x", embedding=(1.0, 0.0)))
     assert await store.search((0.0, 0.0)) == ()
 
 
-async def test_latent_upsert_replaces_by_id() -> None:
+async def test_latent_put_replaces_content_preserves_usage() -> None:
     store = InMemoryLatentStore()
-    await store.upsert(LatentRecord(id="x", embedding=(1.0, 0.0)))
-    await store.upsert(LatentRecord(id="x", embedding=(0.0, 1.0)))
+    await store.put(LatentRecord(id="x", embedding=(1.0, 0.0)))
+    await store.record_use(["x"])
+    await store.put(LatentRecord(id="x", embedding=(0.0, 1.0)))  # replace content
 
     matches = await store.search((0.0, 1.0), k=5)
     assert len(matches) == 1
     assert matches[0].record.id == "x"
+    assert matches[0].use_count == 1  # usage survived the content replace

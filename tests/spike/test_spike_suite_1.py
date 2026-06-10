@@ -271,9 +271,9 @@ async def test_criterion_1_polyglot_substrate_capability(settings: SubstrateSett
         # --- pgvector: dense recall returns the nearest record first with a bounded score. ---
         await latent.ensure_schema()
         await latent.reset()
-        await latent.upsert(LatentRecord(id="near", embedding=(1.0, 0.0, 0.0, 0.0)))
-        await latent.upsert(LatentRecord(id="far", embedding=(0.0, 1.0, 0.0, 0.0)))
-        await latent.upsert(LatentRecord(id="mid", embedding=(1.0, 1.0, 0.0, 0.0)))
+        await latent.put(LatentRecord(id="near", embedding=(1.0, 0.0, 0.0, 0.0)))
+        await latent.put(LatentRecord(id="far", embedding=(0.0, 1.0, 0.0, 0.0)))
+        await latent.put(LatentRecord(id="mid", embedding=(1.0, 1.0, 0.0, 0.0)))
         matches = await latent.search((1.0, 0.0, 0.0, 0.0), k=3)
         assert tuple(m.record.id for m in matches) == ("near", "mid", "far")
         assert matches[0].score >= matches[1].score >= matches[2].score
@@ -451,7 +451,7 @@ async def test_criterion_3a_capability_enabled_completes(settings: SubstrateSett
         await journal.reset()
         await latent.ensure_schema()
         await latent.reset()
-        await latent.upsert(LatentRecord(id="hit", embedding=(1.0, 0.0, 0.0, 0.0)))
+        await latent.put(LatentRecord(id="hit", embedding=(1.0, 0.0, 0.0, 0.0)))
 
         run_id = f"spike3a-{uuid.uuid4().hex}"
         state = await engine.run(

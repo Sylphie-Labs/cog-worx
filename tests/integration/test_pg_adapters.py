@@ -176,9 +176,9 @@ async def test_load_run_unknown_is_none(journal: TimescaleJournal) -> None:
 
 
 async def test_latent_search_returns_nearest_first(latent: PgLatentStore) -> None:
-    await latent.upsert(LatentRecord(id="near", embedding=(1.0, 0.0, 0.0, 0.0)))
-    await latent.upsert(LatentRecord(id="far", embedding=(0.0, 1.0, 0.0, 0.0)))
-    await latent.upsert(LatentRecord(id="mid", embedding=(1.0, 1.0, 0.0, 0.0)))
+    await latent.put(LatentRecord(id="near", embedding=(1.0, 0.0, 0.0, 0.0)))
+    await latent.put(LatentRecord(id="far", embedding=(0.0, 1.0, 0.0, 0.0)))
+    await latent.put(LatentRecord(id="mid", embedding=(1.0, 1.0, 0.0, 0.0)))
 
     matches = await latent.search((1.0, 0.0, 0.0, 0.0), k=3)
     assert tuple(m.record.id for m in matches) == ("near", "mid", "far")
@@ -186,10 +186,12 @@ async def test_latent_search_returns_nearest_first(latent: PgLatentStore) -> Non
     assert all(-1.0 <= m.score <= 1.0 for m in matches)
 
 
-async def test_latent_upsert_replaces_by_id(latent: PgLatentStore) -> None:
-    await latent.upsert(LatentRecord(id="x", embedding=(1.0, 0.0, 0.0, 0.0)))
-    await latent.upsert(LatentRecord(id="x", embedding=(0.0, 1.0, 0.0, 0.0)))
+async def test_latent_put_replaces_content_preserves_usage(latent: PgLatentStore) -> None:
+    await latent.put(LatentRecord(id="x", embedding=(1.0, 0.0, 0.0, 0.0)))
+    await latent.record_use(["x"])
+    await latent.put(LatentRecord(id="x", embedding=(0.0, 1.0, 0.0, 0.0)))
 
     matches = await latent.search((0.0, 1.0, 0.0, 0.0), k=5)
     assert len(matches) == 1
     assert matches[0].record.id == "x"
+    assert matches[0].use_count == 1  # usage survived the content replace

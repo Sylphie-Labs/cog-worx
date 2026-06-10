@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 
 from cogworx.adapters.neo4j_procedural_kg import select_candidates, split_trial_id
@@ -19,6 +19,7 @@ from cogworx.claims.provenance import Artifact, Claim, Provenance
 from cogworx.knowledge.confidence import ClaimConfidence, claim_confidence
 from cogworx.knowledge.evidence import EvidenceEvent
 from cogworx.knowledge.identity import claim_id_for, normalize_topic_part
+from cogworx.knowledge.latent_activation import ActivationParams, ActivationRow, select_hot_ids
 from cogworx.knowledge.procedural_confidence import (
     ProcedureSuccess,
     TrialOutcome,
@@ -34,7 +35,7 @@ from cogworx.substrate.journal import (
     StepRecord,
     Timer,
 )
-from cogworx.substrate.latent import LatentMatch, LatentRecord
+from cogworx.substrate.latent import LatentMatch, LatentRecord, Tier, TierSweepResult
 from cogworx.substrate.procedural_kg import (
     CursorAdvance,
     Outcome,
@@ -248,27 +249,99 @@ class InMemoryGraphStore:
 
 
 class InMemoryLatentStore:
-    """An in-memory ``LatentStore`` with cosine-similarity nearest-neighbour search."""
+    """An in-memory ``LatentStore`` — full Pod 2.2 Protocol (put/record_use/search/sweep_tiers).
 
-    def __init__(self) -> None:
+    Implements the same contract as ``PgLatentStore`` without a database. All state is in plain
+    dicts; usage metadata (use_count, last_used_at, tier, created_at) is kept separately from
+    content so ``put`` (content-only) and ``record_use`` (usage-only) are structurally isolated —
+    the same invariant the adapter enforces via separate SQL clauses.
+    """
+
+    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
         self._records: dict[str, LatentRecord] = {}
+        self._use_count: dict[str, int] = {}
+        self._last_used_at: dict[str, datetime] = {}
+        self._created_at: dict[str, datetime] = {}
+        self._tier: dict[str, Tier] = {}
+        self._clock: Callable[[], datetime] = clock or (lambda: datetime.now(UTC))
 
-    async def upsert(self, record: LatentRecord) -> None:
+    async def put(self, record: LatentRecord) -> None:
+        """Insert-or-replace content; never touches use_count / last_used_at / tier / created_at."""
+        now = self._clock()
+        if record.id not in self._records:
+            self._use_count[record.id] = 0
+            self._last_used_at[record.id] = now
+            self._created_at[record.id] = now
+            self._tier[record.id] = "cold"
         self._records[record.id] = record
 
-    async def search(self, embedding: Sequence[float], *, k: int = 10) -> Sequence[LatentMatch]:
+    async def record_use(self, ids: Sequence[str]) -> int:
+        """Atomically increment use_count + advance last_used_at for each known id."""
+        now = self._clock()
+        count = 0
+        for id_ in ids:
+            if id_ in self._records:
+                self._use_count[id_] = self._use_count.get(id_, 0) + 1
+                self._last_used_at[id_] = now
+                count += 1
+        return count
+
+    async def search(
+        self,
+        embedding: Sequence[float],
+        *,
+        k: int = 10,
+        tier: Tier | None = None,
+    ) -> Sequence[LatentMatch]:
+        """Exact cosine top-k; ``tier`` scopes to hot/cold only (None = all)."""
         query = tuple(embedding)
         query_norm = math.sqrt(sum(value * value for value in query))
         if query_norm == 0.0 or not self._records:
             return ()
+        now = self._clock()
         matches: list[LatentMatch] = []
-        for record in self._records.values():
+        for id_, record in self._records.items():
+            if tier is not None and self._tier.get(id_, "cold") != tier:
+                continue
             score = self._cosine(query, query_norm, record.embedding)
             if score is None:
                 continue
-            matches.append(LatentMatch(record=record, score=score))
-        matches.sort(key=lambda match: match.score, reverse=True)
+            matches.append(
+                LatentMatch(
+                    record=record,
+                    score=score,
+                    tier=self._tier.get(id_, "cold"),
+                    use_count=self._use_count.get(id_, 0),
+                    last_used_at=self._last_used_at.get(id_, now),
+                )
+            )
+        matches.sort(key=lambda m: (-m.score, m.record.id))
         return tuple(matches[:k])
+
+    async def sweep_tiers(self, *, now: datetime, hot_capacity: int) -> TierSweepResult:
+        """Re-assign hot/cold tiers using ACT-R activation ranking. Pure-Python reference."""
+        rows = [
+            ActivationRow(
+                id=id_,
+                use_count=self._use_count.get(id_, 0),
+                last_used_at=self._last_used_at.get(id_, now),
+            )
+            for id_ in self._records
+        ]
+        params = ActivationParams(hot_capacity=hot_capacity)
+        hot_ids = select_hot_ids(rows, now, params)
+        promoted = demoted = 0
+        for id_ in self._records:
+            current = self._tier.get(id_, "cold")
+            should_hot = id_ in hot_ids
+            if should_hot and current == "cold":
+                self._tier[id_] = "hot"
+                promoted += 1
+            elif not should_hot and current == "hot":
+                self._tier[id_] = "cold"
+                demoted += 1
+        hot_size = sum(1 for t in self._tier.values() if t == "hot")
+        return TierSweepResult(promoted=promoted, demoted=demoted, hot_size=hot_size)
 
     @staticmethod
     def _cosine(

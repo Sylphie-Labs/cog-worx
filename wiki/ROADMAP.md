@@ -170,9 +170,23 @@ already done in biz-firm, so this is port + generalize.
 >   with injectable seeded RNG + `promoted_only` filter **only if** its spike shows a CI-clean regret
 >   win in the near-tie regime, else ship greedy and defer TS (a legitimate S12 outcome). See session
 >   log `docs/sessions/2026-06-09-phase-2-pod-2.1.md`.
-> - **Pod 2.2 — Latent space on pgvector.** Hot/cold tiering — use_count + ACT-R recency decay,
->   graduation/demotion sweeps (designed from biz-firm research; sylphie has activation math but no
->   real tiering to port).
+> - **Pod 2.2 — Latent space on pgvector — DESIGN LOCKED / IN PROGRESS** (2026-06-10, mythos
+>   deep-reasoning pass + Jim sign-off on both flags): hot/cold tier membership as a
+>   capacity-bounded top-N by ACT-R activation (`ln(1+use_count) − d·ln(max(Δt_hours,ε))`),
+>   recomputed by an atomic SQL sweep in `LatentTierSweeper` (mirrors the 1.1/2.1 sweeper
+>   pattern). Key design decisions: ① **single table + `tier` column** (two-table and
+>   stored-activation-score both rejected; tier flips are row UPDATEs, S8 lesion is clean —
+>   sweeper off → everything cold → search byte-identical); ② **seam split** — `put`
+>   (idempotent, content-only) and `record_use` (non-idempotent, atomic increment) are separate
+>   methods; `LatentRecord` drops `use_count` (write-ignored field = contract lie); ③ **default
+>   search is tier-agnostic** (global exact top-k by cosine; tier= filter available; hot-first
+>   composite deferred to Pod 2.6 behind the confidence gate — without a similarity threshold
+>   hot-first would rank low-similarity hot rows above high-similarity cold rows); ④ d=0.5
+>   spike-checked with d ∈ {0.25, 0.5, 1.0} sensitivity (2.1 lcb-constant lesson); ⑤ schema
+>   migration: idempotent ALTER ×3 after CREATE (2.1 FIX-2 lesson); live migration test
+>   in-scope. Carry-forwards: runner-up margin/confidence gate (CF-1 → 2.6); ANN index tuning
+>   (CF-3); d-constant empirical tuning (CF-5). See session log
+>   `docs/sessions/2026-06-10-phase-2-pod-2.2.md`.
 > - **Pod 2.3 — Episodic memory + conversation capture.** Synchronous cheap capture (S1 write
 >   path), episode storage/classification; **async, batched** extraction → 2.0 claims (model work
 >   strictly off the write path). **PRECONDITION (S9, 2.0 carry-forward):** the structural source
@@ -198,7 +212,8 @@ already done in biz-firm, so this is port + generalize.
       durability item already taken via commit_xid)*
 - [ ] **World model** (long-term memory) · **User model** *(Pod 2.4)*
 - [ ] **Episodic memory** *(Pod 2.3)*
-- [ ] **Latent space on pgvector** — hot/cold tiering (port sylphie) *(Pod 2.2)*
+- [ ] **Latent space on pgvector** — hot/cold tiering *(Pod 2.2 — DESIGN LOCKED, implementation in
+      progress 2026-06-10)*
 - [ ] **Recall stack** — dense + BM25 + graph + temporal → rank fusion → rerank → token-budget assembly
       *(Pod 2.5)*
 - [ ] **Memory injection** *(Pod 2.6)*
