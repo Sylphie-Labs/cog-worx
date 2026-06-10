@@ -37,6 +37,9 @@ until its falsifiable spike passes. Phase 0 (freeze the seams + the Test Kit) is
 every later pod — see `wiki/ROADMAP.md`.
 
 ## Agents (`.claude/agents/`)
+- **mythos** — deep-reasoning agent, **pinned to Fable 5**. Reach for it when a problem sits at the
+  edge of current tech and needs maximum reasoning depth: novel synthesis, open design questions no
+  single specialist owns, hard multi-way trade-offs. Reasons and frames; delegates implementation.
 - **canon** — CANON enforcement / drift detection (use before/after any architectural change or PR).
 - **architect** — the configurable loop, composition primitives (Stage · Capability · Context · Loop),
   stage boundaries, where the model sits, the S7 coordination contract, failure modes.
