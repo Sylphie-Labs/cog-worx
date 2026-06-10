@@ -531,6 +531,10 @@ LIMIT $fetch_k
 # param-per-term binding — sanitization in Python is the only safe boundary (S8).
 _LUCENE_SPECIAL_RE = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
 
+# Lucene Boolean/range keywords that must be quoted when they appear as standalone tokens.
+# A bare AND/OR/NOT/TO after splitting is treated as a Boolean operator, not a literal term.
+_LUCENE_KEYWORDS = frozenset({"AND", "OR", "NOT", "TO"})
+
 # ---------------------------------------------------------------------------
 # Contradiction Cypher
 # ---------------------------------------------------------------------------
@@ -643,7 +647,10 @@ def sanitize_lucene_query(query: str) -> str:
     with a parse exception — they must be escaped before the string reaches the index.
     """
     escaped = _LUCENE_SPECIAL_RE.sub(r"\\\1", query)
-    terms = escaped.split()
+    terms = [
+        f'"{t}"' if t.upper() in _LUCENE_KEYWORDS else t
+        for t in escaped.split()
+    ]
     if not terms:
         return ""
     return " OR ".join(terms)

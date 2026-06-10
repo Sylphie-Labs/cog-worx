@@ -227,8 +227,11 @@ already done in biz-firm, so this is port + generalize.
 - [x] **Episodic memory** *(Pod 2.3 ✅ DONE — VALIDATED 2026-06-10 (red-team PASS: 4 HIGH/CRITICAL issues found and fixed — fail-stall contract, PgEpisodeStore cursor monotonicity, test isolation, mutation-resistant negative controls))*
 - [x] **Latent space on pgvector** — hot/cold tiering *(Pod 2.2 ✅ DONE — validated 2026-06-10:
       ACT-R activation, single-table tier column, LatentTierSweeper, seam split put/record_use)*
-- [ ] **Recall stack** — dense + BM25 + graph + temporal → rank fusion → rerank → token-budget assembly
-      *(Pod 2.5)*
+- [x] **Recall stack** — dense + BM25 + graph + temporal → rank fusion → rerank → token-budget assembly
+      *(Pod 2.5 ✅ DONE — VALIDATED 2026-06-10: 5 channels, RRF k=60, U-fold assembly, NoopReranker+guard.
+      Spike SC-1–SC-7 PASS. Red-team PASS (4 MEDs carried forward: fuse-outside-try, fused_rank semantics,
+      SC-2 tautological neg-controls, naive-datetime in validity filter; CF-1 S1 transitive import via
+      loop/__init__ — fix requires moving StageResult outside cogworx.loop entirely, architect scope).)*
 - [ ] **Memory injection** *(Pod 2.6)*
 - [x] **Conversation extraction / classification / storage** *(Pod 2.3 ✅ DONE — see above)*
 - [ ] **Coherence** — async/batched reconciler; **surface, don't silently delete** *(Pod 2.7)*
