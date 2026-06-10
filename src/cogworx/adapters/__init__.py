@@ -7,4 +7,12 @@ against the real services; the in-memory doubles in :mod:`cogworx.testing` are t
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from cogworx.adapters.neo4j_entity_kg import Neo4jEntityKG
+from cogworx.adapters.neo4j_graph import Neo4jGraphStore
+from cogworx.adapters.neo4j_procedural_kg import Neo4jProceduralKG
+
+__all__ = [
+    "Neo4jEntityKG",
+    "Neo4jGraphStore",
+    "Neo4jProceduralKG",
+]

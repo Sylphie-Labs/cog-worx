@@ -62,7 +62,14 @@ from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import ChatMessage, ModelResponse
 from cogworx.runtime.engine import Engine
-from cogworx.substrate.journal import Journal, RunState, StepRecord, Timer
+from cogworx.substrate.journal import (
+    Journal,
+    ProjectedStep,
+    ProjectionCursor,
+    RunState,
+    StepRecord,
+    Timer,
+)
 from cogworx.substrate.latent import LatentRecord
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel
@@ -673,6 +680,11 @@ class _CrashAfterStageVisitJournal:
 
     async def read_step(self, run_id: str, step_index: int) -> StepRecord | None:
         return await self._inner.read_step(run_id, step_index)
+
+    async def committed_steps_after(
+        self, cursor: ProjectionCursor | None, *, limit: int
+    ) -> Sequence[ProjectedStep]:
+        return await self._inner.committed_steps_after(cursor, limit=limit)
 
     async def load_run(self, run_id: str) -> RunState | None:
         return await self._inner.load_run(run_id)

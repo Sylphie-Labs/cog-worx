@@ -8,9 +8,11 @@ run with no external substrate. ``fixtures`` is a pytest plugin; import it via
 from __future__ import annotations
 
 from cogworx.testing.doubles import (
+    InMemoryEntityKG,
     InMemoryGraphStore,
     InMemoryJournal,
     InMemoryLatentStore,
+    InMemoryProceduralKG,
 )
 from cogworx.testing.fake_model import (
     ReplayCall,
@@ -26,9 +28,11 @@ from cogworx.testing.reference_agent import (
 )
 
 __all__ = [
+    "InMemoryEntityKG",
     "InMemoryGraphStore",
     "InMemoryJournal",
     "InMemoryLatentStore",
+    "InMemoryProceduralKG",
     "IntakeStage",
     "ReplayCall",
     "ReplayExhaustedError",

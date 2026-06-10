@@ -49,6 +49,10 @@ class Claim(BaseModel):
     ingest_time: datetime
     created_by: str
     embedding: tuple[float, ...] | None = None
+    # Set when the claim's object is itself an entity — drives a [:REFERS_TO] edge in the entity
+    # KG and is used as object_repr in claim_id_for (CANON S5, entity-KG identity discipline).
+    # Default None: additive, backward-compatible with all Phase-0 callers.
+    object_entity: str | None = None
 
 
 class Artifact(BaseModel):

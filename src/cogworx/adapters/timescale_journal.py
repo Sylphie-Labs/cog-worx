@@ -46,6 +46,20 @@ twice. S6 correctness (exactly-once) wins over the hypertable here: ``cogworx_jo
 PLAIN table with ``(run_id, step_index)`` UNIQUE so ``ON CONFLICT (run_id, step_index) DO NOTHING``
 is true exactly-once. The Phase-1 durability pod can revisit chunking (a separate append-only
 metrics hypertable) without weakening this guarantee.
+
+Projection ordering — the ``commit_xid`` visibility fence (POSTGRES 13+). Each step row carries a
+``commit_xid bigint`` that self-populates inside the writing txn from ``pg_current_xact_id()`` (the
+xid8 functions; PG13+ is the floor). It is a per-cluster integer that is MONOTONIC IN COMMIT ORDER,
+so the projection read seam (:meth:`committed_steps_after`) imposes a single total order on
+committed steps that the multi-writer, injectable wall-clock ``committed_at`` cannot. The read is
+VISIBILITY-FENCED: it consumes only rows whose ``commit_xid`` is strictly below
+``pg_snapshot_xmin(pg_current_snapshot())`` — i.e. below any xid an in-flight txn could still commit
+beneath — so a consumer never advances past an ordinal a concurrent writer can still slot under (the
+sequence-visibility race). The fenced column and the ORDER BY leading column are BOTH ``commit_xid``
+(a hybrid seq+xid ordering is provably wrong). The xid8 values are handled as BIGINT end-to-end via
+the ``::text::bigint`` idiom (never raw xid8). ``commit_step`` writes ZERO columns for this — the
+DEFAULT self-populates inside the commit, and an a5-style invariant FORBIDS any statement from
+naming ``commit_xid`` in an INSERT/UPDATE (a static grep test + a runtime probe pin it).
 """
 
 from __future__ import annotations
@@ -62,11 +76,23 @@ from cogworx.adapters.config import SubstrateSettings
 from cogworx.claims.provenance import Artifact
 from cogworx.loop.result import StageResult
 from cogworx.loop.state import RunStatus
-from cogworx.substrate.journal import RunState, StepRecord, Timer
+from cogworx.substrate.journal import (
+    ProjectedStep,
+    ProjectionCursor,
+    RunState,
+    StepRecord,
+    Timer,
+)
 
 _ARTIFACT_ADAPTER: TypeAdapter[Artifact] = TypeAdapter(Artifact)
 
 _RESULT_ADAPTER: TypeAdapter[StageResult] = TypeAdapter(StageResult)
+
+
+def _to_utc(dt: datetime) -> datetime:
+    """Naive → attach UTC; tz-aware → convert to UTC (the substrate datetime contract)."""
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cogworx_journal_runs (
@@ -84,11 +110,19 @@ CREATE TABLE IF NOT EXISTS cogworx_journal_steps (
     stage_name text NOT NULL,
     result jsonb NOT NULL,
     committed_at timestamptz NOT NULL,
+    commit_xid bigint NOT NULL DEFAULT (pg_current_xact_id()::text::bigint),
     CONSTRAINT cogworx_journal_steps_run_step UNIQUE (run_id, step_index)
 );
 
 CREATE INDEX IF NOT EXISTS cogworx_journal_steps_order
     ON cogworx_journal_steps (run_id, step_index);
+
+-- The commit_xid projection index is created in _MIGRATE_COMMIT_XID, NOT here: on a pre-2.1
+-- upgrade the steps table already exists WITHOUT commit_xid, so CREATE TABLE IF NOT EXISTS is a
+-- no-op and an index on commit_xid here would reference a column the migration's ALTER has not yet
+-- added (the migration runs after _SCHEMA). Building it in the migration block guarantees the
+-- column exists first; on a fresh install the column is in the CREATE TABLE above and the
+-- migration creates the index idempotently.
 
 CREATE TABLE IF NOT EXISTS cogworx_timers (
     timer_id text PRIMARY KEY,
@@ -119,6 +153,22 @@ CREATE TABLE IF NOT EXISTS cogworx_human_inputs (
 );
 """
 
+# Idempotent migration of a pre-2.1 steps table to the commit_xid projection ordering. The ALTER
+# backfills every existing row to the migration txn's own xid (via the DEFAULT), which sorts BELOW
+# all future inserts, so the migrated rows keep their relative position under the new total order.
+# The old committed_at-keyset band reader is gone, so its composite index is dropped — nothing else
+# used it (the run-grain index `cogworx_journal_steps_order` and the per-step UNIQUE remain).
+_MIGRATE_COMMIT_XID = """
+ALTER TABLE cogworx_journal_steps
+    ADD COLUMN IF NOT EXISTS commit_xid bigint NOT NULL
+    DEFAULT (pg_current_xact_id()::text::bigint);
+
+CREATE INDEX IF NOT EXISTS cogworx_journal_steps_commit_xid
+    ON cogworx_journal_steps (commit_xid, run_id COLLATE "C", step_index);
+
+DROP INDEX IF EXISTS cogworx_journal_steps_committed;
+"""
+
 
 class TimescaleJournal:
     """A durable, exactly-once :class:`Journal` backed by the Postgres/TimescaleDB cluster."""
@@ -137,6 +187,7 @@ class TimescaleJournal:
     async def ensure_schema(self) -> None:
         conn = await self._connection()
         await conn.execute(_SCHEMA)
+        await conn.execute(_MIGRATE_COMMIT_XID)
 
     async def start_run(
         self,
@@ -209,6 +260,77 @@ class TimescaleJournal:
         if row is None:
             return None
         return self._row_to_step(row)
+
+    async def committed_steps_after(
+        self, cursor: ProjectionCursor | None, *, limit: int
+    ) -> Sequence[ProjectedStep]:
+        # The COMMIT-ORDER projection read seam (S1), VISIBILITY-FENCED on commit_xid.
+        #   * FENCE: commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint — only rows
+        #     below any xid an in-flight txn could still commit beneath are eligible. This closes
+        #     the sequence-visibility race (a consumer never advances past an ordinal a concurrent
+        #     writer can still slot under).
+        #   * STRICT KEYSET: (commit_xid, run_id COLLATE "C", step_index) > cursor (omitted on
+        #     cold start). The fenced column and the ORDER BY leading column are BOTH commit_xid
+        #     (a hybrid is wrong); run_id is byte-ordered COLLATE "C" to match the Neo4j-side
+        #     codepoint cursor.
+        # xid8 is read as BIGINT via ::text::bigint end-to-end. Uses the
+        # cogworx_journal_steps_commit_xid (commit_xid, run_id COLLATE "C", step_index) index. LIMIT
+        # bounds the batch. No lookback/ceiling: commit_xid is monotonic-in-commit-order, so one
+        # fenced forward read is total — there is no late-row band.
+        return await self._read_projection(cursor, limit=limit, fenced=True)
+
+    async def _read_projection(
+        self, cursor: ProjectionCursor | None, *, limit: int, fenced: bool
+    ) -> Sequence[ProjectedStep]:
+        # Shared projection read. ``fenced=False`` is the SPIKE NEGATIVE CONTROL ONLY (the predicate
+        # minus the visibility fence): it consumes rows whose commit_xid is assigned but not yet
+        # committed, advancing the cursor past an ordinal an in-flight txn still sits below, which
+        # PERMANENTLY loses that row once it commits. Never call it on the projection hot path.
+        conn = await self._connection()
+        clauses = (
+            ["commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint"] if fenced else []
+        )
+        params: list[Any] = []
+        if cursor is not None:
+            # The strict keyset > cursor, written EXPANDED (not a row-value tuple) so the run_id
+            # tie-break can be pinned COLLATE "C": the SQL must byte-order run_id IDENTICALLY to
+            # the Neo4j-side Python codepoint cursor (ordinal_ge/ordinal_max in procedural_kg.py),
+            # else a user on an ICU/locale Postgres collation gets a divergent order from
+            # cog-worx's own cursor and re-projects already-seen rows (harmless churn, but a real
+            # cross-collation smell on a published OSS package). COLLATE inside a row-value tuple
+            # `(a,b,c) > (...)` is NOT honored per-element by Postgres, so the expanded form is
+            # required. Stays semantically identical to the tuple keyset; commit_xid/step_index are
+            # numeric (no collation). The ORDER BY pins the SAME COLLATE "C" so the predicate and
+            # ordering agree, and the cogworx_journal_steps_commit_xid index is built COLLATE "C"
+            # to satisfy it.
+            clauses.append(
+                "(commit_xid > %s "
+                'OR (commit_xid = %s AND (run_id COLLATE "C" > %s '
+                "OR (run_id = %s AND step_index > %s))))"
+            )
+            params.extend(
+                (
+                    cursor.commit_ordinal,
+                    cursor.commit_ordinal,
+                    cursor.run_id,
+                    cursor.run_id,
+                    cursor.step_index,
+                )
+            )
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        params.append(limit)
+        db_cursor = await conn.execute(
+            "SELECT run_id, step_index, stage_name, result, committed_at, commit_xid "
+            "FROM cogworx_journal_steps "
+            f"{where}"
+            'ORDER BY commit_xid, run_id COLLATE "C", step_index '
+            "LIMIT %s",
+            tuple(params),
+        )
+        rows = await db_cursor.fetchall()
+        return tuple(
+            ProjectedStep(record=self._row_to_step(row), commit_ordinal=row[5]) for row in rows
+        )
 
     async def load_run(self, run_id: str) -> RunState | None:
         conn = await self._connection()
@@ -368,6 +490,9 @@ class TimescaleJournal:
             "cogworx_step_attempts, cogworx_human_inputs CASCADE"
         )
         await conn.execute(_SCHEMA)
+        # The commit_xid projection index lives in _MIGRATE_COMMIT_XID (not _SCHEMA), so run it here
+        # too — on the freshly recreated table the ALTER is a no-op and the CREATE INDEX adds it.
+        await conn.execute(_MIGRATE_COMMIT_XID)
 
     async def aclose(self) -> None:
         if self._conn is not None and not self._conn.closed:

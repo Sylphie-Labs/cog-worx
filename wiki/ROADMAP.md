@@ -127,14 +127,83 @@ The configurable control loop everything else attaches to.
 Deepest, riskiest (the polyglot recall bet), and the most differentiated value. Memory research is
 already done in biz-firm, so this is port + generalize.
 
-- [ ] **Procedural KG** (Neo4j) · **Entity KG** (Neo4j)
-- [ ] **World model** (long-term memory) · **User model**
-- [ ] **Episodic memory**
-- [ ] **Latent space on pgvector** — hot/cold tiering (port sylphie)
+> **Pod plan (dependency-ordered; 2.0 first — it is the claim substrate everything else in this
+> phase writes to or reads from):**
+>
+> - **Pod 2.0 — Entity KG core (Neo4j) — DONE** ✅ (CANON-COMPLIANT WITH CONCERNS, red-team-
+>   hardened): event-sourced claims (tess Wave B port) — `(:Entity)`/`(:Claim)`/`(:Evidence)` where
+>   evidence ACCUMULATES and Beta confidence is always **derived at read**, never stored;
+>   NFC-normalized content-hash claim identity (idempotent re-derivation, enforced structurally at
+>   `write_claim`); coalesce-populate writes (immutable-on-match, skeleton lineage nodes populate
+>   on arrival and never surface unpopulated); bi-temporal invalidate-don't-delete with all
+>   datetimes UTC-normalized at the boundary (naive = UTC); `DERIVED_FROM` weakest-link lineage;
+>   `CONTRADICTS` surfaced-not-deleted; dense recall channel (native vector index, raw-cosine
+>   contract); `InMemoryEntityKG` double held to adapter parity by test. Red-team killed 6
+>   findings pre-validation (inherited-`upsert_claim` back door → sealed; skeleton-node read
+>   crashes; unvalidated `base_weight` → NaN confidence; lexicographic as_of drift; unnormalized
+>   identity hash splitting evidence; sockpuppet `source_id` → documented S9 discipline).
+>   **Carry-forwards:** ① a **structural source registry** (code-assigned `source_id` /
+>   `source_authority`) is a **precondition for Pod 2.3** — until then S9 holds only because no
+>   model output reaches the write surface; ② **epistemic upgrades** (inference→confirmed) are
+>   first-write-wins until the Pod 2.7 reconciler ships the explicit promotion surface (pinned by
+>   test); ③ the additive `Claim.object_entity` contract extension needs **Jim's sign-off** on a
+>   contract-evolution rule (see session log).
+> - **Pod 2.1 — Procedural KG (Neo4j).** `(:Procedure)`/`(:ProblemType)`/`(:Trial)`, promotion gate,
+>   Thompson-sampling read surface (port tess procedural KG + biz-firm e1-reflection; drop tess's
+>   epoch/MVCC machinery). **Design locked 2026-06-09** (mythos review + architect + eval-stats; Jim
+>   sign-off): ① `(:Trial)` nodes are the immutable **event source** and the Beta posterior is
+>   **derived at read** — counters are **NOT** stored on `APPLIES_TO` (edge is topology only),
+>   mirroring 2.0's "derive at read, never store" and keeping us S6-clean (tess's increment-in-place
+>   edge counters rejected as non-idempotent). ② **Deterministic substrate only** — no model on the
+>   write path; `procedure_id` framework-assigned (interim discipline like 2.0's `source_id`); the
+>   e1 model-driven **consolidator is OUT of 2.1**, deferred to a later pod with its own spike.
+>   ③ Trial = **projection of the committed journal `StepRecord`**, written off-path by a
+>   sweeper-shaped projector, key `(run_id, step_index)`, `MERGE`-idempotent; outcome **stage-stamped**
+>   (`output.data["outcome"]`), never inferred from `result.kind` (S9). ④ Projection cursor is a
+>   `(:ProjectionCursor)` node advanced in the **same Neo4j txn** as the Trial MERGE; Timescale polled
+>   with `committed_at > cursor − lookback_lag` (injectable/non-monotonic clock). ⑤ Posterior dedups
+>   at `source_id = run_id` per `(procedure, problem_type)` edge — and the `n ≥ 5` promotion floor
+>   counts **deduped contributions, not raw `(:Trial)` nodes**. ⑥ Static `(pathway, stage) →
+>   procedure_id` registry lets the projector **synthesize failure-trials** from retry-exhausted /
+>   FAILED-at-`seq` records (else the posterior is biased upward). ⑦ TS is an **invention** from biz-firm
+>   e1 (NOT in tess, which is exploitation-only) — the load-bearing unproven claim; ships as a pure fn
+>   with injectable seeded RNG + `promoted_only` filter **only if** its spike shows a CI-clean regret
+>   win in the near-tie regime, else ship greedy and defer TS (a legitimate S12 outcome). See session
+>   log `docs/sessions/2026-06-09-phase-2-pod-2.1.md`.
+> - **Pod 2.2 — Latent space on pgvector.** Hot/cold tiering — use_count + ACT-R recency decay,
+>   graduation/demotion sweeps (designed from biz-firm research; sylphie has activation math but no
+>   real tiering to port).
+> - **Pod 2.3 — Episodic memory + conversation capture.** Synchronous cheap capture (S1 write
+>   path), episode storage/classification; **async, batched** extraction → 2.0 claims (model work
+>   strictly off the write path). **PRECONDITION (S9, 2.0 carry-forward):** the structural source
+>   registry — `source_id`/`source_authority` assigned by framework code, never by model output —
+>   must land before extraction writes model-derived claims.
+> - **Pod 2.4 — World model + user model.** Long-term/user knowledge as governed views over the 2.0
+>   claim layer (scoping, write-token discipline per S7).
+> - **Pod 2.5 — Recall stack.** dense + BM25 + graph + temporal channels → Reciprocal Rank Fusion →
+>   rerank seam → token-budget assembly with lost-in-the-middle ordering (per biz-firm c3/c1).
+> - **Pod 2.6 — Memory injection.** Per-stage recall riding 2.5 into `StageContext` (token-budget,
+>   minimum-source guarantees; sylphie activation/budget math as reference).
+> - **Pod 2.7 — Coherence reconciler.** Async/batched, dirty-subject queue; embedding pre-filter →
+>   specificity check → MUS+QuickXplain judge seam; AGM entrenchment ordering; `SUPERSEDES` +
+>   `defeasibly-defeated` status — **surface, never silently delete** (per biz-firm c2). Owns the
+>   **explicit epistemic-upgrade surface** (2.0 carry-forward: stored levels are first-write-wins
+>   until promotion-with-provenance lands here).
+
+- [x] **Procedural KG** (Neo4j) · **Entity KG** (Neo4j) *(entity KG = Pod 2.0 ✅ DONE · procedural
+      = Pod 2.1 ✅ DONE — validated 2026-06-10: derive-at-read posterior, trial-as-projection of the
+      committed journal via a `commit_xid` visibility-fenced cursor (S6-additive), posterior-mean
+      greedy shipped / Thompson deferred. Carry-forwards: S6 FAILED-at-seq failure-trial gap (xfail,
+      needs a run-status projection seam); S5 epistemic-type-as-field (C3); recommended future
+      durability item already taken via commit_xid)*
+- [ ] **World model** (long-term memory) · **User model** *(Pod 2.4)*
+- [ ] **Episodic memory** *(Pod 2.3)*
+- [ ] **Latent space on pgvector** — hot/cold tiering (port sylphie) *(Pod 2.2)*
 - [ ] **Recall stack** — dense + BM25 + graph + temporal → rank fusion → rerank → token-budget assembly
-- [ ] **Memory injection**
-- [ ] **Conversation extraction / classification / storage**
-- [ ] **Coherence** — async/batched reconciler; **surface, don't silently delete**
+      *(Pod 2.5)*
+- [ ] **Memory injection** *(Pod 2.6)*
+- [ ] **Conversation extraction / classification / storage** *(Pod 2.3)*
+- [ ] **Coherence** — async/batched reconciler; **surface, don't silently delete** *(Pod 2.7)*
 - [ ] **⛓ Spike** — recall-quality eval (LongMemEval-style) + provenance/epistemic-typing invariant (S5)
 
 ---

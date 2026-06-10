@@ -38,7 +38,14 @@ from cogworx.model.base import (
 )
 from cogworx.runtime.engine import Engine
 from cogworx.runtime.sweeper import Sweeper
-from cogworx.substrate.journal import Journal, RunState, StepRecord, Timer
+from cogworx.substrate.journal import (
+    Journal,
+    ProjectedStep,
+    ProjectionCursor,
+    RunState,
+    StepRecord,
+    Timer,
+)
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel
 from cogworx.testing.invariants import (
@@ -242,6 +249,11 @@ class SetTimerSpyJournal:
     async def read_step(self, run_id: str, step_index: int) -> StepRecord | None:
         return await self._inner.read_step(run_id, step_index)
 
+    async def committed_steps_after(
+        self, cursor: ProjectionCursor | None, *, limit: int
+    ) -> Sequence[ProjectedStep]:
+        return await self._inner.committed_steps_after(cursor, limit=limit)
+
     async def load_run(self, run_id: str) -> RunState | None:
         return await self._inner.load_run(run_id)
 
@@ -324,6 +336,11 @@ class PauseAfterStepJournal:
 
     async def read_step(self, run_id: str, step_index: int) -> StepRecord | None:
         return await self._inner.read_step(run_id, step_index)
+
+    async def committed_steps_after(
+        self, cursor: ProjectionCursor | None, *, limit: int
+    ) -> Sequence[ProjectedStep]:
+        return await self._inner.committed_steps_after(cursor, limit=limit)
 
     async def load_run(self, run_id: str) -> RunState | None:
         return await self._inner.load_run(run_id)

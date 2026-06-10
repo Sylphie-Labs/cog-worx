@@ -11,13 +11,23 @@ from __future__ import annotations
 
 from cogworx.runtime.context import RunContext
 from cogworx.runtime.engine import Clock, Engine, ResumeError, RunHandle
+from cogworx.runtime.projector import (
+    DEFAULT_PROJECTION_CONSUMER,
+    ResolvedOutcome,
+    TrialProjector,
+    resolve_outcome,
+)
 from cogworx.runtime.sweeper import Sweeper
 
 __all__ = [
+    "DEFAULT_PROJECTION_CONSUMER",
     "Clock",
     "Engine",
+    "ResolvedOutcome",
     "ResumeError",
     "RunContext",
     "RunHandle",
     "Sweeper",
+    "TrialProjector",
+    "resolve_outcome",
 ]

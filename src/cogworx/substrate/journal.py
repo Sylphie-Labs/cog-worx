@@ -28,6 +28,33 @@ from cogworx.loop.result import StageResult
 from cogworx.loop.state import RunStatus
 
 
+class ProjectionCursor(BaseModel):
+    """The last committed step a projection consumer has SCANNED, in COMMIT order (S1, S6).
+
+    The total order is the lexicographic tuple ``(commit_ordinal, run_id, step_index)``.
+    ``commit_ordinal`` is a per-cluster, MONOTONIC-IN-COMMIT-ORDER integer assigned BY THE DATABASE
+    inside the writing txn (the Postgres ``commit_xid``), so it imposes a single total order that is
+    visibility-fenced: a row's ordinal cannot be consumed until no in-flight txn could still commit
+    BELOW it. This replaces the old wall-clock ``committed_at`` keyset, which was non-monotonic
+    across writers and forced a lookback band. ``run_id``/``step_index`` are total-order tie-breaks
+    under one ordinal (multiple steps committed in one txn share an ordinal — Phase-1 commits one
+    step per txn, so this is latent).
+
+    The stored cursor only ever advances to the tuple-``max`` of its value and a new one (never
+    regresses): a crash that loses the cursor re-projects idempotently under the first-write-wins
+    MERGE on ``trial_id``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    commit_ordinal: int
+    """The DB-assigned commit-order integer of the last scanned step (Postgres ``commit_xid``)."""
+    run_id: str
+    """The run of the last scanned step — first tuple tie-break under one ``commit_ordinal``."""
+    step_index: int
+    """The positional step index of the last scanned step — second tuple tie-break."""
+
+
 class StepRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -39,6 +66,22 @@ class StepRecord(BaseModel):
     # re-running the stage or re-calling the model. Exactly-once is on ``(run_id, step_index)``.
     result: StageResult
     committed_at: datetime
+
+
+class ProjectedStep(BaseModel):
+    """A committed step paired with its DB-assigned ``commit_ordinal`` for a projection read (S1).
+
+    The projection read seam returns these so the consumer advances its :class:`ProjectionCursor` to
+    the COMMIT order of the last scanned row WITHOUT widening :class:`StepRecord` (which is the
+    replay/timer shape and must stay frozen): the ordinal is a read-side projection concern, not
+    part of the durable step. ``commit_ordinal`` is non-optional — a projection read always carries
+    it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    record: StepRecord
+    commit_ordinal: int
 
 
 class RunState(BaseModel):
@@ -125,6 +168,32 @@ class Journal(Protocol):
 
     async def read_step(self, run_id: str, step_index: int) -> StepRecord | None: ...
 
+    async def committed_steps_after(
+        self, cursor: ProjectionCursor | None, *, limit: int
+    ) -> Sequence[ProjectedStep]:
+        """Read the next committed-step batch for a COMMIT-ORDER projection consumer (S1).
+
+        The PROJECTION read seam: an off-write-path consumer (e.g. the Pod 2.1 trial projector)
+        polls this to turn newly committed steps into its own derived records, advancing its OWN
+        :class:`ProjectionCursor` — the journal table stays pure (no per-consumer column, S3).
+
+        TWO-CLAUSE, VISIBILITY-FENCED CONTRACT (the ``commit_xid`` design):
+
+        * FENCE — only rows whose ``commit_ordinal`` is strictly below the snapshot's ``xmin``
+          (``pg_snapshot_xmin(pg_current_snapshot())``) are eligible. This FORBIDS consuming any row
+          an in-flight txn could still slot BELOW (a row whose ordinal was assigned but not yet
+          committed). It is what closes the sequence-visibility race: a consumer never advances its
+          cursor past an ordinal that a concurrent writer can still commit beneath.
+        * STRICT KEYSET — ``(commit_ordinal, run_id, step_index) > cursor`` (omitted on cold start,
+          ``cursor is None``), so the batch resumes STRICTLY past the last scanned row.
+
+        Ordered by ``(commit_ordinal, run_id, step_index)`` — the SAME leading column as the fence
+        (a hybrid seq+xid ordering is provably wrong). Capped at ``limit`` (the per-tick batch). No
+        lookback, no ceiling: ``commit_ordinal`` is monotonic-in-commit-order, so a single fenced
+        forward read is total — there is no late-row band to re-scan.
+        """
+        ...
+
     async def load_run(self, run_id: str) -> RunState | None: ...
 
     async def set_timer(self, timer: Timer) -> None:
@@ -209,6 +278,8 @@ class Journal(Protocol):
 __all__ = [
     "Artifact",
     "Journal",
+    "ProjectedStep",
+    "ProjectionCursor",
     "RunState",
     "StepRecord",
     "Timer",

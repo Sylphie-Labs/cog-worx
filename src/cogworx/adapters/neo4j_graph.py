@@ -50,6 +50,7 @@ MERGE (c:Claim {id: $id})
 SET c.subject           = $subject,
     c.predicate         = $predicate,
     c.payload           = $payload,
+    c.object_entity     = $object_entity,
     c.epistemic_type    = $epistemic_type,
     c.valid_from        = $valid_from,
     c.valid_to          = $valid_to,
@@ -77,6 +78,7 @@ def _claim_return(var: str) -> str:
        {var}.subject         AS subject,
        {var}.predicate       AS predicate,
        {var}.payload         AS payload,
+       {var}.object_entity   AS object_entity,
        {var}.epistemic_type  AS epistemic_type,
        {var}.valid_from      AS valid_from,
        {var}.valid_to        AS valid_to,
@@ -93,14 +95,18 @@ def _claim_return(var: str) -> str:
 
 _GET_CLAIM_CYPHER = f"""
 MATCH (c:Claim {{id: $id}})
+WHERE c.payload IS NOT NULL
 RETURN{_claim_return("c")}
 """
 
 # Neighbors: claims one [:DERIVED_FROM] hop away in EITHER direction (this claim's evidence, plus
 # claims that cite this one as evidence). Project the NEIGHBOR `n`, not the anchor `c`. Phase 0
-# keeps recall thin; full fusion is Phase 2.
+# keeps recall thin; full fusion is Phase 2. Filter n.payload IS NOT NULL to skip skeleton
+# placeholders — a placeholder created only by a DERIVED_FROM link has no real fields and
+# _record_to_claim would crash on null prov_source.
 _NEIGHBORS_CYPHER = f"""
 MATCH (c:Claim {{id: $id}})-[:DERIVED_FROM]-(n:Claim)
+WHERE n.payload IS NOT NULL
 RETURN DISTINCT{_claim_return("n")}
 LIMIT $limit
 """
@@ -201,6 +207,7 @@ class Neo4jGraphStore:
             "subject": claim.subject,
             "predicate": claim.predicate,
             "payload": claim.payload,
+            "object_entity": claim.object_entity,
             "epistemic_type": claim.epistemic_type,
             "valid_from": claim.valid_from.isoformat(),
             "valid_to": _iso_or_none(claim.valid_to),
@@ -232,6 +239,7 @@ class Neo4jGraphStore:
             subject=str(data["subject"]),
             predicate=data["predicate"],
             payload=str(data["payload"]),
+            object_entity=data.get("object_entity"),
             epistemic_type=_as_epistemic(data["epistemic_type"]),
             provenance=provenance,
             valid_from=datetime.fromisoformat(data["valid_from"]),
@@ -256,6 +264,9 @@ _PROVENANCE_SOURCES: dict[str, ProvenanceSource] = {
     "extraction": "extraction",
     "reflection": "reflection",
     "inference": "inference",
+    # "system" = engine/control-plane-originated (exhaustion degradations, timeouts, ceiling-fails).
+    # Missing before Pod 2.0 — a system-sourced Claim persisted and then read raises ValueError.
+    "system": "system",
 }
 
 
