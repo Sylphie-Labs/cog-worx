@@ -17,7 +17,7 @@ Mutation-resistant assertions throughout.  The spike SC-5 invariants are:
 
 from __future__ import annotations
 
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
@@ -38,8 +38,8 @@ from cogworx.testing.mcp_fakes import FakeMCPClient
 def _descriptor(
     name: str,
     *,
-    schema: dict | None = None,
-    annotations: dict | None = None,
+    schema: dict[str, Any] | None = None,
+    annotations: dict[str, Any] | None = None,
 ) -> MCPToolDescriptor:
     return MCPToolDescriptor(
         name=name,
@@ -409,7 +409,7 @@ def test_harden_nested_object_property() -> None:
 
 def test_harden_bare_type_object_no_properties() -> None:
     """Bare {'type': 'object'} hardens to additionalProperties: false (accepts NO args)."""
-    schema: dict = {"type": "object"}
+    schema: dict[str, Any] = {"type": "object"}
     hardened = harden_input_schema(schema)
     assert hardened["additionalProperties"] is False
 
@@ -498,7 +498,7 @@ async def test_b2_mcp_bare_object_no_args_accepted() -> None:
         input_schema={"type": "object"},
         annotations={},
     )
-    call_log: list[dict] = []
+    call_log: list[dict[str, Any]] = []
 
     class _LoggingClient:
         async def list_tools(self) -> list[MCPToolDescriptor]:

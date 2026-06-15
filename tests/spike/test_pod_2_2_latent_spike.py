@@ -131,7 +131,7 @@ def _weighted_choice(weights: list[float], rng: random.Random) -> int:
 
 
 def _hot_hit_rate(
-    future_uses: list[int],
+    future_uses: list[str],
     hot_set: frozenset[str],
 ) -> float:
     """Fraction of future uses whose item id is in hot_set."""

@@ -89,7 +89,7 @@ def _prov(*, source: str = "system") -> Provenance:
 def _artifact(
     text: str = "ok", *, source: str = "system", turns: list[Turn] | None = None
 ) -> Artifact:
-    data: dict = {"text": text}
+    data: dict[str, object] = {"text": text}
     if turns:
         stamp_turns(data, turns)
     return Artifact(
@@ -856,7 +856,7 @@ def test_stamp_turns_round_trips_via_turns_of() -> None:
         Turn(role="system", content="C", kind="system_note"),
         Turn(role="tool", content="D", kind="tool_exchange"),
     ]
-    data: dict = {}
+    data: dict[str, object] = {}
     stamp_turns(data, turns)
 
     step = StepRecord(

@@ -468,7 +468,11 @@ async def test_engine_budget_accumulates_across_stages() -> None:
     """
     inner = ReplayModel([_make_response(), _make_response()])
     registry = ModelRegistry()
-    registry.register_factory("default", lambda g, m=inner: BudgetGuardedModel(m, g))
+
+    def _factory(g: BudgetGuard) -> BudgetGuardedModel:
+        return BudgetGuardedModel(inner, g)
+
+    registry.register_factory("default", _factory)
     journal = InMemoryJournal()
     engine = Engine(
         models=registry,

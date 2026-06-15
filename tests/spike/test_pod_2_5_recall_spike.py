@@ -63,13 +63,14 @@ from statistics import mean
 import pytest
 
 from cogworx.claims.provenance import DEFAULT_SCOPE, Claim, Provenance
-from cogworx.knowledge.evidence import make_evidence
+from cogworx.knowledge.evidence import EvidenceEvent, make_evidence
 from cogworx.knowledge.identity import claim_id_for
 from cogworx.recall.assembly import assemble
 from cogworx.recall.fusion import fuse
 from cogworx.recall.query import RecallQuery
-from cogworx.recall.results import ChannelHit, FusedResult
+from cogworx.recall.results import ChannelHit, FusedResult, RecallResult
 from cogworx.recall.stack import RecallStack, default_recall_stack
+from cogworx.substrate.entity_kg import ScoredClaim
 from cogworx.substrate.episodes import Episode
 from cogworx.substrate.latent import LatentRecord
 from cogworx.testing.doubles import InMemoryEntityKG, InMemoryEpisodeStore, InMemoryLatentStore
@@ -90,7 +91,7 @@ _OLDEST = datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-def _make_evidence():
+def _make_evidence() -> EvidenceEvent:
     return make_evidence(
         type="corroboration",
         polarity="+",
@@ -338,17 +339,13 @@ async def test_sc1_rrf_beats_best_single_channel() -> None:
 
         # Single-channel runs: each channel alone through fuse
         for ch_name in channel_names:
-            ch_obj = next(
-                c
-                for c in stack._channels
-                if c.name == ch_name  # type: ignore[attr-defined]
-            )
+            ch_obj = next(c for c in stack._channels if c.name == ch_name)
             if not ch_obj.can_serve(query):
                 single_channel_recalls[ch_name].append(0.0)
                 continue
             ch_results = list(await ch_obj.search(query))
             # Convert to channel_results dict for fuse
-            ch_dict: dict[str, list] = {ch_name: ch_results}
+            ch_dict: dict[str, list[RecallResult]] = {ch_name: ch_results}
             fused_single = fuse(ch_dict)
             single_channel_recalls[ch_name].append(
                 recall_at_k(list(fused_single), relevant_key, 10)
@@ -361,7 +358,7 @@ async def test_sc1_rrf_beats_best_single_channel() -> None:
     assert macro_fused >= best_single, (
         f"SC-1 FAIL: fused macro Recall@10={macro_fused:.3f} < "
         f"best single channel={best_single:.3f} "
-        f"({max(macro_per_channel, key=macro_per_channel.get)})"
+        f"({max(macro_per_channel, key=lambda k: macro_per_channel[k])})"
     )
     assert best_single < 1.0, (
         f"SC-1 FAIL: best single channel Recall@10={best_single:.3f} == 1.0 — "
@@ -390,7 +387,7 @@ async def test_sc1_negative_control_single_channel_below_fused() -> None:
     r_fused = recall_at_k(full_outcome.results, _bm25_claim_key(), 10)
 
     # Dense channel alone cannot serve this query (no embedding in query)
-    dense_ch = next(c for c in stack._channels if c.name == "dense.claims")  # type: ignore[attr-defined]
+    dense_ch = next(c for c in stack._channels if c.name == "dense.claims")
     assert not dense_ch.can_serve(bm25_query), (
         "Dense channel should not be able to serve a text-only query"
     )
@@ -431,7 +428,7 @@ async def test_sc2_lesion_dense() -> None:
 
     # Stack WITHOUT dense channel
     no_dense = RecallStack(
-        [c for c in full_stack._channels if c.name != "dense.claims"],  # type: ignore[attr-defined]
+        [c for c in full_stack._channels if c.name != "dense.claims"],
     )
     outcome_no = await no_dense.recall(q)
     r_without = recall_at_k(outcome_no.results, key, 10)
@@ -457,7 +454,7 @@ async def test_sc2_lesion_bm25() -> None:
     r_with = recall_at_k(outcome_full.results, key, 10)
 
     no_bm25 = RecallStack(
-        [c for c in full_stack._channels if c.name != "bm25.claims"],  # type: ignore[attr-defined]
+        [c for c in full_stack._channels if c.name != "bm25.claims"],
     )
     outcome_no = await no_bm25.recall(q)
     r_without = recall_at_k(outcome_no.results, key, 10)
@@ -482,7 +479,7 @@ async def test_sc2_lesion_graph() -> None:
     r_with = recall_at_k(outcome_full.results, key, 10)
 
     no_graph = RecallStack(
-        [c for c in full_stack._channels if c.name != "graph.claims"],  # type: ignore[attr-defined]
+        [c for c in full_stack._channels if c.name != "graph.claims"],
     )
     outcome_no = await no_graph.recall(q)
     r_without = recall_at_k(outcome_no.results, key, 10)
@@ -507,7 +504,7 @@ async def test_sc2_lesion_temporal() -> None:
     r_with = recall_at_k(outcome_full.results, key, 10)
 
     no_temporal = RecallStack(
-        [c for c in full_stack._channels if c.name != "temporal.episodes"],  # type: ignore[attr-defined]
+        [c for c in full_stack._channels if c.name != "temporal.episodes"],
     )
     outcome_no = await no_temporal.recall(q)
     r_without = recall_at_k(outcome_no.results, key, 10)
@@ -555,7 +552,7 @@ async def test_sc2_negative_control_unrelated_lesion_has_no_effect() -> None:
         r_with = recall_at_k(outcome_full.results, key, 10)
 
         partial_stack = RecallStack(
-            [c for c in full_stack._channels if c.name != remove_ch],  # type: ignore[attr-defined]
+            [c for c in full_stack._channels if c.name != remove_ch],
         )
         outcome_partial = await partial_stack.recall(query)
         r_without = recall_at_k(outcome_partial.results, key, 10)
@@ -607,7 +604,7 @@ async def test_sc3_k_rrf_sensitivity() -> None:
             fused_recalls.append(recall_at_k(outcome.results, relevant_key, 10))
 
             for ch_name in channel_names:
-                ch_obj = next(c for c in stack._channels if c.name == ch_name)  # type: ignore[attr-defined]
+                ch_obj = next(c for c in stack._channels if c.name == ch_name)
                 if not ch_obj.can_serve(query):
                     single_recalls[ch_name].append(0.0)
                     continue
@@ -785,7 +782,7 @@ def test_sc5_recall_submodules_have_no_direct_model_imports() -> None:
     )
 
 
-def test_sc5_known_gap_cf1_transitive_model_via_journal(capsys: pytest.CaptureFixture) -> None:
+def test_sc5_known_gap_cf1_transitive_model_via_journal(capsys: pytest.CaptureFixture[str]) -> None:
     """KNOWN GAP CF-1: cogworx.recall transitively imports cogworx.model.base via the
     journal -> loop.__init__ -> stage chain.
 
@@ -1032,16 +1029,16 @@ async def test_sc7_negative_control_scope_leak_without_filtering(
     await kg.write_claim(user_claim, evidence=_make_evidence())
 
     # Monkeypatch: override claims_by_similarity to always ignore scope
-    original_cbs = kg.claims_by_similarity.__func__  # type: ignore[attr-defined]
+    original_cbs = InMemoryEntityKG.claims_by_similarity
 
     async def _unscoped_claims_by_similarity(
-        self,
-        embedding,
+        self: InMemoryEntityKG,
+        embedding: Sequence[float],
         *,
-        k=10,
-        min_score=0.70,
-        scope=None,
-    ):
+        k: int = 10,
+        min_score: float = 0.70,
+        scope: str | None = None,
+    ) -> Sequence[ScoredClaim]:
         # Broken: always ignore scope — pass scope=None
         return await original_cbs(self, embedding, k=k, min_score=min_score, scope=None)
 

@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from cogworx.capability.base import PermissionTier
 from cogworx.capability.policy import StageToolPolicy, TaintState, ToolGate
 from cogworx.capability.registry import Registry, function_capability
 from cogworx.capability.router import (
@@ -502,7 +503,7 @@ async def test_b3_taint_latched_even_when_invoke_raises() -> None:
 
     class _RaisingCap:
         name = "ext_clean"
-        tier = "external"
+        tier: PermissionTier = "external"
         input_schema = original_ext.input_schema
 
         async def invoke(self, args: object) -> str:
@@ -562,7 +563,7 @@ async def test_b3_timeout_taints_because_invoke_started() -> None:
 
     class _SlowExternalCap:
         name = "ext_clean"
-        tier = "external"
+        tier: PermissionTier = "external"
         input_schema = original_ext.input_schema
 
         async def invoke(self, args: object) -> str:
@@ -611,7 +612,7 @@ async def test_persist_taint_raises_invoke_never_called_route() -> None:
         policy=policy, taint=taint, include_external=True, external_tags=()
     )
     # Inject the raising persist_taint hook directly onto the gate's internal slot.
-    gate._persist_taint = _raising_persist  # type: ignore[method-assign]
+    gate._persist_taint = _raising_persist
 
     # --- route_tool_calls path ---
     results = await route_tool_calls(gate, reg, [_tool_call("ext_clean", {"x": "v"})])
@@ -642,7 +643,7 @@ async def test_persist_taint_raises_invoke_never_called_dispatch_one() -> None:
     gate, reg = _make_gate_and_registry(
         policy=policy, taint=taint, include_external=True, external_tags=()
     )
-    gate._persist_taint = _raising_persist  # type: ignore[method-assign]
+    gate._persist_taint = _raising_persist
 
     with pytest.raises(RuntimeError, match="persist_taint failed"):
         await dispatch_one(gate, reg, "ext_clean", {"x": "v"})

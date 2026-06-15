@@ -54,7 +54,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
@@ -114,7 +114,7 @@ class _CountingCap:
     ) -> None:
         self.name = name
         self.tier = tier
-        self.input_schema = input_schema
+        self.input_schema: Mapping[str, Any] = input_schema
         self.description = f"fake {name}"
         self._return_value = return_value
         self._call_count = 0
@@ -1051,9 +1051,9 @@ async def test_sc2b_durable_taint_survives_to_second_engine() -> None:
 
     class _FetchCap:
         name = "fetch"
-        tier = "external"
+        tier: PermissionTier = "external"
         description = "fetch data"
-        input_schema: ClassVar[dict[str, Any]] = {
+        input_schema: Mapping[str, Any] = {
             "type": "object",
             "properties": {"url": {"type": "string"}},
             "required": ["url"],
@@ -1066,9 +1066,9 @@ async def test_sc2b_durable_taint_survives_to_second_engine() -> None:
 
     class _SendCap:
         name = "send"
-        tier = "external"
+        tier: PermissionTier = "external"
         description = "send data"
-        input_schema: ClassVar[dict[str, Any]] = {
+        input_schema: Mapping[str, Any] = {
             "type": "object",
             "properties": {"msg": {"type": "string"}},
             "required": ["msg"],
@@ -1085,12 +1085,15 @@ async def test_sc2b_durable_taint_survives_to_second_engine() -> None:
 
     class _StageA:
         name = "stage-a"
-        transitions = ("stage-b",)
+        transitions: tuple[str, ...] = ("stage-b",)
         tool_policy = StageToolPolicy(
             allowed_tiers=frozenset({"external"}), taint_drops_external=True
         )
 
         async def run(self, ctx: StageContext) -> Any:
+            from cogworx.runtime.context import RunContext as _RunContext
+
+            assert isinstance(ctx, _RunContext)
             assert ctx._gate is not None
             # Dispatch fetch through the gate — this MUST journal taint BEFORE invoke.
             await dispatch_one(
@@ -1118,12 +1121,15 @@ async def test_sc2b_durable_taint_survives_to_second_engine() -> None:
 
     class _StageB:
         name = "stage-b"
-        transitions = ()
+        transitions: tuple[str, ...] = ()
         tool_policy = StageToolPolicy(
             allowed_tiers=frozenset({"external"}), taint_drops_external=True
         )
 
         async def run(self, ctx: StageContext) -> Any:
+            from cogworx.runtime.context import RunContext as _RunContext
+
+            assert isinstance(ctx, _RunContext)
             assert ctx._gate is not None
             tc = ToolCall(id="tc-send", name="send", arguments={"msg": "exfil"})
             from cogworx.capability.router import route_tool_calls as _rtc

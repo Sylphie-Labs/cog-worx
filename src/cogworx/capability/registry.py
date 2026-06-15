@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, cast, get_type_hints
+from typing import Any, get_type_hints
 
 from pydantic import ConfigDict, Field, create_model
 
@@ -163,8 +163,7 @@ def _build_input_schema(fn: Callable[..., Awaitable[Any]], name: str) -> dict[st
         __config__=ConfigDict(arbitrary_types_allowed=True),
         **fields,
     )
-    raw = model.model_json_schema()
-    schema: dict[str, Any] = cast(dict[str, Any], raw)
+    schema: dict[str, Any] = model.model_json_schema()
     schema.pop("title", None)
     # harden_input_schema (the single recursive authority, B2) injects additionalProperties:false
     # at every absent object node — top-level AND nested — so extra model-supplied keys are

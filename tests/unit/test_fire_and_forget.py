@@ -35,6 +35,7 @@ import pytest
 
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.coordination.events import Event, EventType
+from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayError, PathwayRegistry
 from cogworx.loop.result import AwaitHuman, Done, StageResult, Transition, Wait
@@ -222,7 +223,11 @@ def _make_engine(
     event_sink: Callable[[Event], None] | None = None,
 ) -> Engine:
     _registry = ModelRegistry()
-    _registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
+
+    def _factory(g: BudgetGuard) -> BudgetGuardedModel:
+        return BudgetGuardedModel(model, g)
+
+    _registry.register_factory("default", _factory)
     return Engine(
         models=_registry,
         journal=journal,
@@ -1254,10 +1259,12 @@ async def test_start_builds_exactly_one_context() -> None:
 
     mints: list[object] = []
     counting_registry = ModelRegistry()
-    counting_registry.register_factory(
-        "default",
-        lambda g, m=model: mints.append(g) or BudgetGuardedModel(m, g),
-    )
+
+    def _counting_factory(g: BudgetGuard) -> BudgetGuardedModel:
+        mints.append(g)
+        return BudgetGuardedModel(model, g)
+
+    counting_registry.register_factory("default", _counting_factory)
     engine = Engine(
         models=counting_registry,
         journal=journal,
@@ -1305,10 +1312,12 @@ async def test_ff9_background_crash_mints_one_context_run_crashed_lands_on_sink(
 
     mints: list[object] = []
     counting_registry = ModelRegistry()
-    counting_registry.register_factory(
-        "default",
-        lambda g, m=model: mints.append(g) or BudgetGuardedModel(m, g),
-    )
+
+    def _counting_factory_ff9(g: BudgetGuard) -> BudgetGuardedModel:
+        mints.append(g)
+        return BudgetGuardedModel(model, g)
+
+    counting_registry.register_factory("default", _counting_factory_ff9)
     engine = Engine(
         models=counting_registry,
         journal=crash_journal,

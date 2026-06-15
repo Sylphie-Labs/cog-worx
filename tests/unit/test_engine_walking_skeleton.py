@@ -10,6 +10,7 @@ import pytest
 
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.coordination.events import Event, EventType, validate_event_boundary
+from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Done, StageResult
@@ -66,7 +67,7 @@ class _SchemaStage:
     async def run(self, ctx: StageContext) -> StageResult:
         response = await ctx.model.complete(
             messages=[ChatMessage(role="user", content="Answer me.")],
-            json_schema=_SCHEMA,  # type: ignore[arg-type]
+            json_schema=_SCHEMA,
         )
         return Done(
             output=Artifact(
@@ -94,10 +95,11 @@ async def test_reference_agent_runs_to_completion(
 ) -> None:
     sink: list[Event] = []
     registry = ModelRegistry()
-    registry.register_factory(
-        "default",
-        lambda g, m=replay_model: StructuredOutputModel(BudgetGuardedModel(m, g)),
-    )
+
+    def _factory_ref(g: BudgetGuard) -> StructuredOutputModel:
+        return StructuredOutputModel(BudgetGuardedModel(replay_model, g))
+
+    registry.register_factory("default", _factory_ref)
     engine = Engine(
         models=registry,
         journal=in_memory_journal,
@@ -158,10 +160,11 @@ async def test_engine_ladder_validates_schema_on_drive_path() -> None:
         [ModelResponse(text='{"answer": "42"}', model_id="replay", finish_reason="stop")]
     )
     registry = ModelRegistry()
-    registry.register_factory(
-        "default",
-        lambda g, m=inner: StructuredOutputModel(BudgetGuardedModel(m, g)),
-    )
+
+    def _factory_schema_ok(g: BudgetGuard) -> StructuredOutputModel:
+        return StructuredOutputModel(BudgetGuardedModel(inner, g))
+
+    registry.register_factory("default", _factory_schema_ok)
     engine = Engine(
         models=registry,
         journal=InMemoryJournal(),
@@ -205,10 +208,11 @@ async def test_engine_ladder_rejects_invalid_schema_output() -> None:
         [ModelResponse(text='{"answer": 7}', model_id="replay", finish_reason="stop")]
     )
     registry = ModelRegistry()
-    registry.register_factory(
-        "default",
-        lambda g, m=inner: StructuredOutputModel(BudgetGuardedModel(m, g)),
-    )
+
+    def _factory_schema_bad(g: BudgetGuard) -> StructuredOutputModel:
+        return StructuredOutputModel(BudgetGuardedModel(inner, g))
+
+    registry.register_factory("default", _factory_schema_bad)
     engine = Engine(
         models=registry,
         journal=InMemoryJournal(),

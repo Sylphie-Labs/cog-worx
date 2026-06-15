@@ -456,7 +456,7 @@ async def test_engine_assembler_uses_registry_tool_contributor() -> None:
     assembler = ContextAssembler(slots=DEFAULT_SLOTS, model=ReplayModel())
     assembler.register("tools", RegistryToolContributor(gate))
 
-    tools_contributor = assembler._contributors.get("tools")  # type: ignore[attr-defined]
+    tools_contributor = assembler._contributors.get("tools")
     assert isinstance(tools_contributor, RegistryToolContributor), (
         f"tools slot must be RegistryToolContributor, got {type(tools_contributor)}"
     )

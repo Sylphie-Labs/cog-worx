@@ -139,7 +139,7 @@ async def test_s5_auditor_raises_on_bad_epistemic_type() -> None:
             if c is None:
                 return None
             # Construct a copy with an invalid epistemic_type using model_copy to bypass Literal
-            return c.model_copy(update={"epistemic_type": "unknown_level"})  # type: ignore[arg-type]
+            return c.model_copy(update={"epistemic_type": "unknown_level"})
 
     bad_inner = BadEpistemicKG()
     await bad_inner.write_claim(claim, evidence=ev)

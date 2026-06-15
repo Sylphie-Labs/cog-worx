@@ -163,7 +163,7 @@ def test_duplicate_channel_names_raise_at_construction() -> None:
     ch1 = _FixedNameChannel()
     ch2 = _FixedNameChannel()
     with pytest.raises(ValueError, match="Duplicate channel names"):
-        RecallStack([ch1, ch2])  # type: ignore[list-item]
+        RecallStack([ch1, ch2])
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +290,7 @@ async def test_s8_failing_channel_degrades_gracefully() -> None:
     # A stack with the broken channel plus the two text/dense channels (which will return results).
     stack = RecallStack(
         [
-            broken,  # type: ignore[list-item]
+            broken,
             ClaimTextChannel(kg),
             ClaimDenseChannel(kg),
         ]
@@ -383,7 +383,7 @@ async def test_custom_reranker_reversal_is_accepted() -> None:
             return list(reversed(results))
 
     kg = await _seeded_entity_kg()
-    stack = default_recall_stack(entity_kg=kg, reranker=_ReverseReranker())  # type: ignore[arg-type]
+    stack = default_recall_stack(entity_kg=kg, reranker=_ReverseReranker())
     query = RecallQuery(text="alice", embedding=_EMBED_A, anchor_entities=("alice",))
     outcome = await stack.recall(query)
 
@@ -432,7 +432,7 @@ async def test_malicious_reranker_injecting_key_raises() -> None:
             return [*list(results), fake]
 
     kg = await _seeded_entity_kg()
-    stack = default_recall_stack(entity_kg=kg, reranker=_InjectionReranker())  # type: ignore[arg-type]
+    stack = default_recall_stack(entity_kg=kg, reranker=_InjectionReranker())
     query = RecallQuery(text="alice", embedding=_EMBED_A, anchor_entities=("alice",))
 
     with pytest.raises(ValueError, match="not present in original results"):
@@ -469,7 +469,7 @@ async def test_failed_channel_status_error_is_nonempty() -> None:
         async def search(self, query: RecallQuery) -> Sequence[RecallResult]:
             raise RuntimeError("boom!")
 
-    stack = RecallStack([_AlwaysFails()])  # type: ignore[list-item]
+    stack = RecallStack([_AlwaysFails()])
     outcome = await stack.recall(RecallQuery())
 
     assert len(outcome.channel_status) == 1

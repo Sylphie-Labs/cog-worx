@@ -380,10 +380,10 @@ def test_i4_s9_negative_control_source_id_passthrough(monkeypatch: pytest.Monkey
     import cogworx.knowledge.extraction as _extraction_mod
 
     hostile_source_id = "model-chosen-id"
-    original_make_evidence = _extraction_mod.make_evidence
+    original_make_evidence = _extraction_mod.make_evidence  # type: ignore[attr-defined]
 
     def mutant_make_evidence(*args: object, **kwargs: object) -> object:
-        kwargs["source_id"] = hostile_source_id  # type: ignore[arg-type]
+        kwargs["source_id"] = hostile_source_id
         return original_make_evidence(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(_extraction_mod, "make_evidence", mutant_make_evidence)
@@ -421,11 +421,11 @@ def test_i4_s9_negative_control_epistemic_type_passthrough(
     import cogworx.knowledge.extraction as _extraction_mod
     from cogworx.claims.provenance import Claim as _OrigClaim
 
-    _original_Claim = _extraction_mod.Claim
+    _original_Claim = _extraction_mod.Claim  # type: ignore[attr-defined]
 
     def mutant_Claim(**kwargs: object) -> _OrigClaim:
-        kwargs["epistemic_type"] = "confirmed"  # type: ignore[arg-type]
-        return _original_Claim(**kwargs)  # type: ignore[arg-type]
+        kwargs["epistemic_type"] = "confirmed"
+        return _original_Claim(**kwargs)
 
     monkeypatch.setattr(_extraction_mod, "Claim", mutant_Claim)
 
@@ -447,7 +447,7 @@ def test_i4_s9_negative_control_epistemic_type_passthrough(
     assert len(result.pairs) == 1
     claim, _ = result.pairs[0]
     assert claim.epistemic_type == "confirmed", "Mutant did not inject hostile epistemic_type"
-    assert claim.epistemic_type != "inference", (
+    assert claim.epistemic_type != "inference", (  # type: ignore[comparison-overlap]
         "The positive test (claim.epistemic_type == 'inference') would FAIL on this mutant"
     )
 

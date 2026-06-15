@@ -20,6 +20,7 @@ import random
 import sys
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -289,7 +290,7 @@ async def test_i2_sweep_atomicity_rollback(settings: SubstrateSettings) -> None:
     await store.aclose()
 
 
-async def psycopg_connect_no_autocommit(store: PgLatentStore):  # type: ignore[return]
+async def psycopg_connect_no_autocommit(store: PgLatentStore) -> Any:
     """Helper: open a non-autocommit connection for the rollback test."""
     import psycopg
     from pgvector.psycopg import register_vector_async

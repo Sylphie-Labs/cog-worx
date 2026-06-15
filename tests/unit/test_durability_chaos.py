@@ -17,6 +17,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from cogworx.claims.provenance import Artifact, Provenance
+from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Done, StageResult, Transition
@@ -107,7 +108,11 @@ def _make_build_engine(pathways: PathwayRegistry) -> Callable[[Journal, ReplayMo
 
     def build(journal: Journal, model: ReplayModel) -> Engine:
         registry = ModelRegistry()
-        registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
+
+        def _factory(g: BudgetGuard) -> BudgetGuardedModel:
+            return BudgetGuardedModel(model, g)
+
+        registry.register_factory("default", _factory)
         return Engine(
             models=registry,
             journal=journal,

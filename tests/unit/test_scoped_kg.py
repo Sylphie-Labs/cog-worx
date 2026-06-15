@@ -21,18 +21,21 @@ from datetime import UTC, datetime
 
 import pytest
 
-from cogworx.knowledge.evidence import make_evidence
+from cogworx.claims.provenance import Claim
+from cogworx.knowledge.evidence import EvidenceEvent, make_evidence
 from cogworx.knowledge.identity import claim_id_for
 from cogworx.knowledge.scoped_kg import ScopedKG, user_model, world_model
 from cogworx.knowledge.scopes import ScopeRegistry
-from cogworx.knowledge.source_registry import SourceRegistry
+from cogworx.knowledge.source_registry import SourceDeclaration, SourceRegistry
 from cogworx.testing.doubles import InMemoryEntityKG
 
 _FIXED_NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 _CLOCK = lambda: _FIXED_NOW  # noqa: E731
 
 
-def _source_decl(kind: str = "tool", ref: str = "test-source", authority: float = 0.9):
+def _source_decl(
+    kind: str = "tool", ref: str = "test-source", authority: float = 0.9
+) -> SourceDeclaration:
     registry = SourceRegistry()
     return registry.declare(kind, ref, authority=authority)  # type: ignore[arg-type]
 
@@ -299,7 +302,9 @@ async def test_k4_negative_control_no_accumulate_bug(monkeypatch: pytest.MonkeyP
     original_write_claim = InMemoryEntityKG.write_claim
     call_count: dict[str, int] = {"n": 0}
 
-    async def _no_accumulate_write_claim(self, claim, *, evidence):
+    async def _no_accumulate_write_claim(
+        self: InMemoryEntityKG, claim: Claim, *, evidence: EvidenceEvent
+    ) -> str:
         call_count["n"] += 1
         if call_count["n"] == 1:
             # First call: behave normally

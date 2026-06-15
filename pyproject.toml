@@ -36,7 +36,10 @@ mcp = ["mcp>=1.3.0"]
 [dependency-groups]
 dev = [
     "ruff>=0.15.16,<0.16",
-    "mypy>=1.13.0",
+    # Cap the major: an uncapped floor let `uv lock` drift mypy across a major (1.x -> 2.1.0),
+    # lighting up ~155 pre-existing 2.x-only diagnostics. Pin to the validated 1.x baseline, the
+    # same way ruff is capped above. Lift deliberately when migrating to mypy 2.x.
+    "mypy>=1.13.0,<2",
     "pytest>=8.3.0",
     "pytest-asyncio>=1.4.0",
     "hypothesis>=6.130.0",

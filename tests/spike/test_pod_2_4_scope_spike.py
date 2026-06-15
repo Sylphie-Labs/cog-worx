@@ -28,16 +28,18 @@ import dataclasses
 import json
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import pytest
 
 from cogworx.claims.provenance import DEFAULT_SCOPE, Claim, Provenance
-from cogworx.knowledge.evidence import make_evidence
+from cogworx.knowledge.evidence import EvidenceEvent, make_evidence
 from cogworx.knowledge.identity import claim_id_for
 from cogworx.knowledge.scoped_kg import user_model, world_model
 from cogworx.knowledge.scopes import Scope, ScopeRegistry, ScopeWriteToken
-from cogworx.knowledge.source_registry import SourceRegistry
+from cogworx.knowledge.source_registry import SourceDeclaration, SourceRegistry
+from cogworx.substrate.entity_kg import ScoredClaim
 from cogworx.testing.doubles import InMemoryEntityKG
 
 pytestmark = pytest.mark.spike
@@ -46,11 +48,11 @@ _NOW = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 _CLOCK = lambda: _NOW  # noqa: E731
 
 
-def _source():
+def _source() -> SourceDeclaration:
     return SourceRegistry().declare("tool", "spike-tool", authority=0.9)
 
 
-def _evidence_event(source=None):
+def _evidence_event(source: SourceDeclaration | None = None) -> EvidenceEvent:
     src = source or _source()
     return make_evidence(
         type="corroboration",
@@ -164,7 +166,14 @@ async def test_sc1_negative_control_scope_filter_bypassed(monkeypatch: pytest.Mo
     # Capture the original method
     original_claims_about = InMemoryEntityKG.claims_about
 
-    async def _unfiltered_claims_about(self, entity, *, limit=20, as_of=None, scope=None):
+    async def _unfiltered_claims_about(
+        self: InMemoryEntityKG,
+        entity: str,
+        *,
+        limit: int = 20,
+        as_of: datetime | None = None,
+        scope: str | None = None,
+    ) -> Sequence[ScoredClaim]:
         # Broken: always ignore scope — return all claims
         return await original_claims_about(self, entity, limit=limit, as_of=as_of, scope=None)
 
@@ -294,14 +303,16 @@ async def test_sc3_negative_control_scope_ignored_in_claim_id(
     import cogworx.testing.doubles as _doubles_mod
 
     # Mutant: strip scope from the hash (pre-2.4 3-part-only behaviour)
-    def _no_scope_claim_id_for(subject, predicate, object_repr, *, scope=DEFAULT_SCOPE):
+    def _no_scope_claim_id_for(
+        subject: str, predicate: str, object_repr: str, *, scope: str = DEFAULT_SCOPE
+    ) -> str:
         return _identity_mod.claim_id_for(subject, predicate, object_repr, scope=DEFAULT_SCOPE)
 
     monkeypatch.setattr(_doubles_mod, "claim_id_for", _no_scope_claim_id_for)
 
     # Now both agent and world claim_id_for calls return the same value
-    agent_id_mutant = _doubles_mod.claim_id_for("X", "is", "Y", scope="agent")
-    world_id_mutant = _doubles_mod.claim_id_for("X", "is", "Y", scope="world")
+    agent_id_mutant = _doubles_mod.claim_id_for("X", "is", "Y", scope="agent")  # type: ignore[attr-defined]
+    world_id_mutant = _doubles_mod.claim_id_for("X", "is", "Y", scope="world")  # type: ignore[attr-defined]
 
     # The mutant makes them identical — the positive test (agent_id != world_id) would FAIL
     assert agent_id_mutant == world_id_mutant, (
@@ -510,7 +521,9 @@ def test_sc5_negative_control_scope_always_in_hash(monkeypatch: pytest.MonkeyPat
     Proves SC-5 positive assertion has teeth."""
     import cogworx.knowledge.identity as _identity_mod
 
-    def _always_scoped(subject, predicate, object_repr, *, scope=DEFAULT_SCOPE):
+    def _always_scoped(
+        subject: str, predicate: str, object_repr: str, *, scope: str = DEFAULT_SCOPE
+    ) -> str:
         # Always include scope — breaks the 3-part/4-part distinction
         import hashlib
         import unicodedata
@@ -678,9 +691,9 @@ def test_sc7_scope_write_token_not_json_roundtrippable() -> None:
 
     # A "reconstructed" token from the dict has scope as a dict — structurally degraded.
     # Accessing .scope.scope_id on this degraded token must fail (dict has no .scope_id).
-    degraded_token = ScopeWriteToken(**token_dict)  # type: ignore[arg-type]
+    degraded_token = ScopeWriteToken(**token_dict)
     with pytest.raises(AttributeError):
-        _ = degraded_token.scope.scope_id  # type: ignore[union-attr]
+        _ = degraded_token.scope.scope_id
 
 
 # CARRY-FORWARD CF-6: non-canonical scope strings (e.g. scope='AGENT' instead of 'agent')
@@ -709,9 +722,9 @@ def test_sc7_scope_write_token_no_dict_construction() -> None:
 
     # Python dataclasses allow splatting (no runtime type enforcement) — but the result is
     # degraded: .scope is a dict, not a Scope object.
-    degraded = ScopeWriteToken(**token_dict)  # type: ignore[arg-type]
+    degraded = ScopeWriteToken(**token_dict)
     assert isinstance(degraded.scope, dict), "Degraded token's scope must be a dict"
 
     # The degraded token is unusable: .scope.scope_id raises AttributeError
     with pytest.raises(AttributeError):
-        _ = degraded.scope.scope_id  # type: ignore[union-attr]
+        _ = degraded.scope.scope_id

@@ -23,11 +23,11 @@ import pytest
 from cogworx.adapters.config import SubstrateSettings
 from cogworx.adapters.neo4j_entity_kg import Neo4jEntityKG
 from cogworx.claims.provenance import Claim, Provenance
-from cogworx.knowledge.evidence import make_evidence
+from cogworx.knowledge.evidence import EvidenceEvent, make_evidence
 from cogworx.knowledge.identity import claim_id_for
 from cogworx.knowledge.scoped_kg import user_model, world_model
 from cogworx.knowledge.scopes import ScopeRegistry
-from cogworx.knowledge.source_registry import SourceRegistry
+from cogworx.knowledge.source_registry import SourceDeclaration, SourceRegistry
 
 pytestmark = [pytest.mark.integration, pytest.mark.neo4j]
 
@@ -40,11 +40,15 @@ _T0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-def _source(kind: str = "tool", ref: str = "scope-test", authority: float = 0.9):
+def _source(
+    kind: str = "tool", ref: str = "scope-test", authority: float = 0.9
+) -> SourceDeclaration:
     return SourceRegistry().declare(kind, ref, authority=authority)  # type: ignore[arg-type]
 
 
-def _evidence(source=None, recorded_at: datetime = _T0):
+def _evidence(
+    source: SourceDeclaration | None = None, recorded_at: datetime = _T0
+) -> EvidenceEvent:
     src = source or _source()
     return make_evidence(
         type="tool_proof",
@@ -110,7 +114,8 @@ async def test_ensure_schema_scope_indexes_idempotent(settings: SubstrateSetting
     await adapter.ensure_schema(embedding_dim=_DIM)
 
     # Verify the scope indexes exist by querying Neo4j's index listing
-    async with adapter._driver.session() as session:  # type: ignore[attr-defined]
+    assert adapter._driver is not None
+    async with adapter._driver.session() as session:
         result = await session.run("SHOW INDEXES YIELD name RETURN name")
         records = await result.values()
         index_names = {r[0] for r in records}
@@ -171,7 +176,8 @@ async def test_shared_entity_single_node(kg: Neo4jEntityKG) -> None:
     await kg.write_claim(user_claim, evidence=_evidence(source))
 
     # Count :Entity nodes with name="Paris" — must be exactly 1 (MERGE semantics)
-    async with kg._driver.session() as session:  # type: ignore[attr-defined]
+    assert kg._driver is not None
+    async with kg._driver.session() as session:
         result = await session.run(
             "MATCH (e:Entity {name: $name}) RETURN count(e) AS cnt",
             name="Paris",

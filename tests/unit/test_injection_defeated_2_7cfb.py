@@ -280,7 +280,7 @@ def _make_fused_with_kind(
     hit = ChannelHit(channel="dense.claims", rank=rank, raw_score=0.9)
     return FusedResult(
         key=f"{kind}:{claim.id}",
-        kind=kind,  # type: ignore[arg-type]  # intentional mis-kind for the test
+        kind=kind,
         item=scored,
         text=f"{claim.subject} {claim.predicate} {claim.payload}",
         hits=(hit,),

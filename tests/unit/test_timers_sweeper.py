@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from cogworx.claims.provenance import Artifact, Provenance
+from cogworx.cost.budget import BudgetGuard
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Done, StageResult, Transition, Wait
@@ -177,7 +178,11 @@ def _make_build_engine(
 ) -> Callable[[Journal, ReplayModel], Engine]:
     def build(journal: Journal, model: ReplayModel) -> Engine:
         _registry = ModelRegistry()
-        _registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
+
+        def _factory(g: BudgetGuard) -> BudgetGuardedModel:
+            return BudgetGuardedModel(model, g)
+
+        _registry.register_factory("default", _factory)
         return Engine(
             models=_registry,
             journal=journal,
@@ -292,6 +297,9 @@ class SetTimerSpyJournal:
     async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
 
+    async def set_run_tainted(self, run_id: str) -> None:
+        await self._inner.set_run_tainted(run_id)
+
 
 class PauseAfterStepJournal:
     """A ``Journal`` wrapper that flips the run to PAUSED right after a chosen stage commits.
@@ -378,6 +386,9 @@ class PauseAfterStepJournal:
 
     async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
+
+    async def set_run_tainted(self, run_id: str) -> None:
+        await self._inner.set_run_tainted(run_id)
 
 
 # --------------------------------------------------------------------------------------------------

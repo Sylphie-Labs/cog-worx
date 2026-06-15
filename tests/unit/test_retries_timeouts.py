@@ -229,7 +229,11 @@ def _make_build_engine(
 ) -> Callable[[Journal, ReplayModel], Engine]:
     def build(journal: Journal, model: ReplayModel) -> Engine:
         registry = ModelRegistry()
-        registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
+
+        def _factory(g: BudgetGuard) -> BudgetGuardedModel:
+            return BudgetGuardedModel(model, g)
+
+        registry.register_factory("default", _factory)
         return Engine(
             models=registry,
             journal=journal,
