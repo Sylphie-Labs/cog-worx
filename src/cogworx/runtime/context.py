@@ -16,6 +16,10 @@ Contract changelog:
   - 2026-06-12 (Pod 3.5b): dispatch_approved concrete method — additive (new method, NOT added
     to the StageContext Protocol; only RunContext exposes it). Stages that need it must assert
     isinstance(ctx, RunContext) first — the type-narrowing makes mypy --strict happy.
+  - 2026-06-15 (Pod 4.0 F5, BREAKING via /update-canon): added ``last_output`` — implements the
+    new StageContext Protocol member. Reads the run's committed steps from the journal
+    (``load_run``) and returns the latest matching stage's output. Mirrors ``read_human_input``
+    (pull-based, crash-correct).
 """
 
 from __future__ import annotations
@@ -234,6 +238,22 @@ class RunContext:
         in the journal and any stage can read it without the engine re-injecting it (S6/S9).
         """
         return await self._journal.read_human_input(self.run_id, step_index)
+
+    async def last_output(self, stage_name: str) -> Artifact | None:
+        """Most recent committed output of ``stage_name`` for this run, or ``None``.
+
+        PULL-based + journal-backed (mirrors :meth:`read_human_input`): reads the run's committed
+        steps via ``load_run`` and returns the latest matching stage's output Artifact.
+        Crash-correct — a fresh ``RunContext`` after a cold resume reads the same durable answer
+        (S6); a stage holds no in-process step history.
+        """
+        run = await self._journal.load_run(self.run_id)
+        if run is None:
+            return None
+        for step in reversed(run.steps):
+            if step.stage_name == stage_name:
+                return step.result.output
+        return None
 
     def bind_memory_policy(self, policy: MemoryPolicy | None) -> None:
         """Bind a per-stage MemoryPolicy (read from stage.memory_policy by the engine)."""

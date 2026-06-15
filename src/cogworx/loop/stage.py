@@ -8,6 +8,10 @@ Ported from biz-firm's composition primitives (Stage · Capability · Context ·
 Contract changelog:
   - 2026-06-12 (Pod 3.1e, BREAKING, Jim-approved via /update-canon): added ``assemble_context`` +
     ``bind_context_policy`` to StageContext Protocol.
+  - 2026-06-15 (Pod 4.0 F5, BREAKING, Jim-approved via /update-canon): added ``last_output`` to the
+    StageContext Protocol — the journal-backed pull accessor for an upstream stage's most recent
+    committed output (the Phase 4 EvaluateStage routes on the antithesis Verdict). New Protocol
+    member → C3-breaking (§6.1).
 """
 
 from __future__ import annotations
@@ -68,6 +72,20 @@ class StageContext(Protocol):
 
         PULL-based: stages pull answers from the journal. The engine never pushes a
         ``ctx.human_input`` attribute, so cold resume works without re-injection (S6/S9).
+        """
+        ...
+
+    async def last_output(self, stage_name: str) -> Artifact | None:
+        """Return the most recent committed output ``Artifact`` of ``stage_name`` for this run, or
+        ``None`` if that stage has committed no output yet.
+
+        PULL-based, journal-backed — the same idiom as :meth:`read_human_input` (the engine
+        threads no artifact between stages). A stage that routes on an upstream stage's output
+        (e.g. the dialectic ``EvaluateStage`` reading the antithesis ``Verdict``) pulls it here.
+        "Most recent" is cycle-correct for a refine loop without coupling to any stage name: a
+        consumer that runs after its producer each cycle sees THIS cycle's output (the latest
+        commit). Crash-correct — it reads the durable committed steps, so a cold resume returns
+        the same answer (S6/S9).
         """
         ...
 
