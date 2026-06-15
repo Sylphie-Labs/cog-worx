@@ -123,9 +123,7 @@ def assert_rerank_subset(
     if len(set(reranked_keys)) != len(reranked_keys):
         seen: set[str] = set()
         dupes = [k for k in reranked_keys if k in seen or seen.add(k)]  # type: ignore[func-returns-value]
-        raise ValueError(
-            f"Reranked results contain duplicate keys: {dupes!r}"
-        )
+        raise ValueError(f"Reranked results contain duplicate keys: {dupes!r}")
 
     # Build a lookup from the original list.
     original_by_key: dict[str, FusedResult] = {r.key: r for r in original}

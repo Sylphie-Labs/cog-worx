@@ -1,5 +1,12 @@
 """The walking-skeleton loop driver (CANON S1, S2, S6).
 
+Contract changelog:
+  - 2026-06-13 (Pod 3.3c): Engine gains optional ``personality`` kwarg; _build_assembler wires
+    PersonalityContributor when set, else keeps the existing StaticContributor("") placeholder.
+  - 2026-06-13 (Pod 3.4d): Engine gains optional ``rules`` kwarg; _build_assembler wires
+    RulesContributor when set, else keeps the existing StaticContributor("") placeholder.
+
+
 The ``Engine`` owns the loop (S2): it drives a ``StageGraph``, committing each stage's
 ``StageResult`` to the journal BEFORE advancing (S6 exactly-once), and replays a committed step from
 the journal WITHOUT re-running the stage or re-calling the model (S6). The write path is a pure
@@ -49,16 +56,30 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from cogworx.capability.policy import TaintState, ToolGate
 from cogworx.capability.registry import Registry
 from cogworx.claims.provenance import Artifact, Provenance
+from cogworx.context.assembler import ContextAssembler
+from cogworx.context.contributors import (
+    MemoryContributor,
+    RegistryToolContributor,
+    StaticContributor,
+    TaskContributor,
+    ToolSpecContributor,
+)
+from cogworx.context.personality import PersonalityContributor, PersonalityProfile
+from cogworx.context.rules import RulesContributor, RuleSet
+from cogworx.context.types import DEFAULT_SLOTS
 from cogworx.coordination.events import Event, EventType, Subsystem, validate_event_boundary
-from cogworx.cost.budget import BudgetGuard
+from cogworx.cost.budget import BudgetPolicy
+from cogworx.injection.injector import MemoryInjector
 from cogworx.loop.graph import StageGraph, StageGraphError
 from cogworx.loop.pathway import PathwayRegistry, pathway_fingerprint
 from cogworx.loop.result import Degraded
 from cogworx.loop.retry import DEFAULT_RETRY_POLICY, RetryPolicy
 from cogworx.loop.state import RunStatus
-from cogworx.model.base import Model
+from cogworx.model.registry import ModelRegistry
+from cogworx.recall.stack import RecallStack
 from cogworx.runtime.context import RunContext
 from cogworx.runtime.handle import RunHandle
 from cogworx.substrate.graph_store import GraphStore
@@ -78,27 +99,35 @@ class Engine:
     def __init__(
         self,
         *,
-        model: Model,
+        models: ModelRegistry,
         journal: Journal,
         graph_store: GraphStore,
         latent: LatentStore,
         pathways: PathwayRegistry,
-        budget: BudgetGuard | None = None,
+        model_profile: str = "default",
+        budget_policy: BudgetPolicy | None = None,
         registry: Registry | None = None,
         event_sink: Callable[[Event], None] | None = None,
         clock: Clock = lambda: datetime.now(UTC),
         max_steps: int = 1000,
+        recall_stack: RecallStack | None = None,
+        personality: PersonalityProfile | None = None,
+        rules: RuleSet | None = None,
     ) -> None:
-        self._model = model
+        self._models = models
+        self._model_profile = model_profile
         self._journal = journal
         self._graph_store = graph_store
         self._latent = latent
         self._pathways = pathways
-        self._budget = budget if budget is not None else BudgetGuard()
+        self._budget_policy = budget_policy if budget_policy is not None else BudgetPolicy()
         self._registry = registry
         self._event_sink = event_sink
         self._clock = clock
         self._max_steps = max_steps
+        self._recall_stack = recall_stack
+        self._personality = personality
+        self._rules = rules
         self._event_seq = 0
         # Background tasks created via ``start``, keyed by run_id: GC protection, double-start
         # refusal, and identity-checked eviction (a stale first task must not evict a newer one).
@@ -109,29 +138,140 @@ class Engine:
         # exclusion is the deferred run-lease/reaper ops pod (S6/S7).
         self._driving: set[str] = set()
 
-    def _build_context(self, *, run_id: str, session_id: str) -> RunContext:
+    def _build_context(self, *, run_id: str, session_id: str, tainted: bool = False) -> RunContext:
+        # Mint a fresh guard per drive (S11 per-drive ceiling; CF-3.0-B deferred).
+        guard = self._budget_policy.new_guard()
+        model = self._models.assemble(self._model_profile, guard=guard)
+        # MemoryInjector is built per drive so it uses the same model as the run
+        # (including its guard). Previously the injector captured the bare model;
+        # injector model calls now count against the run ceiling (side win).
+        injector: MemoryInjector | None = (
+            MemoryInjector(
+                self._recall_stack,
+                latent_store=self._latent,
+                model=model,
+                clock=self._clock,
+            )
+            if self._recall_stack is not None
+            else None
+        )
+        # Build the drive-level ToolGate (shared TaintState across all stages in this drive).
+        # When no registry is wired the gate is still built so RunContext always has a gate;
+        # exposed_specs() returns () and dispatch falls back to the legacy no-gate path
+        # (the gate is only meaningful when a registry is present).
+        # ``tainted`` seeds the in-memory latch from the journaled RunState.tainted so a
+        # rehydrated drive (resume/fire_timer/unpause/provide_human_input) starts with the
+        # correct taint posture (B1 durable taint across re-drives).
+        gate: ToolGate | None = (
+            ToolGate(
+                self._registry,
+                taint=TaintState(tainted=tainted),
+                persist_taint=lambda: self._journal.set_run_tainted(run_id),
+            )
+            if self._registry is not None
+            else None
+        )
+        # ContextAssembler is ALWAYS built (task/instructions work without a recall stack).
+        # DEFAULT_SLOTS are wired to concrete contributors; the MemoryContributor degrades
+        # gracefully to empty when injector is None (no recall stack wired).
+        assembler = self._build_assembler(model=model, injector=injector, gate=gate)
         return RunContext(
             run_id=run_id,
             session_id=session_id,
-            model=self._model,
+            model=model,
             journal=self._journal,
             graph_store=self._graph_store,
             latent=self._latent,
-            budget=self._budget,
+            budget=guard,
             registry=self._registry,
+            gate=gate,
             event_sink=self._event_sink,
             clock=self._clock,
+            injector=injector,
+            assembler=assembler,
         )
 
-    def _emit(
+    def _build_assembler(
         self,
-        ctx: RunContext,
+        *,
+        model: object,
+        injector: MemoryInjector | None,
+        gate: ToolGate | None = None,
+    ) -> ContextAssembler:
+        """Wire DEFAULT_SLOTS to concrete contributors and return the per-drive assembler.
+
+        Contributor wiring:
+          - rules        → RulesContributor(rules) when the ``rules`` Engine kwarg is set; else
+                           StaticContributor("") — placeholder for runs without a ruleset.
+          - personality  → PersonalityContributor(profile) when personality kwarg set; else
+                           StaticContributor("") — placeholder for runs without a profile
+          - instructions → TaskContributor(field="instructions")
+          - memory       → MemoryContributor(injector) when injector is wired; else
+                           MemoryContributor with a dummy injector is NOT used — the memory slot
+                           returns "empty" because MemoryContributor requires an injector.
+                           Instead we skip registering the memory contributor when unwired, so the
+                           assembler sees no contributor for that slot (status="unwired" in report).
+          - tools        → RegistryToolContributor(gate) when a gate is wired (Pod 3.2c); else
+                           ToolSpecContributor(()) — empty static placeholder for runs without a
+                           registry.  RegistryToolContributor calls gate.exposed_specs() lazily so
+                           the spec list always reflects the stage's just-bound policy and taint.
+          - task         → TaskContributor(field="task")
+
+        The SAME per-drive injector as the RunContext receives is used here, so memory recall in
+        assembly shares the run guard + clock (preserving the 3.0 side-win).
+        """
+        assembler = ContextAssembler(slots=DEFAULT_SLOTS, model=model)
+        if self._rules is not None:
+            assembler.register("rules", RulesContributor(self._rules))
+        else:
+            assembler.register(
+                "rules",
+                StaticContributor("", key="rules:placeholder", source_slot="rules"),
+            )
+        if self._personality is not None:
+            assembler.register(
+                "personality",
+                PersonalityContributor(self._personality),
+            )
+        else:
+            assembler.register(
+                "personality",
+                StaticContributor("", key="personality:placeholder", source_slot="personality"),
+            )
+        assembler.register(
+            "instructions",
+            TaskContributor(
+                field="instructions",
+                key="instructions:main",
+                source_slot="instructions",
+            ),
+        )
+        if injector is not None:
+            assembler.register("memory", MemoryContributor(injector))
+        if gate is not None:
+            assembler.register("tools", RegistryToolContributor(gate))
+        else:
+            assembler.register("tools", ToolSpecContributor(()))
+        assembler.register(
+            "task",
+            TaskContributor(field="task", key="task:main", source_slot="task"),
+        )
+        return assembler
+
+    def _make_event(
+        self,
         event_type: EventType,
         *,
         run_id: str,
         session_id: str,
         attributes: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> Event:
+        """Build and boundary-validate a spine event; return it without routing.
+
+        Shared by ``_emit`` (drive-path, routes via ctx) and ``_emit_engine`` (no live
+        drive context — used for observational events such as RUN_CRASHED and RUN_PAUSED
+        that are emitted after or outside the drive loop).
+        """
         # Event ids are unique PER ENGINE INSTANCE (``_event_seq`` is instance state): two engines
         # emitting over one sink can collide on id for DISTINCT events. Cross-instance id
         # uniqueness/dedup is deferred with the rest of event idempotency (events are
@@ -148,7 +288,44 @@ class Engine:
             attributes=attributes if attributes is not None else {},
         )
         validate_event_boundary(event)
-        ctx.emit(event)
+        return event
+
+    def _emit(
+        self,
+        ctx: RunContext,
+        event_type: EventType,
+        *,
+        run_id: str,
+        session_id: str,
+        attributes: dict[str, Any] | None = None,
+    ) -> None:
+        """Build an event and route it through *ctx* (drive-path: accumulates in ctx.events)."""
+        ctx.emit(
+            self._make_event(
+                event_type, run_id=run_id, session_id=session_id, attributes=attributes
+            )
+        )
+
+    def _emit_engine(
+        self,
+        event_type: EventType,
+        *,
+        run_id: str,
+        session_id: str,
+        attributes: dict[str, Any] | None = None,
+    ) -> None:
+        """Engine-level emit for events with NO live drive context (RUN_CRASHED, RUN_PAUSED).
+
+        Builds the event and sends it straight to ``self._event_sink`` (if wired). No
+        RunContext is created; no BudgetGuard is minted; no model is assembled. These events
+        are purely observational: the journal — never the event stream — is the authority on
+        run state and resumability.
+        """
+        event = self._make_event(
+            event_type, run_id=run_id, session_id=session_id, attributes=attributes
+        )
+        if self._event_sink is not None:
+            self._event_sink(event)
 
     def _exhaustion_degraded(self, exc: BaseException, attempt: int, to: str | None) -> Degraded:
         """Build the first-class exhaustion ``Degraded`` (S8) committed at ``seq`` on retry-exhaust.
@@ -208,7 +385,6 @@ class Engine:
         # handle dropped (the point of fire-and-forget), that would be a silently lost run.
         self._pathways.get(pathway_id, pathway_version)
 
-        ctx = self._build_context(run_id=run_id, session_id=session_id)
         task: asyncio.Task[RunState] = asyncio.create_task(
             self.run(
                 run_id=run_id,
@@ -229,9 +405,10 @@ class Engine:
             # asyncio's unreliable "exception was never retrieved" log with a first-class event.
             # The event is observational — the JOURNAL stays the authority on resumability (a
             # crashed-mid-drive run is still RUNNING there and recoverable via ``resume``).
+            # RUN_CRASHED is engine-level/observational: it carries no live run context and is
+            # emitted via ``_emit_engine`` (no RunContext, no guard, no model minted).
             if not t.cancelled() and (exc := t.exception()) is not None:
-                self._emit(
-                    ctx,
+                self._emit_engine(
                     EventType.RUN_CRASHED,
                     run_id=run_id,
                     session_id=session_id,
@@ -339,7 +516,7 @@ class Engine:
                 "added/removed/renamed stages) resumes against the wrong graph — bump the pathway "
                 "version instead of editing in place."
             )
-        ctx = self._build_context(run_id=run_id, session_id=state.session_id)
+        ctx = self._build_context(run_id=run_id, session_id=state.session_id, tainted=state.tainted)
         # No awaits between the ``_driving`` membership check above and this registration other
         # than ``load_run`` — and a stale read there only means returning a slightly old state,
         # never a double-drive: registration itself is check-then-add with no await between.
@@ -371,7 +548,7 @@ class Engine:
                 f"{state.pathway_fingerprint!r}. Bump the pathway version instead of editing "
                 "in place."
             )
-        ctx = self._build_context(run_id=run_id, session_id=state.session_id)
+        ctx = self._build_context(run_id=run_id, session_id=state.session_id, tainted=state.tainted)
         return state, graph, ctx
 
     async def fire_timer(self, run_id: str) -> RunState:
@@ -442,8 +619,7 @@ class Engine:
         )
         if not flipped:
             return False
-        ctx = self._build_context(run_id=run_id, session_id=state.session_id)
-        self._emit(ctx, EventType.RUN_PAUSED, run_id=run_id, session_id=state.session_id)
+        self._emit_engine(EventType.RUN_PAUSED, run_id=run_id, session_id=state.session_id)
         return True
 
     async def unpause(self, run_id: str) -> RunState:
@@ -588,6 +764,15 @@ class Engine:
                 self._emit(ctx, EventType.STAGE_ENTERED, run_id=run_id, session_id=session_id)
                 stage = graph.get(current)
                 policy: RetryPolicy = getattr(stage, "retry_policy", DEFAULT_RETRY_POLICY)
+                # Bind per-stage memory policy (read via getattr — mirrors retry_policy pattern).
+                # Clear first: a shared-per-drive RunContext must not leak a prior stage's policy.
+                ctx.bind_memory_policy(getattr(stage, "memory_policy", None))
+                # Bind per-stage context policy (mirrors bind_memory_policy D15 invariant:
+                # clear before each stage so no context_policy leaks across stages).
+                ctx.bind_context_policy(getattr(stage, "context_policy", None))
+                # Bind per-stage tool policy (mirrors bind_memory_policy pattern: clear-first so
+                # no tool_policy leaks across stages; None → DEFAULT_TOOL_POLICY inside the gate).
+                ctx.bind_tool_policy(getattr(stage, "tool_policy", None))
                 # Classification is STRUCTURAL (S9): only a timeout or a type in the dev-authored
                 # ``retryable`` allowlist enters the retry machine; anything else is a BUG and
                 # propagates loud (fail-loud) — uncaught here, no increment, no timer, no FAILED.

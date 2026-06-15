@@ -38,6 +38,7 @@ from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import AwaitHuman, Done, StageResult
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel
@@ -158,8 +159,11 @@ def _live_pathways() -> PathwayRegistry:
 
 
 def _live_engine(journal: TimescaleJournal) -> Engine:
+    _replay = ReplayModel([])
+    _reg = ModelRegistry()
+    _reg.register("default", _replay)
     return Engine(
-        model=ReplayModel([]),
+        models=_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -287,8 +291,10 @@ async def test_cold_resume_after_answer_no_model_recall_live(
 
     # Cold resume on a brand-new engine + zero-response model.
     zero = ReplayModel([])
+    _reg_b = ModelRegistry()
+    _reg_b.register("default", zero)
     engine_b = Engine(
-        model=zero,
+        models=_reg_b,
         journal=prepared_journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

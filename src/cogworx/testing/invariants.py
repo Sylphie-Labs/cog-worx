@@ -22,14 +22,16 @@ lesioned, so it does not harden (S12). Surface that to ``architect`` rather than
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from datetime import datetime, timedelta
+from collections.abc import Callable, Iterable, Sequence
+from datetime import UTC, datetime, timedelta
 
 import pydantic
 
 from cogworx.claims.provenance import Artifact, Claim
+from cogworx.knowledge.evidence import EVIDENCE_BASE_WEIGHTS, EvidenceEvent
 from cogworx.loop.state import RunStatus
 from cogworx.runtime.engine import Engine
+from cogworx.substrate.entity_kg import ClaimProjection, EntityKG, ScoredClaim
 from cogworx.substrate.journal import (
     Journal,
     ProjectedStep,
@@ -151,6 +153,9 @@ class CommitSpyJournal:
 
     async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
+
+    async def set_run_tainted(self, run_id: str) -> None:
+        await self._inner.set_run_tainted(run_id)
 
 
 async def assert_no_model_on_write_path(
@@ -336,6 +341,9 @@ class CrashAfterStepJournal:
     async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return await self._inner.read_human_input(run_id, step_index)
 
+    async def set_run_tainted(self, run_id: str) -> None:
+        await self._inner.set_run_tainted(run_id)
+
 
 _TERMINAL_STATUSES = (
     RunStatus.COMPLETED,
@@ -495,15 +503,184 @@ async def assert_control_independent_of_model_text(
         )
 
 
+# --------------------------------------------------------------------------------------------------
+# S5 — RecordingEntityKG + substrate invariant auditor
+# --------------------------------------------------------------------------------------------------
+
+
+class RecordingEntityKG:
+    """EntityKG wrapper that records every claim id that crosses a write surface (S5 audit).
+
+    Delegates all EntityKG methods to the inner instance, intercepting the write surfaces to record
+    the claim ids they touch:
+
+    - ``write_claim``: records the returned claim id.
+    - ``project_claims``: records each ``ClaimProjection.claim.id`` before delegation.
+    - ``add_evidence``: records the ``claim_id`` argument.
+
+    All other methods delegate to the inner instance unchanged. The recorded set is append-only so
+    the auditor can verify provenance completeness post-run without modifying any claim data.
+    """
+
+    def __init__(self, inner: EntityKG) -> None:
+        self._inner = inner
+        self.recorded_claim_ids: set[str] = set()
+
+    async def write_claim(self, claim: Claim, *, evidence: EvidenceEvent) -> str:
+        """Delegate to inner and record the returned claim id."""
+        cid = await self._inner.write_claim(claim, evidence=evidence)
+        self.recorded_claim_ids.add(cid)
+        return cid
+
+    async def add_evidence(self, claim_id: str, event: EvidenceEvent) -> None:
+        """Delegate to inner and record the claim_id."""
+        await self._inner.add_evidence(claim_id, event)
+        self.recorded_claim_ids.add(claim_id)
+
+    async def project_claims(
+        self,
+        consumer: str,
+        writes: Sequence[ClaimProjection],
+        progress: ProjectionCursor | None,
+    ) -> None:
+        """Record each projected claim id, then delegate to inner."""
+        for cp in writes:
+            self.recorded_claim_ids.add(cp.claim.id)
+        await self._inner.project_claims(consumer, writes, progress)
+
+    async def get_claim(self, claim_id: str) -> Claim | None:
+        return await self._inner.get_claim(claim_id)
+
+    async def evidence_for(self, claim_id: str) -> Sequence[EvidenceEvent]:
+        return await self._inner.evidence_for(claim_id)
+
+    async def claims_about(
+        self,
+        entity: str,
+        *,
+        limit: int = 20,
+        as_of: datetime | None = None,
+        scope: str | None = None,
+    ) -> Sequence[ScoredClaim]:
+        return await self._inner.claims_about(entity, limit=limit, as_of=as_of, scope=scope)
+
+    async def claims_by_similarity(
+        self,
+        embedding: Sequence[float],
+        *,
+        k: int = 10,
+        min_score: float = 0.70,
+        scope: str | None = None,
+    ) -> Sequence[ScoredClaim]:
+        return await self._inner.claims_by_similarity(
+            embedding, k=k, min_score=min_score, scope=scope
+        )
+
+    async def claims_full_text(
+        self,
+        query: str,
+        *,
+        k: int = 10,
+        scope: str | None = None,
+        as_of: datetime | None = None,
+    ) -> Sequence[ScoredClaim]:
+        return await self._inner.claims_full_text(query, k=k, scope=scope, as_of=as_of)
+
+    async def resolution_candidates(
+        self,
+        subject: str,
+        predicate: str,
+        *,
+        embedding: Sequence[float] | None = None,
+        k: int = 5,
+        scope: str | None = None,
+    ) -> Sequence[Claim]:
+        return await self._inner.resolution_candidates(
+            subject, predicate, embedding=embedding, k=k, scope=scope
+        )
+
+    async def write_contradiction(self, claim_id_a: str, claim_id_b: str) -> None:
+        await self._inner.write_contradiction(claim_id_a, claim_id_b)
+
+    async def contradictions_of(self, claim_id: str) -> Sequence[Claim]:
+        return await self._inner.contradictions_of(claim_id)
+
+    async def invalidate_claim(self, claim_id: str, *, valid_to: datetime) -> None:
+        await self._inner.invalidate_claim(claim_id, valid_to=valid_to)
+
+    async def read_cursor(self, consumer: str) -> ProjectionCursor | None:
+        return await self._inner.read_cursor(consumer)
+
+
+async def assert_s5_substrate_invariants(
+    kg: EntityKG,
+    claim_ids: Iterable[str],
+) -> None:
+    """Assert S5 invariants for every claim id. Raises InvariantViolation on first failure.
+
+    For each claim id checks:
+      1. The claim exists in the KG.
+      2. At least one evidence event is attached.
+      3. Each evidence event has a known type, positive weight, non-empty source_id, and
+         non-None recorded_at.
+      4. The claim's epistemic_type is one of the recognised values.
+      5. The claim's provenance.source is non-None and non-empty.
+      6. The claim's valid_from is not None and is timezone-aware UTC.
+    """
+    _known_epistemic = {"observation", "inference", "confirmed"}
+
+    for claim_id in claim_ids:
+        claim = await kg.get_claim(claim_id)
+        if claim is None:
+            raise InvariantViolation(f"S5: claim {claim_id} not found")
+
+        evidence = await kg.evidence_for(claim_id)
+        if len(evidence) < 1:
+            raise InvariantViolation(f"S5: claim {claim_id} has no evidence")
+
+        for event in evidence:
+            if event.type not in EVIDENCE_BASE_WEIGHTS:
+                raise InvariantViolation(
+                    f"S5: unknown evidence type {event.type!r} on claim {claim_id}"
+                )
+            if event.base_weight <= 0:
+                raise InvariantViolation(
+                    f"S5: non-positive base_weight {event.base_weight} on claim {claim_id}"
+                )
+            if not event.source_id:
+                raise InvariantViolation(f"S5: empty source_id on evidence for claim {claim_id}")
+            if event.recorded_at is None:
+                raise InvariantViolation(f"S5: None recorded_at on evidence for claim {claim_id}")
+
+        if claim.epistemic_type not in _known_epistemic:
+            raise InvariantViolation(
+                f"S5: unknown epistemic_type {claim.epistemic_type!r} on claim {claim_id}"
+            )
+
+        if not claim.provenance.source:
+            raise InvariantViolation(f"S5: empty provenance.source on claim {claim_id}")
+
+        if claim.valid_from is None:
+            raise InvariantViolation(f"S5: None valid_from on claim {claim_id}")
+        vf = claim.valid_from
+        if vf.tzinfo is None or vf.utcoffset() is None:
+            raise InvariantViolation(f"S5: valid_from is not timezone-aware on claim {claim_id}")
+        # Normalize to UTC and check offset is zero.
+        if vf.astimezone(UTC).utcoffset() != timedelta(0):
+            raise InvariantViolation(f"S5: valid_from is not UTC on claim {claim_id}")
+
+
 __all__ = [
     "CommitSpyJournal",
     "CrashAfterStepJournal",
     "EngineFactory",
     "InvariantViolation",
+    "RecordingEntityKG",
     "SimulatedCrash",
     "assert_claim_requires_provenance",
     "assert_control_independent_of_model_text",
     "assert_no_model_on_write_path",
     "assert_resume_never_recalls_model",
     "assert_run_writes_carry_provenance",
+    "assert_s5_substrate_invariants",
 ]

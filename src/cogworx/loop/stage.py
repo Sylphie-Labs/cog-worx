@@ -4,6 +4,10 @@ The Spine is a graph of stages. A ``Stage`` runs against a ``StageContext`` and 
 discriminated ``StageResult`` — ``transition`` / ``done`` / ``await-human`` / ``degraded`` (defined
 in :mod:`cogworx.loop.result`) — making HITL and graceful degradation first-class loop transitions.
 Ported from biz-firm's composition primitives (Stage · Capability · Context · Loop).
+
+Contract changelog:
+  - 2026-06-12 (Pod 3.1e, BREAKING, Jim-approved via /update-canon): added ``assemble_context`` +
+    ``bind_context_policy`` to StageContext Protocol.
 """
 
 from __future__ import annotations
@@ -22,6 +26,9 @@ if TYPE_CHECKING:
     # Annotation-only (Protocol property return types). A runtime import here is the edge of an
     # import cycle: substrate.journal -> loop.result -> loop/__init__ -> stage -> substrate.journal,
     # which detonates when cogworx.substrate (or cogworx.runtime) is the first package imported.
+    from cogworx.context.types import AssembledCallContext, ContextPolicy, ContextRequest
+    from cogworx.injection.policy import InjectedMemory, MemoryPolicy
+    from cogworx.recall.query import RecallQuery
     from cogworx.substrate.graph_store import GraphStore
     from cogworx.substrate.journal import Journal
     from cogworx.substrate.latent import LatentStore
@@ -61,6 +68,41 @@ class StageContext(Protocol):
 
         PULL-based: stages pull answers from the journal. The engine never pushes a
         ``ctx.human_input`` attribute, so cold resume works without re-injection (S6/S9).
+        """
+        ...
+
+    async def recall(
+        self,
+        query: RecallQuery,
+        *,
+        policy: MemoryPolicy | None = None,
+    ) -> InjectedMemory:
+        """Execute recall and return an InjectedMemory for this stage.
+
+        policy overrides any stage-level memory_policy bound by the engine.
+        Returns status='unwired' with empty context when no RecallStack is wired.
+        """
+        ...
+
+    async def assemble_context(
+        self,
+        request: ContextRequest,
+        *,
+        policy: ContextPolicy | None = None,
+    ) -> AssembledCallContext:
+        """Assemble a fully-budgeted call context for this stage.
+
+        policy resolution order: explicit arg > stage-level context_policy bound by the engine >
+        DEFAULT_CONTEXT_POLICY.
+        Returns a task-only AssembledCallContext with status="unwired" when no ContextAssembler
+        is wired (S8 graceful degradation).
+        """
+        ...
+
+    def bind_context_policy(self, policy: ContextPolicy | None) -> None:
+        """Bind a per-stage ContextPolicy (read from stage.context_policy by the engine).
+
+        Calling with None clears the binding so no policy leaks across stages.
         """
         ...
 

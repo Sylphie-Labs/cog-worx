@@ -47,6 +47,8 @@ from cogworx.model.base import (
     ModelTier,
     ToolSpec,
 )
+from cogworx.model.guarded import BudgetGuardedModel
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 
 # The API under test — will ImportError / AttributeError until the python-expert builds it.
@@ -133,6 +135,9 @@ class _GatedModel:
         await self.gate.wait()
         return ModelResponse(text="ff-answer", model_id="gated", finish_reason="stop")
 
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text) // 4)
+
 
 # ---------------------------------------------------------------------------
 # The fire-and-forget graph
@@ -216,8 +221,10 @@ def _make_engine(
     *,
     event_sink: Callable[[Event], None] | None = None,
 ) -> Engine:
+    _registry = ModelRegistry()
+    _registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
     return Engine(
-        model=model,
+        models=_registry,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -1221,3 +1228,119 @@ async def test_engine_aclose_method_is_async() -> None:
     assert inspect.iscoroutinefunction(Engine.aclose), (
         "Engine.aclose must be an async method; draining asyncio.Tasks requires await"
     )
+
+
+# ---------------------------------------------------------------------------
+# F1 regression test — start() builds exactly one context per run
+# ---------------------------------------------------------------------------
+
+
+async def test_start_builds_exactly_one_context() -> None:
+    """F1 regression: ``start()`` drives the same ``run()`` coroutine that calls ``_build_context``
+    exactly once — no additional context is minted in ``start()`` itself.
+
+    A counting factory records every guard that is vended by the registry's ``assemble`` call
+    (which happens inside ``_build_context``).  A clean ``start()`` + ``result()`` must produce
+    exactly ONE mint (one drive, one guard, one context).
+
+    Mutation killed: ``start()`` calling ``_build_context`` itself in addition to ``run()`` —
+    that would register the guard twice and mint == 2.
+    """
+    gate = asyncio.Event()
+    gate.set()  # no gating — let the run complete straight to terminal
+    journal = InMemoryJournal()
+    model = _scripted_model()
+    pathways = _ff_pathways(gate)
+
+    mints: list[object] = []
+    counting_registry = ModelRegistry()
+    counting_registry.register_factory(
+        "default",
+        lambda g, m=model: mints.append(g) or BudgetGuardedModel(m, g),
+    )
+    engine = Engine(
+        models=counting_registry,
+        journal=journal,
+        graph_store=InMemoryGraphStore(),
+        latent=InMemoryLatentStore(),
+        pathways=pathways,
+        clock=_CLOCK_AT_T0,
+    )
+
+    handle = engine.start(
+        run_id="ctx-count",
+        session_id="ctx-count-sess",
+        pathway_id=_FF_PATHWAY_ID,
+        initial=_ff_initial(),
+    )
+    await handle.result()
+
+    assert len(mints) == 1, (
+        f"F1 regression: expected exactly 1 guard minted (1 drive = 1 context), got {len(mints)}; "
+        "start() must NOT call _build_context() itself — that creates a ghost context with no drive"
+    )
+
+    await engine.aclose()
+
+
+async def test_ff9_background_crash_mints_one_context_run_crashed_lands_on_sink() -> None:
+    """F1 + FF9 combined: crash path mints exactly one context; RUN_CRASHED lands on the sink.
+
+    The guard is minted by ``run()`` (inside ``_build_context``), NOT by ``start()``.  Even on a
+    crash, ``mints`` must hold exactly one entry.  And the RUN_CRASHED event — now emitted via
+    ``_emit_engine`` (no live RunContext) — must still reach the event sink.
+
+    Mutation killed:
+    - start() minting a context (mints > 1 on crash path).
+    - _emit_engine not routing to the sink (crashed event drops).
+    """
+    gate = asyncio.Event()
+    gate.set()
+
+    shared = InMemoryJournal()
+    crash_journal = CrashAfterStepJournal(inner=shared, crash_after_stage="work")
+    model = _scripted_model()
+    events: list[Event] = []
+    pathways = _ff_pathways(gate)
+
+    mints: list[object] = []
+    counting_registry = ModelRegistry()
+    counting_registry.register_factory(
+        "default",
+        lambda g, m=model: mints.append(g) or BudgetGuardedModel(m, g),
+    )
+    engine = Engine(
+        models=counting_registry,
+        journal=crash_journal,
+        graph_store=InMemoryGraphStore(),
+        latent=InMemoryLatentStore(),
+        pathways=pathways,
+        clock=_CLOCK_AT_T0,
+        event_sink=events.append,
+    )
+
+    handle = engine.start(
+        run_id="ff9-ctx",
+        session_id="ff9-ctx-sess",
+        pathway_id=_FF_PATHWAY_ID,
+        initial=_ff_initial(),
+    )
+
+    with pytest.raises(SimulatedCrash):
+        await handle.result()
+
+    await asyncio.sleep(0)
+
+    # Exactly one guard minted — start() does not call _build_context() itself.
+    assert len(mints) == 1, (
+        f"F1 regression on crash path: expected 1 guard minted, got {len(mints)}"
+    )
+
+    # RUN_CRASHED must land on the sink via _emit_engine (no live ctx).
+    crashed = [e for e in events if e.type is EventType.RUN_CRASHED]
+    assert len(crashed) == 1, (
+        f"RUN_CRASHED must reach the sink even with no live RunContext; got {len(crashed)} events"
+    )
+    assert crashed[0].run_id == "ff9-ctx"
+
+    await engine.aclose()

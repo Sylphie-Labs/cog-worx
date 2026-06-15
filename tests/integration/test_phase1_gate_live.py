@@ -42,6 +42,7 @@ from cogworx.loop.result import Done, StageResult, Transition, Wait
 from cogworx.loop.retry import RetryPolicy
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.runtime.sweeper import Sweeper
 from cogworx.substrate.journal import Journal
@@ -194,8 +195,11 @@ def _engine(
     event_sink: list[Event] | None = None,
 ) -> Engine:
     """A FRESH engine per call — every hop is a cold, registry+journal rehydrated drive."""
+    _replay = ReplayModel([])
+    _reg = ModelRegistry()
+    _reg.register("default", _replay)
     return Engine(
-        model=ReplayModel([]),  # ANY model call raises: the live S6/S1 invariant
+        models=_reg,  # ANY model call raises: the live S6/S1 invariant
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

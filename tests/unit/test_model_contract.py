@@ -30,6 +30,9 @@ class _StubModel:
     ) -> ModelResponse:
         return ModelResponse(text="ok", model_id="stub", finish_reason="stop")
 
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text) // 4)
+
 
 def test_stub_satisfies_model_protocol() -> None:
     assert isinstance(_StubModel(), Model)

@@ -220,10 +220,10 @@ class PgLatentStore:
             return ()
         conn = await self._connection()
         tier_clause = "WHERE tier = %s " if tier is not None else ""
-        params: list[Any] = []
+        params: list[Any] = [Vector(query)]
         if tier is not None:
             params.append(tier)
-        params.extend([Vector(query), k])
+        params.append(k)
         cursor = await conn.execute(
             f"SELECT id, embedding, payload, use_count, tier, last_used_at, "
             f"embedding <=> %s AS distance "

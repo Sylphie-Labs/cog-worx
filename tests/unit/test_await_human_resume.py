@@ -39,6 +39,8 @@ from cogworx.loop.state import RunStatus
 from cogworx.model.base import (
     ModelResponse,
 )
+from cogworx.model.guarded import BudgetGuardedModel
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import (
     Journal,
@@ -202,8 +204,10 @@ def _make_build_engine(
     clock: Callable[[], datetime] = _CLOCK_AT_T0,
 ) -> Callable[[Journal, ReplayModel], Engine]:
     def build(journal: Journal, model: ReplayModel) -> Engine:
+        _registry = ModelRegistry()
+        _registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
         return Engine(
-            model=model,
+            models=_registry,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
@@ -760,8 +764,11 @@ async def test_h6_provide_input_on_nonawaiting_run_is_noop() -> None:
     trivial_registry.register("trivial-pw", _SG([_TrivialStage()], entry="trivial"))
 
     journal = InMemoryJournal()
+    _m = _no_model()
+    _r = ModelRegistry()
+    _r.register("default", _m)
     engine = Engine(
-        model=_no_model(),
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -945,8 +952,10 @@ async def test_s9_branch_independent_of_model_text() -> None:
         j = _journal_factory()
         decide = DecideStage()
         pw = _human_pathways(decide=decide)
+        _registry = ModelRegistry()
+        _registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
         engine = Engine(
-            model=model,
+            models=_registry,
             journal=j,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
@@ -1041,8 +1050,11 @@ async def test_structural_await_human_to_must_be_in_transitions() -> None:
     )
     journal = InMemoryJournal()
     pathways = _make_pathway_from_graph(graph)
+    _m = _no_model()
+    _r = ModelRegistry()
+    _r.register("default", _m)
     engine = Engine(
-        model=_no_model(),
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -1089,8 +1101,11 @@ async def test_guard_transition_to_undeclared_raises_before_commit() -> None:
     journal = InMemoryJournal()
     registry = PathwayRegistry()
     registry.register("bad-transition-pw", graph)
+    _m = _no_model()
+    _r = ModelRegistry()
+    _r.register("default", _m)
     engine = Engine(
-        model=_no_model(),
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -1144,8 +1159,11 @@ async def test_guard_wait_to_undeclared_raises_before_commit() -> None:
     journal = InMemoryJournal()
     registry = PathwayRegistry()
     registry.register("bad-wait-pw", graph)
+    _m = _no_model()
+    _r = ModelRegistry()
+    _r.register("default", _m)
     engine = Engine(
-        model=_no_model(),
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -1197,8 +1215,11 @@ async def test_guard_degraded_to_undeclared_raises_before_commit() -> None:
     journal = InMemoryJournal()
     registry = PathwayRegistry()
     registry.register("bad-degraded-pw", graph)
+    _m = _no_model()
+    _r = ModelRegistry()
+    _r.register("default", _m)
     engine = Engine(
-        model=_no_model(),
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -1247,8 +1268,11 @@ async def test_guard_positive_degraded_to_none_terminates_cleanly() -> None:
     journal = InMemoryJournal()
     registry = PathwayRegistry()
     registry.register("degraded-terminal-pw", graph)
+    _m = _no_model()
+    _r = ModelRegistry()
+    _r.register("default", _m)
     engine = Engine(
-        model=_no_model(),
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -1318,8 +1342,11 @@ async def test_guard_positive_exhausted_to_via_edges_from_passes() -> None:
     journal = InMemoryJournal()
     registry = PathwayRegistry()
     registry.register("exhaustion-pw", graph)
+    _m = _no_model()
+    _r = ModelRegistry()
+    _r.register("default", _m)
     engine = Engine(
-        model=_no_model(),
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

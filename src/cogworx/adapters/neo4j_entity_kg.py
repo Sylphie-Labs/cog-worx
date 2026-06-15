@@ -27,6 +27,7 @@ All stored ISO strings share the +00:00 offset so lexicographic order == tempora
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -34,17 +35,22 @@ from typing import TYPE_CHECKING, Any
 
 from cogworx.adapters.config import SubstrateSettings
 from cogworx.adapters.neo4j_graph import Neo4jGraphStore, _as_epistemic, _as_source
-from cogworx.claims.provenance import Claim, Provenance
+from cogworx.claims.provenance import Claim, EpistemicType, Provenance
 from cogworx.knowledge.confidence import ClaimConfidence, claim_confidence
 from cogworx.knowledge.evidence import EvidenceEvent
 from cogworx.knowledge.identity import claim_id_for, normalize_topic_part
+from cogworx.substrate.coherence import (
+    DirtyKey,
+    DirtySubject,
+    ReconciliationOutcome,
+)
 from cogworx.substrate.entity_kg import ClaimProjection, ScoredClaim
 from cogworx.substrate.journal import ProjectionCursor
 
 if TYPE_CHECKING:
     from neo4j import AsyncManagedTransaction, Record
 
-__all__ = ["Neo4jEntityKG", "sanitize_lucene_query"]
+__all__ = ["Neo4jEntityKG", "adj_id_for", "dirty_key_for", "sanitize_lucene_query"]
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +107,25 @@ FOR (c:Claim) ON (c.scope)
 _CLAIM_SCOPE_SUBJECT_INDEX = """
 CREATE INDEX claim_scope_subject IF NOT EXISTS
 FOR (c:Claim) ON (c.scope, c.subject_norm)
+"""
+
+# ---------------------------------------------------------------------------
+# Coherence-reconciler DDL (Pod 2.7) — idempotent, IF NOT EXISTS
+# ---------------------------------------------------------------------------
+
+_DIRTY_KEY_CONSTRAINT = """
+CREATE CONSTRAINT dirty_key_unique IF NOT EXISTS
+FOR (d:DirtySubject) REQUIRE d.key IS UNIQUE
+"""
+
+_ADJUDICATION_ID_CONSTRAINT = """
+CREATE CONSTRAINT adjudication_id_unique IF NOT EXISTS
+FOR (a:Adjudication) REQUIRE a.id IS UNIQUE
+"""
+
+_DIRTY_MARKED_AT_INDEX = """
+CREATE INDEX dirty_marked_at IF NOT EXISTS
+FOR (d:DirtySubject) ON (d.marked_at)
 """
 
 # Vector index is created only when ensure_schema is called with embedding_dim; the base
@@ -608,6 +633,173 @@ RETURN c.commit_ordinal    AS commit_ordinal,
 _RESET_ENTITY_CYPHER = "MATCH (e:Entity) DETACH DELETE e"
 _RESET_EVIDENCE_CYPHER = "MATCH (ev:Evidence) DETACH DELETE ev"
 
+# ---------------------------------------------------------------------------
+# Coherence write-path Cypher (Pod 2.7)
+# ---------------------------------------------------------------------------
+
+# Dirty-mark: MERGE on key, increment epoch on re-mark.
+# ON CREATE: epoch=1, attempts=0. ON MATCH: epoch+=1, marked_at updated.
+# Called inside every write transaction (write_claim, add_evidence, invalidate_claim,
+# project_claims) so that ANY mutation to a subject queues it for reconciliation.
+_DIRTY_MARK_CYPHER = """
+MERGE (d:DirtySubject {key: $dirty_key})
+ON CREATE SET d.scope=$dirty_scope,
+              d.subject_norm=$dirty_subj,
+              d.epoch=1,
+              d.attempts=0,
+              d.marked_at=$dirty_now
+ON MATCH SET  d.epoch=d.epoch+1,
+              d.marked_at=$dirty_now
+"""
+
+# Claim dirty subjects ordered oldest-first (FIFO — prevents recent-subject starvation).
+_CLAIM_DIRTY_SUBJECTS_CYPHER = """
+MATCH (d:DirtySubject)
+RETURN d.key          AS key,
+       d.scope        AS scope,
+       d.subject_norm AS subject_norm,
+       d.epoch        AS epoch,
+       d.marked_at    AS marked_at,
+       d.attempts     AS attempts
+ORDER BY d.marked_at ASC
+LIMIT $limit
+"""
+
+# Atomic attempt bump — returns new count.
+_BUMP_DIRTY_ATTEMPTS_CYPHER = """
+MATCH (d:DirtySubject {key: $dirty_key})
+SET d.attempts = d.attempts + 1
+RETURN d.attempts AS attempts
+"""
+
+# All adjudication ids for a (scope, subject_norm) pair.
+_ADJUDICATION_IDS_CYPHER = """
+MATCH (a:Adjudication {scope: $scope, subject_norm: $subject_norm})
+RETURN a.id AS id
+"""
+
+# Merge one Adjudication node (immutable-on-match via ON CREATE).
+_MERGE_ADJUDICATION_CYPHER = """
+MERGE (a:Adjudication {id: $adj_id})
+ON CREATE SET
+  a.scope              = $scope,
+  a.subject_norm       = $subject_norm,
+  a.claim_ids          = $claim_ids,
+  a.verdict            = $verdict,
+  a.resolution         = $resolution,
+  a.winner_id          = $winner_id,
+  a.loser_ids          = $loser_ids,
+  a.margin             = $margin,
+  a.oracle_calls       = $oracle_calls,
+  a.escalation_reason  = $escalation_reason,
+  a.prov_source        = $prov_source,
+  a.prov_source_ref    = $prov_source_ref,
+  a.prov_confidence    = $prov_confidence,
+  a.prov_evidence      = $prov_evidence,
+  a.prov_recorded_at   = $prov_recorded_at,
+  a.recorded_at        = $recorded_at
+WITH a
+UNWIND $claim_ids AS cid
+  MATCH (c:Claim {id: cid})
+  MERGE (a)-[:ADJUDICATES]->(c)
+"""
+
+# MERGE CONTRADICTS edge (undirected — store one directed edge, same as existing convention).
+_MERGE_CONTRADICTS_CYPHER = """
+MATCH (a:Claim {id: $claim_id_a})
+MATCH (b:Claim {id: $claim_id_b})
+MERGE (a)-[:CONTRADICTS]->(b)
+"""
+
+# Apply one Defeat: MERGE SUPERSEDES edge, set loser status/defeated_by (coalesce), optionally
+# set valid_to (first-invalidation-wins).  Uses a single parameterised block; valid_to null-guard
+# is done with a CASE expression so the Cypher is always well-formed.
+_APPLY_DEFEAT_CYPHER = """
+MATCH (winner:Claim {id: $winner_id})
+MATCH (loser:Claim  {id: $loser_id})
+MERGE (winner)-[sup:SUPERSEDES]->(loser)
+ON CREATE SET sup.kind             = $kind,
+              sup.adjudication_id  = $adjudication_id,
+              sup.recorded_at      = $recorded_at
+SET loser.status     = 'defeasibly-defeated',
+    loser.defeated_by = coalesce(loser.defeated_by, $winner_id),
+    loser.valid_to    = CASE
+                          WHEN $set_valid_to IS NOT NULL AND loser.valid_to IS NULL
+                          THEN $set_valid_to
+                          ELSE loser.valid_to
+                        END
+"""
+
+# Delete the dirty node only when epoch still matches what the reconciler observed at start
+# (epoch guard — a concurrent write bumps epoch and prevents premature clearance).
+_CLEAR_DIRTY_CYPHER = """
+MATCH (d:DirtySubject {key: $dirty_key})
+WHERE d.epoch = $observed_epoch
+DELETE d
+"""
+
+# ---------------------------------------------------------------------------
+# Epistemic-upgrade Cypher (Pod 2.7)
+# ---------------------------------------------------------------------------
+
+# Rank order for epistemic levels — lower = weaker.
+_EPISTEMIC_RANK: dict[str, int] = {"inference": 0, "observation": 1, "confirmed": 2}
+
+# Merge evidence + set level + create audit node in one block.
+# The rank-guard is enforced in Python before this Cypher runs (IN-TXN via execute_write callback).
+_EPISTEMIC_UPGRADE_CYPHER = """
+MATCH (c:Claim {id: $claim_id})
+CREATE (ev:Evidence {
+  id:               $ev_id,
+  type:             $ev_type,
+  polarity:         $ev_polarity,
+  source_id:        $ev_source_id,
+  source_authority: $ev_source_authority,
+  base_weight:      $ev_base_weight,
+  run_id:           $ev_run_id,
+  stage:            $ev_stage,
+  recorded_at:      $ev_recorded_at
+})
+CREATE (c)-[:HAS_EVIDENCE]->(ev)
+SET c.epistemic_type = $new_level
+MERGE (upg:EpistemicUpgrade {uid: $upgrade_uid})
+ON CREATE SET upg.actor      = $actor,
+              upg.new_level  = $new_level,
+              upg.recorded_at= $recorded_at
+MERGE (upg)-[:UPGRADES]->(c)
+MERGE (upg)-[:JUSTIFIED_BY]->(ev)
+RETURN c.epistemic_type AS epistemic_type
+"""
+
+# Read the current epistemic_type for the rank-guard — done inside the write callback so that
+# the guard and the SET are in the same managed transaction (no TOCTOU across two sessions).
+_READ_EPISTEMIC_TYPE_CYPHER = """
+MATCH (c:Claim {id: $claim_id})
+RETURN c.epistemic_type AS epistemic_type, c.scope AS scope, c.subject_norm AS subject_norm
+"""
+
+# ---------------------------------------------------------------------------
+# Copy-evidence Cypher (Pod 2.7)
+# ---------------------------------------------------------------------------
+
+# Copy all HAS_EVIDENCE events from one claim to another, prefixing each id.
+# MERGE ensures idempotency; the new id is computed in the Cypher expression.
+_COPY_EVIDENCE_CYPHER = """
+MATCH (src:Claim {id: $from_claim_id})-[:HAS_EVIDENCE]->(ev:Evidence)
+MATCH (dst:Claim {id: $to_claim_id})
+MERGE (new_ev:Evidence {id: $id_prefix + ':' + ev.id})
+ON CREATE SET new_ev.type             = ev.type,
+              new_ev.polarity         = ev.polarity,
+              new_ev.source_id        = ev.source_id,
+              new_ev.source_authority = ev.source_authority,
+              new_ev.base_weight      = ev.base_weight,
+              new_ev.run_id           = ev.run_id,
+              new_ev.stage            = ev.stage,
+              new_ev.recorded_at      = ev.recorded_at
+MERGE (dst)-[:HAS_EVIDENCE]->(new_ev)
+RETURN count(ev) AS copied
+"""
+
 # Min raw cosine for the vector fallback in resolution_candidates. Mirrors tess.kg convention.
 _RESOLUTION_MIN_RAW_COSINE: float = 0.70
 
@@ -647,10 +839,7 @@ def sanitize_lucene_query(query: str) -> str:
     with a parse exception — they must be escaped before the string reaches the index.
     """
     escaped = _LUCENE_SPECIAL_RE.sub(r"\\\1", query)
-    terms = [
-        f'"{t}"' if t.upper() in _LUCENE_KEYWORDS else t
-        for t in escaped.split()
-    ]
+    terms = [f'"{t}"' if t.upper() in _LUCENE_KEYWORDS else t for t in escaped.split()]
     if not terms:
         return ""
     return " OR ".join(terms)
@@ -734,6 +923,10 @@ class Neo4jEntityKG(Neo4jGraphStore):
             await tx.run(_CLAIM_SCOPE_INDEX)
             await tx.run(_CLAIM_SCOPE_SUBJECT_INDEX)
             await tx.run(_CLAIM_FULLTEXT_INDEX)
+            # Coherence-reconciler DDL (Pod 2.7)
+            await tx.run(_DIRTY_KEY_CONSTRAINT)
+            await tx.run(_ADJUDICATION_ID_CONSTRAINT)
+            await tx.run(_DIRTY_MARKED_AT_INDEX)
 
         async with self._connection.session() as session:
             await session.execute_write(_write_ddl)
@@ -815,11 +1008,14 @@ class Neo4jEntityKG(Neo4jGraphStore):
         )
         params = _write_claim_params(claim, evidence)
 
+        dirty_params = _dirty_mark_params(claim.scope, normalize_topic_part(claim.subject))
+
         async def _work(tx: AsyncManagedTransaction) -> None:
             await tx.run(cypher, **params)
             # Link DERIVED_FROM edges within the same transaction so partial states cannot appear.
             for parent_id in claim.provenance.evidence:
                 await tx.run(_LINK_DERIVED_FROM_CYPHER, child_id=claim.id, parent_id=parent_id)
+            await tx.run(_DIRTY_MARK_CYPHER, **dirty_params)
 
         async with self._connection.session() as session:
             await session.execute_write(_work)
@@ -835,7 +1031,17 @@ class Neo4jEntityKG(Neo4jGraphStore):
 
         async def _work(tx: AsyncManagedTransaction) -> Record | None:
             result = await tx.run(_ADD_EVIDENCE_CYPHER, **params)
-            return await result.single()
+            row = await result.single()
+            if row is not None:
+                # Dirty-mark in the same transaction — fetch scope/subject_norm from the matched
+                # claim node rather than requiring the caller to supply them.
+                dirty_result = await tx.run(_READ_EPISTEMIC_TYPE_CYPHER, claim_id=claim_id)
+                dirty_row = await dirty_result.single()
+                if dirty_row is not None:
+                    scope = str(dirty_row["scope"]) if dirty_row["scope"] else "agent"
+                    subj_norm = str(dirty_row["subject_norm"]) if dirty_row["subject_norm"] else ""
+                    await tx.run(_DIRTY_MARK_CYPHER, **_dirty_mark_params(scope, subj_norm))
+            return row
 
         async with self._connection.session() as session:
             record = await session.execute_write(_work)
@@ -1083,12 +1289,20 @@ class Neo4jEntityKG(Neo4jGraphStore):
         """
 
         async def _work(tx: AsyncManagedTransaction) -> Record | None:
+            # Read scope/subject_norm first (within same txn) for the dirty mark.
+            meta_result = await tx.run(_READ_EPISTEMIC_TYPE_CYPHER, claim_id=claim_id)
+            meta_row = await meta_result.single()
             result = await tx.run(
                 _INVALIDATE_CLAIM_CYPHER,
                 claim_id=claim_id,
                 valid_to=to_utc(valid_to).isoformat(),
             )
-            return await result.single()
+            row = await result.single()
+            if row is not None and meta_row is not None:
+                scope = str(meta_row["scope"]) if meta_row["scope"] else "agent"
+                subj_norm = str(meta_row["subject_norm"]) if meta_row["subject_norm"] else ""
+                await tx.run(_DIRTY_MARK_CYPHER, **_dirty_mark_params(scope, subj_norm))
+            return row
 
         async with self._connection.session() as session:
             record = await session.execute_write(_work)
@@ -1130,6 +1344,10 @@ class Neo4jEntityKG(Neo4jGraphStore):
                 await tx.run(cypher, **params)
                 for parent_id in claim.provenance.evidence:
                     await tx.run(_LINK_DERIVED_FROM_CYPHER, child_id=claim.id, parent_id=parent_id)
+                await tx.run(
+                    _DIRTY_MARK_CYPHER,
+                    **_dirty_mark_params(claim.scope, normalize_topic_part(claim.subject)),
+                )
             await tx.run(_ADVANCE_CURSOR_CYPHER, **cursor_params)
 
         async with self._connection.session() as session:
@@ -1154,6 +1372,179 @@ class Neo4jEntityKG(Neo4jGraphStore):
             run_id=str(data["cursor_run_id"]),
             step_index=int(data["cursor_step_index"]),
         )
+
+    # -----------------------------------------------------------------------
+    # CoherenceStore Protocol implementation (Pod 2.7)
+    # -----------------------------------------------------------------------
+
+    async def claim_dirty_subjects(self, *, limit: int = 16) -> Sequence[DirtySubject]:
+        """Return up to ``limit`` dirty subjects, oldest-first by ``marked_at``."""
+
+        async def _work(tx: AsyncManagedTransaction) -> list[Record]:
+            result = await tx.run(_CLAIM_DIRTY_SUBJECTS_CYPHER, limit=limit)
+            return [r async for r in result]
+
+        async with self._connection.session() as session:
+            records = await session.execute_read(_work)
+        return tuple(_record_to_dirty_subject(r) for r in records)
+
+    async def bump_dirty_attempts(self, key: DirtyKey) -> int:
+        """Atomically increment the attempt counter for the dirty key; return the new count."""
+
+        async def _work(tx: AsyncManagedTransaction) -> Record | None:
+            result = await tx.run(_BUMP_DIRTY_ATTEMPTS_CYPHER, dirty_key=key)
+            return await result.single()
+
+        async with self._connection.session() as session:
+            record = await session.execute_write(_work)
+        if record is None:
+            return 0
+        data = record.data() if hasattr(record, "data") else dict(record)
+        return int(data["attempts"])
+
+    async def adjudication_ids_for_subject(self, scope: str, subject_norm: str) -> Sequence[str]:
+        """Return the ids of all Adjudication nodes for this (scope, subject_norm)."""
+
+        async def _work(tx: AsyncManagedTransaction) -> list[Record]:
+            result = await tx.run(_ADJUDICATION_IDS_CYPHER, scope=scope, subject_norm=subject_norm)
+            return [r async for r in result]
+
+        async with self._connection.session() as session:
+            records = await session.execute_read(_work)
+        return tuple(str((r.data() if hasattr(r, "data") else dict(r))["id"]) for r in records)
+
+    async def commit_reconciliation(
+        self,
+        outcome: ReconciliationOutcome,
+        *,
+        dirty_key: DirtyKey,
+        observed_epoch: int,
+    ) -> None:
+        """Persist one reconciliation outcome and clear the dirty mark (epoch-guarded).
+
+        ONE managed transaction: merge adjudications, merge contradicts edges, apply defeats,
+        then delete the dirty node only when its epoch matches ``observed_epoch``.
+        """
+        now_iso = to_utc(outcome.recorded_at).isoformat()
+
+        async def _work(tx: AsyncManagedTransaction) -> None:
+            for adj in outcome.adjudications:
+                prov = adj.provenance
+                await tx.run(
+                    _MERGE_ADJUDICATION_CYPHER,
+                    adj_id=adj.id,
+                    scope=adj.scope,
+                    subject_norm=adj.subject_norm,
+                    claim_ids=list(adj.claim_ids),
+                    verdict=adj.verdict,
+                    resolution=adj.resolution,
+                    winner_id=adj.winner_id,
+                    loser_ids=list(adj.loser_ids),
+                    margin=adj.margin,
+                    oracle_calls=adj.oracle_calls,
+                    escalation_reason=adj.escalation_reason,
+                    prov_source=prov.source,
+                    prov_source_ref=prov.source_ref,
+                    prov_confidence=prov.confidence,
+                    prov_evidence=list(prov.evidence),
+                    prov_recorded_at=to_utc(prov.recorded_at).isoformat(),
+                    recorded_at=now_iso,
+                )
+            for pair in outcome.contradictions:
+                await tx.run(
+                    _MERGE_CONTRADICTS_CYPHER,
+                    claim_id_a=pair[0],
+                    claim_id_b=pair[1],
+                )
+            for defeat in outcome.defeats:
+                set_valid_to_iso = (
+                    to_utc(defeat.set_valid_to).isoformat()
+                    if defeat.set_valid_to is not None
+                    else None
+                )
+                await tx.run(
+                    _APPLY_DEFEAT_CYPHER,
+                    winner_id=defeat.winner_id,
+                    loser_id=defeat.loser_id,
+                    kind=defeat.kind,
+                    adjudication_id=defeat.adjudication_id,
+                    recorded_at=now_iso,
+                    set_valid_to=set_valid_to_iso,
+                )
+            await tx.run(
+                _CLEAR_DIRTY_CYPHER,
+                dirty_key=dirty_key,
+                observed_epoch=observed_epoch,
+            )
+
+        async with self._connection.session() as session:
+            await session.execute_write(_work)
+
+    async def apply_epistemic_upgrade(
+        self,
+        claim_id: str,
+        *,
+        new_level: EpistemicType,
+        evidence: EvidenceEvent,
+        actor: str,
+        recorded_at: datetime,
+    ) -> bool:
+        """Promote a claim's epistemic level with provenance (rank-guarded, IN-TXN).
+
+        Returns True iff the level changed; False iff already at or above ``new_level``.
+        """
+        ev_params = _ev_params(evidence)
+        upgrade_uid = f"upgrade:{claim_id}:{new_level}"
+        recorded_at_iso = to_utc(recorded_at).isoformat()
+
+        async def _work(tx: AsyncManagedTransaction) -> bool:
+            meta_result = await tx.run(_READ_EPISTEMIC_TYPE_CYPHER, claim_id=claim_id)
+            meta_row = await meta_result.single()
+            if meta_row is None:
+                return False
+            data = meta_row.data() if hasattr(meta_row, "data") else dict(meta_row)
+            current_level = str(data["epistemic_type"])
+            if _EPISTEMIC_RANK.get(current_level, 0) >= _EPISTEMIC_RANK.get(new_level, 0):
+                return False
+            await tx.run(
+                _EPISTEMIC_UPGRADE_CYPHER,
+                claim_id=claim_id,
+                new_level=new_level,
+                upgrade_uid=upgrade_uid,
+                actor=actor,
+                recorded_at=recorded_at_iso,
+                **ev_params,
+            )
+            scope = str(data["scope"]) if data.get("scope") else "agent"
+            subj_norm = str(data["subject_norm"]) if data.get("subject_norm") else ""
+            await tx.run(_DIRTY_MARK_CYPHER, **_dirty_mark_params(scope, subj_norm))
+            return True
+
+        async with self._connection.session() as session:
+            return await session.execute_write(_work)
+
+    async def copy_evidence(self, from_claim_id: str, to_claim_id: str, *, id_prefix: str) -> int:
+        """Copy all evidence from ``from_claim_id`` onto ``to_claim_id``, prefixing ids.
+
+        MERGE ensures idempotency. Returns the count of matched source events (not newly-created
+        count — each source event contributes one copied event; re-running gives the same count).
+        """
+
+        async def _work(tx: AsyncManagedTransaction) -> Record | None:
+            result = await tx.run(
+                _COPY_EVIDENCE_CYPHER,
+                from_claim_id=from_claim_id,
+                to_claim_id=to_claim_id,
+                id_prefix=id_prefix,
+            )
+            return await result.single()
+
+        async with self._connection.session() as session:
+            record = await session.execute_write(_work)
+        if record is None:
+            return 0
+        data = record.data() if hasattr(record, "data") else dict(record)
+        return int(data["copied"])
 
 
 # ---------------------------------------------------------------------------
@@ -1349,3 +1740,52 @@ def _record_to_evidence(record: Any) -> EvidenceEvent:
         stage=data.get("stage"),
         recorded_at=datetime.fromisoformat(str(data["recorded_at"])),
     )
+
+
+def _dirty_key(scope: str, subject_norm: str) -> str:
+    """Composite dirty-mark key: ``f"{scope}\\x1f{subject_norm}"``."""
+    return f"{scope}\x1f{subject_norm}"
+
+
+def dirty_key_for(scope: str, subject_norm: str) -> str:
+    """Public alias for the dirty-mark key formula: ``f"{scope}\\x1f{subject_norm}"``."""
+    return _dirty_key(scope, subject_norm)
+
+
+def _dirty_mark_params(scope: str, subject_norm: str) -> dict[str, Any]:
+    """Build the parameter dict for _DIRTY_MARK_CYPHER."""
+    return {
+        "dirty_key": _dirty_key(scope, subject_norm),
+        "dirty_scope": scope,
+        "dirty_subj": subject_norm,
+        "dirty_now": to_utc(datetime.now(UTC)).isoformat(),
+    }
+
+
+def _record_to_dirty_subject(record: Any) -> DirtySubject:
+    """Rebuild a DirtySubject from a Cypher result row."""
+    data = record.data() if hasattr(record, "data") else dict(record)
+    return DirtySubject(
+        key=str(data["key"]),
+        scope=str(data["scope"]),
+        subject_norm=str(data["subject_norm"]),
+        epoch=int(data["epoch"]),
+        marked_at=datetime.fromisoformat(str(data["marked_at"])),
+        attempts=int(data["attempts"]),
+    )
+
+
+def _adj_id_for(claim_ids: tuple[str, ...]) -> str:
+    """Deterministic adjudication id: ``"adj:" + sha256(sorted ids joined by \\x1f)[:32]``."""
+    joined = "\x1f".join(sorted(claim_ids))
+    return "adj:" + hashlib.sha256(joined.encode()).hexdigest()[:32]
+
+
+def adj_id_for(claim_ids: tuple[str, ...]) -> str:
+    """Public alias: deterministic adjudication id for a set of claim ids.
+
+    Formula: ``"adj:" + sha256(sorted(claim_ids) joined by "\\x1f")[:32]``.
+    Callers (the reconciler and tests) use this to build :attr:`AdjudicationRecord.id` so the
+    store can MERGE-idempotently on re-runs.
+    """
+    return _adj_id_for(claim_ids)

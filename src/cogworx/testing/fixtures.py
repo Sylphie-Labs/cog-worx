@@ -14,6 +14,7 @@ import pytest
 
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayRegistry
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Clock, Engine
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel, echo_model
@@ -77,8 +78,10 @@ def engine(
     pathways: PathwayRegistry,
     counter_clock: Callable[[], datetime],
 ) -> Engine:
+    registry = ModelRegistry()
+    registry.register("default", replay_model)
     return Engine(
-        model=replay_model,
+        models=registry,
         journal=in_memory_journal,
         graph_store=in_memory_graph,
         latent=in_memory_latent,

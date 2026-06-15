@@ -92,7 +92,9 @@ def _episode(
     )
 
 
-def _cursor(*, commit_ordinal: int = 1, run_id: str = "r1", step_index: int = 0) -> ProjectionCursor:
+def _cursor(
+    *, commit_ordinal: int = 1, run_id: str = "r1", step_index: int = 0
+) -> ProjectionCursor:
     return ProjectionCursor(commit_ordinal=commit_ordinal, run_id=run_id, step_index=step_index)
 
 
@@ -178,9 +180,7 @@ async def test_project_episodes_idempotent(store: PgEpisodeStore) -> None:
     await store.project_episodes("idem-consumer", episodes, cursor)
 
     conn = await store._connection()
-    cur = await conn.execute(
-        "SELECT COUNT(*) FROM cogworx_episodes WHERE session_id = 'sess-1'"
-    )
+    cur = await conn.execute("SELECT COUNT(*) FROM cogworx_episodes WHERE session_id = 'sess-1'")
     row = await cur.fetchone()
     assert row is not None and row[0] == 3
 
@@ -219,7 +219,8 @@ async def test_cursor_atomicity_kill_simulation(store: PgEpisodeStore) -> None:
         async with raw_conn.transaction():
             await raw_conn.execute(
                 "INSERT INTO cogworx_episodes "
-                "(episode_id, run_id, step_index, turn_index, session_id, role, content, kind, occurred_at) "
+                "(episode_id, run_id, step_index, turn_index, "
+                "session_id, role, content, kind, occurred_at) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (episode_id) DO NOTHING",
                 (
@@ -382,7 +383,8 @@ async def test_schema_migration_upgrade_path(settings: SubstrateSettings) -> Non
     # Seed one legacy row
     await conn.execute(
         "INSERT INTO cogworx_episodes "
-        "(episode_id, run_id, step_index, turn_index, session_id, role, content, kind, occurred_at) "
+        "(episode_id, run_id, step_index, turn_index, "
+        "session_id, role, content, kind, occurred_at) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
         ("legacy:0:0", "legacy", 0, 0, "sess-legacy", "user", "hi", "dialogue", _T0),
     )

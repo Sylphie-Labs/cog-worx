@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS cogworx_journal_runs (
     status text NOT NULL,
     pathway_id text NOT NULL,
     pathway_version integer NOT NULL,
-    pathway_fingerprint text NOT NULL
+    pathway_fingerprint text NOT NULL,
+    tainted boolean NOT NULL DEFAULT false
 );
 
 CREATE TABLE IF NOT EXISTS cogworx_journal_steps (
@@ -169,6 +170,14 @@ CREATE INDEX IF NOT EXISTS cogworx_journal_steps_commit_xid
 DROP INDEX IF EXISTS cogworx_journal_steps_committed;
 """
 
+# Idempotent migration of a pre-3.5 runs table to carry the durable lethal-trifecta taint bit
+# (S10 + S6). The DEFAULT false backfills every existing row to untainted; the flip to true is a
+# monotonic UPDATE in set_run_tainted, written BEFORE cap.invoke (fail-closed, S6 ordering).
+_MIGRATE_TAINTED = """
+ALTER TABLE cogworx_journal_runs
+    ADD COLUMN IF NOT EXISTS tainted boolean NOT NULL DEFAULT false;
+"""
+
 
 class TimescaleJournal:
     """A durable, exactly-once :class:`Journal` backed by the Postgres/TimescaleDB cluster."""
@@ -188,6 +197,7 @@ class TimescaleJournal:
         conn = await self._connection()
         await conn.execute(_SCHEMA)
         await conn.execute(_MIGRATE_COMMIT_XID)
+        await conn.execute(_MIGRATE_TAINTED)
 
     async def start_run(
         self,
@@ -231,6 +241,16 @@ class TimescaleJournal:
             (new.value, run_id, expect.value),
         )
         return await cursor.fetchone() is not None
+
+    async def set_run_tainted(self, run_id: str) -> None:
+        # Monotonic False→True flip of the durable lethal-trifecta taint bit (S10 + S6). A single
+        # unconditional UPDATE — writing true when already true is a row-level no-op. Awaited BEFORE
+        # cap.invoke in dispatch_one (fail-closed). Unknown run_id silently updates zero rows.
+        conn = await self._connection()
+        await conn.execute(
+            "UPDATE cogworx_journal_runs SET tainted = true WHERE run_id = %s",
+            (run_id,),
+        )
 
     async def commit_step(self, record: StepRecord) -> None:
         conn = await self._connection()
@@ -335,7 +355,7 @@ class TimescaleJournal:
     async def load_run(self, run_id: str) -> RunState | None:
         conn = await self._connection()
         run_cursor = await conn.execute(
-            "SELECT session_id, status, pathway_id, pathway_version, pathway_fingerprint "
+            "SELECT session_id, status, pathway_id, pathway_version, pathway_fingerprint, tainted "
             "FROM cogworx_journal_runs WHERE run_id = %s",
             (run_id,),
         )
@@ -347,6 +367,7 @@ class TimescaleJournal:
         pathway_id: str = run_row[2]
         pathway_version: int = run_row[3]
         pathway_fingerprint: str = run_row[4]
+        tainted: bool = run_row[5]
 
         step_cursor = await conn.execute(
             "SELECT run_id, step_index, stage_name, result, committed_at "
@@ -366,6 +387,7 @@ class TimescaleJournal:
             pathway_fingerprint=pathway_fingerprint,
             current_stage=current_stage,
             steps=steps,
+            tainted=tainted,
         )
 
     async def set_timer(self, timer: Timer) -> None:
@@ -493,6 +515,7 @@ class TimescaleJournal:
         # The commit_xid projection index lives in _MIGRATE_COMMIT_XID (not _SCHEMA), so run it here
         # too — on the freshly recreated table the ALTER is a no-op and the CREATE INDEX adds it.
         await conn.execute(_MIGRATE_COMMIT_XID)
+        await conn.execute(_MIGRATE_TAINTED)
 
     async def aclose(self) -> None:
         if self._conn is not None and not self._conn.closed:

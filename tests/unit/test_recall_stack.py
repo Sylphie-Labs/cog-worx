@@ -176,9 +176,7 @@ async def test_full_5_channel_recall() -> None:
     ep_store = await _seeded_episode_store()
     lat_store = await _seeded_latent_store()
 
-    stack = default_recall_stack(
-        entity_kg=kg, episode_store=ep_store, latent_store=lat_store
-    )
+    stack = default_recall_stack(entity_kg=kg, episode_store=ep_store, latent_store=lat_store)
     query = RecallQuery(
         text="alice likes",
         embedding=_EMBED_A,
@@ -202,9 +200,7 @@ async def test_channel_status_values_are_valid() -> None:
     ep_store = await _seeded_episode_store()
     lat_store = await _seeded_latent_store()
 
-    stack = default_recall_stack(
-        entity_kg=kg, episode_store=ep_store, latent_store=lat_store
-    )
+    stack = default_recall_stack(entity_kg=kg, episode_store=ep_store, latent_store=lat_store)
     query = RecallQuery(
         text="alice", embedding=_EMBED_A, anchor_entities=("alice",), session_id="sess-1"
     )
@@ -225,9 +221,7 @@ async def test_s5_every_fused_result_has_at_least_one_hit() -> None:
     ep_store = await _seeded_episode_store()
     lat_store = await _seeded_latent_store()
 
-    stack = default_recall_stack(
-        entity_kg=kg, episode_store=ep_store, latent_store=lat_store
-    )
+    stack = default_recall_stack(entity_kg=kg, episode_store=ep_store, latent_store=lat_store)
     query = RecallQuery(
         text="alice", embedding=_EMBED_A, anchor_entities=("alice",), session_id="sess-1"
     )
@@ -325,9 +319,7 @@ async def test_skipped_channel_when_no_embedding() -> None:
     ep_store = await _seeded_episode_store()
     lat_store = await _seeded_latent_store()
 
-    stack = default_recall_stack(
-        entity_kg=kg, episode_store=ep_store, latent_store=lat_store
-    )
+    stack = default_recall_stack(entity_kg=kg, episode_store=ep_store, latent_store=lat_store)
     # No embedding → dense.claims and dense.latent should be skipped.
     query = RecallQuery(text="alice", anchor_entities=("alice",), session_id="sess-1")
     outcome = await stack.recall(query)
@@ -340,9 +332,7 @@ async def test_skipped_channel_when_no_embedding() -> None:
 
     # Non-dense channels that can_serve=True must have run.
     non_dense_runnable = [
-        cs
-        for cs in outcome.channel_status
-        if cs.channel not in ("dense.claims", "dense.latent")
+        cs for cs in outcome.channel_status if cs.channel not in ("dense.claims", "dense.latent")
     ]
     for cs in non_dense_runnable:
         assert cs.state in {"ok", "failed"}, (
@@ -373,9 +363,7 @@ async def test_noop_reranker_output_matches_fuse_order() -> None:
     text_res = list(await ch_text.search(query)) if ch_text.can_serve(query) else []
     graph_res = list(await ch_graph.search(query)) if ch_graph.can_serve(query) else []
 
-    expected = fuse(
-        {"dense.claims": dense_res, "bm25.claims": text_res, "graph.claims": graph_res}
-    )
+    expected = fuse({"dense.claims": dense_res, "bm25.claims": text_res, "graph.claims": graph_res})
 
     assert [r.key for r in outcome.results] == [r.key for r in expected]
 
@@ -410,9 +398,7 @@ async def test_custom_reranker_reversal_is_accepted() -> None:
     text_res = list(await ch_text.search(query)) if ch_text.can_serve(query) else []
     graph_res = list(await ch_graph.search(query)) if ch_graph.can_serve(query) else []
 
-    fused = fuse(
-        {"dense.claims": dense_res, "bm25.claims": text_res, "graph.claims": graph_res}
-    )
+    fused = fuse({"dense.claims": dense_res, "bm25.claims": text_res, "graph.claims": graph_res})
     expected_keys = [r.key for r in reversed(fused)]
 
     assert [r.key for r in outcome.results] == expected_keys

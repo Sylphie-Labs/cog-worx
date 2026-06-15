@@ -53,8 +53,16 @@ def _validity_filter(
     results: Sequence[ScoredClaim],
     cutoff: datetime,
 ) -> list[ScoredClaim]:
-    """Drop claims expired relative to cutoff (S9: remove, never reweight)."""
-    return [r for r in results if r.claim.valid_to is None or r.claim.valid_to > cutoff]
+    """Drop claims not valid at cutoff: expired (valid_to <= cutoff) or not-yet-valid
+    (valid_from > cutoff).
+
+    S9: structural removal — never reweight.
+    """
+    return [
+        r
+        for r in results
+        if r.claim.valid_from <= cutoff and (r.claim.valid_to is None or r.claim.valid_to > cutoff)
+    ]
 
 
 class ClaimDenseChannel:
@@ -247,7 +255,21 @@ class EpisodeRecencyChannel:
 
 
 class LatentDenseChannel:
-    """Dense vector recall over the pgvector latent space (S3: pgvector)."""
+    """Dense vector recall over the pgvector latent space (S3: pgvector).
+
+    By default (``hot_first=False``) the channel issues a single tier-agnostic search, which
+    returns the globally best k results by cosine similarity (Pod 2.2 contract).
+
+    When ``hot_first=True`` the channel applies a two-call hot-first composite pattern
+    (documented in ``substrate/latent.py`` Pod 2.6 section):
+
+    1. Search hot tier only.
+    2. Accept hot results that meet ``min_similarity`` (the confidence gate, τ).
+    3. If k accepted results are found → return them without touching cold.
+    4. Otherwise, fall back to cold and merge: sub-τ hot rows re-enter the geometry pool
+       alongside cold rows and compete by raw cosine score (D10 correctness detail — a
+       sub-τ hot row is NOT automatically promoted above cold rows).
+    """
 
     name: str = "dense.latent"
 
@@ -255,9 +277,13 @@ class LatentDenseChannel:
         self,
         latent_store: LatentStore,
         *,
+        hot_first: bool = False,
+        min_similarity: float = 0.80,
         renderer: Callable[[LatentMatch], str] = render_latent,
     ) -> None:
         self._store = latent_store
+        self._hot_first = hot_first
+        self._min_similarity = min_similarity
         self._renderer = renderer
 
     def can_serve(self, query: RecallQuery) -> bool:
@@ -265,9 +291,14 @@ class LatentDenseChannel:
 
     async def search(self, query: RecallQuery) -> Sequence[RecallResult]:
         assert query.embedding is not None  # guarded by can_serve
-        # Tier-agnostic default: no tier= argument (Pod 2.2 contract).
         # record_use is NOT called here — that is Pod 2.6's responsibility at injection time.
-        matches = await self._store.search(query.embedding, k=query.k)
+
+        if not self._hot_first:
+            # Tier-agnostic default: no tier= argument (Pod 2.2 contract).
+            matches: Sequence[LatentMatch] = await self._store.search(query.embedding, k=query.k)
+        else:
+            matches = await self._hot_first_search(query)
+
         return tuple(
             RecallResult(
                 key=f"latent:{m.record.id}",
@@ -278,3 +309,30 @@ class LatentDenseChannel:
             )
             for i, m in enumerate(matches)
         )
+
+    async def _hot_first_search(self, query: RecallQuery) -> Sequence[LatentMatch]:
+        """Two-call hot-first composite with similarity gate τ = min_similarity.
+
+        Sub-τ hot rows re-enter the geometry pool alongside cold rows (D10).
+        """
+        assert query.embedding is not None  # always called with embedding set
+        hot_results: Sequence[LatentMatch] = await self._store.search(
+            query.embedding, k=query.k, tier="hot"
+        )
+        accepted: list[LatentMatch] = [m for m in hot_results if m.score >= self._min_similarity]
+        if len(accepted) >= query.k:
+            # Hot tier filled the budget at or above τ — no cold search needed.
+            return accepted[: query.k]
+
+        # Not enough hot results above τ — fall back to cold and merge geometry.
+        rejected_hot: list[LatentMatch] = [m for m in hot_results if m.score < self._min_similarity]
+        cold_results: Sequence[LatentMatch] = await self._store.search(
+            query.embedding, k=query.k, tier="cold"
+        )
+        pool = sorted(
+            rejected_hot + list(cold_results),
+            key=lambda m: m.score,
+            reverse=True,
+        )
+        final = accepted + pool[: query.k - len(accepted)]
+        return final[: query.k]

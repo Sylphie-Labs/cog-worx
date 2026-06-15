@@ -122,9 +122,16 @@ approval is gated on *consequential ∧ irreversible ∧ tainted*. *Violation:* 
 injection defense; external-tier tools available while reading untrusted content.
 
 ### S11 — Cost bounded structurally
-Budgets are enforced as **pre-call guards** (the model cannot self-terminate); per-run ceilings are
+Budgets are enforced as **pre-call guards** (the model cannot self-terminate); ceilings are
 hard; async work routes to a provider batch/discount path where available. *Violation:* relying on the
 model to stop; unbounded loops without a step/cost ceiling.
+
+> **Clarification (2026-06-12, Jim-approved via `/update-canon`):** the enforced **hard unit is the
+> drive segment**, not the whole run. A paused/resumed/timer-fired run gets a fresh guard per drive
+> segment; each segment is hard-bounded pre-call, and S6 replay never re-bills a committed prefix.
+> Cumulative **per-run** ceilings (durable spend accounting journaled across resume) are deferred as
+> **CF-3.0-B** — a scheduled future item, not a silent gap. The budget API names this honestly
+> (`BudgetPolicy.max_calls_per_drive` / `max_usd_per_drive`).
 
 ### S12 — Spike-gated
 Nothing load-bearing hardens until its **falsifiable spike** passes. *Violation:* building a sector's
@@ -203,6 +210,26 @@ research wins.
 The CANON changes **only** with Jim's explicit approval (document change → impact assessment → Jim
 approves → apply). When the enforcement tooling lands, the `canon` agent surfaces gaps and proposed
 changes; it never edits the CANON itself. **If the enforcer can rewrite the law, there is no law.**
+
+### 6.1 Contract-evolution rule (C3) — evolving a frozen seam
+
+Frozen cross-pod seams (the `Model` interface, `Stage`/`Loop`, the Store seams, `Capability`, the
+event/coordination types, the artifact/claim types — S3–S7) may evolve **additively without
+per-change sign-off**; a **breaking** change requires explicit `/update-canon` approval like any other
+CANON change.
+
+- **"Additive" is defined structurally:** a change is additive **iff no existing conformant
+  implementation or caller becomes non-conformant.**
+  - Adding an **optional, defaulted field to a frozen value type** → **additive**.
+  - Adding a **member or parameter to a Protocol** → **breaking** (every existing implementer silently
+    stops conforming), even when it "looks" additive.
+- **Additive changes need no pre-approval but MUST be declared** — a one-line entry in a
+  **`Contract changelog`** block in the seam module's docstring, plus the session log. The
+  `canon-check.cjs` stop-hook enforces the declaration discipline.
+- **Breaking changes** go through the full §6 amendment process (Jim approves).
+- **Grandfathered (one-time audit, 2026-06-11):** the pre-rule additive touches —
+  `Claim.object_entity` (Pod 2.0), `EntityKG.project_claims` (Pod 2.3), `Claim.scope` (Pod 2.4) — each
+  meets the additive definition and is ratified as-is; changelog entries backfilled.
 
 ---
 

@@ -34,3 +34,16 @@ Thumbs.db
 # Substrate / telemetry artifacts
 runs/
 *.jsonl
+
+# memory-pkg (per-repo Claude Code memory). Track docker-compose.memory-pkg.yml
+# and .memory-pkg/config.json (the repo-tied instance + connection); ignore the
+# machine-local runtime state, capture buffer, and init backups.
+.memory-pkg/state.json
+.memory-pkg/inject-errors.log
+.memory-pkg-backup-*/
+.claude/memory/
+
+# Machine-local MCP server config (contains absolute, per-machine paths)
+.mcp.json
+# Claude Code settings backups
+.claude/*.bak-*

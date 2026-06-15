@@ -259,8 +259,7 @@ class ClaimExtractor:
             )
 
         projections = [
-            ClaimProjection(claim=claim, evidence=evidence)
-            for claim, evidence in result.pairs
+            ClaimProjection(claim=claim, evidence=evidence) for claim, evidence in result.pairs
         ]
 
         # Collect user-turn latent targets (D9 — only when latent store is wired).

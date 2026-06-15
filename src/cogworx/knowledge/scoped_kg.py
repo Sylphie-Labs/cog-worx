@@ -95,9 +95,7 @@ class ScopedKG:
         # When the object is an entity, obj is the entity name (used as object_repr for
         # claim identity and stored as object_entity on the Claim for the [:REFERS_TO] edge).
         object_repr = obj
-        claim_id = claim_id_for(
-            subject, predicate, object_repr, scope=self._token.scope.scope_id
-        )
+        claim_id = claim_id_for(subject, predicate, object_repr, scope=self._token.scope.scope_id)
         provenance = Provenance(
             source="tool",
             source_ref=source.source_id,
@@ -199,9 +197,7 @@ def world_model(kg: EntityKG, registry: ScopeRegistry, *, owner: str) -> ScopedK
     return ScopedKG(kg, token)
 
 
-def user_model(
-    kg: EntityKG, registry: ScopeRegistry, user_id: str, *, owner: str
-) -> ScopedKG:
+def user_model(kg: EntityKG, registry: ScopeRegistry, user_id: str, *, owner: str) -> ScopedKG:
     """Return a ScopedKG for a specific user's model.
 
     Raises ValueError if a different owner already holds the write-token for this user (S7).

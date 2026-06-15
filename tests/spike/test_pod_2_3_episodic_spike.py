@@ -2,7 +2,8 @@
 
 Falsifiable invariants: the episodic capture pipeline is S1-clean (no model on the write path),
 exactly-once (idempotent claim minting), S9-armoured (sockpuppet rejection), identity-disciplined
-(deterministic claim ids), lesion-isolated (pure imports), and cursor-monotonic (no ordinal regress).
+(deterministic claim ids), lesion-isolated (pure imports), and cursor-monotonic
+(no ordinal regress).
 
 Each invariant has a BUG-INJECTION negative control that MUST trip. If the negative control passes
 when it should fail, the spike rejects the assertion as toothless.
@@ -28,13 +29,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import pytest
 import pydantic
+import pytest
 
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.knowledge.episodes import Turn, stamp_turns, turns_of
 from cogworx.knowledge.extraction import (
-    ExtractionResult,
     RawClaimItem,
     mint_extraction_claims,
     render_transcript,
@@ -319,10 +319,10 @@ def test_i4_s9_sockpuppet_rejection() -> None:
                 "predicate": "is",
                 "object": "Y",
                 "supporting_turn_index": 0,
-                "source_id": "model-chosen-id",          # should be stripped
-                "epistemic_type": "confirmed",            # should be ignored / hardcoded
-                "confidence": 0.99,                       # should be ignored
-                "arbitrary_extra_field": "hacked",        # should be stripped
+                "source_id": "model-chosen-id",  # should be stripped
+                "epistemic_type": "confirmed",  # should be ignored / hardcoded
+                "confidence": 0.99,  # should be ignored
+                "arbitrary_extra_field": "hacked",  # should be stripped
             }
         ]
     }
@@ -367,8 +367,7 @@ def test_i4_s9_sockpuppet_rejection() -> None:
 
     # S9 wall 3: created_by on the claim is the framework-assigned source_id, not "model-chosen-id".
     assert claim.created_by == decl.source_id, (
-        f"S9 violation: claim.created_by={claim.created_by!r}, "
-        f"expected {decl.source_id!r}"
+        f"S9 violation: claim.created_by={claim.created_by!r}, expected {decl.source_id!r}"
     )
     assert claim.created_by != "model-chosen-id"
 
@@ -390,9 +389,7 @@ def test_i4_s9_negative_control_source_id_passthrough(monkeypatch: pytest.Monkey
     monkeypatch.setattr(_extraction_mod, "make_evidence", mutant_make_evidence)
 
     raw_json: dict[str, object] = {
-        "claims": [
-            {"subject": "X", "predicate": "is", "object": "Y", "supporting_turn_index": 0}
-        ]
+        "claims": [{"subject": "X", "predicate": "is", "object": "Y", "supporting_turn_index": 0}]
     }
     items = validate_raw_model_json(raw_json)
     turns = [Turn(role="user", content="X is Y.", kind="conversation")]
@@ -433,9 +430,7 @@ def test_i4_s9_negative_control_epistemic_type_passthrough(
     monkeypatch.setattr(_extraction_mod, "Claim", mutant_Claim)
 
     raw_json: dict[str, object] = {
-        "claims": [
-            {"subject": "A", "predicate": "b", "object": "C", "supporting_turn_index": 0}
-        ]
+        "claims": [{"subject": "A", "predicate": "b", "object": "C", "supporting_turn_index": 0}]
     }
     items = validate_raw_model_json(raw_json)
     turns = [Turn(role="user", content="A b C.", kind="conversation")]
@@ -644,10 +639,7 @@ def test_i6_s8_episodes_module_imports_without_model_or_substrate() -> None:
         [
             sys.executable,
             "-c",
-            (
-                "from cogworx.knowledge.episodes import Turn, stamp_turns, turns_of; "
-                "print('ok')"
-            ),
+            ("from cogworx.knowledge.episodes import Turn, stamp_turns, turns_of; print('ok')"),
         ],
         capture_output=True,
         text=True,
@@ -905,7 +897,8 @@ def test_eval_pipeline_precision_floor() -> None:
     # All minted claims must have epistemic_type == "inference" (S9 wall).
     for claim, evidence in result.pairs:
         assert claim.epistemic_type == "inference", (
-            f"S9 wall broken in eval: claim {claim.id!r} has epistemic_type={claim.epistemic_type!r}"
+            f"S9 wall broken in eval: claim {claim.id!r} has "
+            f"epistemic_type={claim.epistemic_type!r}"
         )
         assert evidence.source_id == source_decl.source_id, (
             f"S9 wall broken in eval: evidence.source_id={evidence.source_id!r}, "
@@ -935,7 +928,8 @@ def test_eval_render_transcript_format() -> None:
 
 
 def test_eval_source_registry_authority_conflict_raises() -> None:
-    """Re-declaring the same (kind, ref) with a different authority raises ValueError (S9 fail-loud).
+    """Re-declaring the same (kind, ref) with a different authority raises ValueError
+    (S9 fail-loud).
 
     Source identity is immutable once declared: conflicting authority re-declarations are a
     programmer error that must surface loudly rather than silently using whichever value happened

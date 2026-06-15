@@ -11,11 +11,13 @@ CONCLUSION (to be recorded after running):
   SC-2 — Shared entity connectivity: verified
   SC-3 — Evidence segregation (governance property): verified
   SC-4 — Token discipline: verified WITHIN a single ScopeRegistry instance.
-          Multi-registry same-process bypass documented in CF-6 (test_sc4_multi_registry_same_process_known_gap).
+          Multi-registry same-process bypass documented in CF-6
+          (test_sc4_multi_registry_same_process_known_gap).
   SC-5 — Back-compat / migration-free: verified
   SC-6 — S8 lesion (degradation): verified
   SC-7 — S1 / S9 structural invariant: accidental model-text→token coercion verified blocked.
-          Direct Python construction of ScopeWriteToken(...) is an explicit, reviewable breach (CF-1).
+          Direct Python construction of ScopeWriteToken(...) is an explicit, reviewable
+          breach (CF-1).
 
 Pure Python — no Neo4j, no model calls, no live substrate.
 """
@@ -26,15 +28,14 @@ import dataclasses
 import json
 import subprocess
 import sys
-import uuid
 from datetime import UTC, datetime
 
 import pytest
 
-from cogworx.claims.provenance import Claim, DEFAULT_SCOPE, Provenance
+from cogworx.claims.provenance import DEFAULT_SCOPE, Claim, Provenance
 from cogworx.knowledge.evidence import make_evidence
 from cogworx.knowledge.identity import claim_id_for
-from cogworx.knowledge.scoped_kg import ScopedKG, user_model, world_model
+from cogworx.knowledge.scoped_kg import user_model, world_model
 from cogworx.knowledge.scopes import Scope, ScopeRegistry, ScopeWriteToken
 from cogworx.knowledge.source_registry import SourceRegistry
 from cogworx.testing.doubles import InMemoryEntityKG
@@ -78,16 +79,28 @@ async def test_sc1_scope_query_isolation() -> None:
 
     # Write same subject/predicate to each scope (different objects to keep claim IDs distinct)
     await wm.assert_fact(
-        subject="Paris", predicate="scope_tag", obj="world-val",
-        epistemic_type="confirmed", source=source, created_by="agent-w",
+        subject="Paris",
+        predicate="scope_tag",
+        obj="world-val",
+        epistemic_type="confirmed",
+        source=source,
+        created_by="agent-w",
     )
     await um_jim.assert_fact(
-        subject="Paris", predicate="scope_tag", obj="jim-val",
-        epistemic_type="inference", source=source, created_by="agent-j",
+        subject="Paris",
+        predicate="scope_tag",
+        obj="jim-val",
+        epistemic_type="inference",
+        source=source,
+        created_by="agent-j",
     )
     await um_alice.assert_fact(
-        subject="Paris", predicate="scope_tag", obj="alice-val",
-        epistemic_type="inference", source=source, created_by="agent-a",
+        subject="Paris",
+        predicate="scope_tag",
+        obj="alice-val",
+        epistemic_type="inference",
+        source=source,
+        created_by="agent-a",
     )
     # Write one "agent" (default) claim directly via the raw KG
     agent_claim_id = claim_id_for("Paris", "scope_tag", "agent-val")
@@ -132,12 +145,20 @@ async def test_sc1_negative_control_scope_filter_bypassed(monkeypatch: pytest.Mo
     um = user_model(kg, registry, "jim", owner="agent-j")
 
     await wm.assert_fact(
-        subject="Paris", predicate="scope_tag", obj="world-val",
-        epistemic_type="confirmed", source=source, created_by="agent-w",
+        subject="Paris",
+        predicate="scope_tag",
+        obj="world-val",
+        epistemic_type="confirmed",
+        source=source,
+        created_by="agent-w",
     )
     await um.assert_fact(
-        subject="Paris", predicate="scope_tag", obj="jim-val",
-        epistemic_type="inference", source=source, created_by="agent-j",
+        subject="Paris",
+        predicate="scope_tag",
+        obj="jim-val",
+        epistemic_type="inference",
+        source=source,
+        created_by="agent-j",
     )
 
     # Capture the original method
@@ -178,12 +199,20 @@ async def test_sc2_shared_entity_connectivity() -> None:
     um = user_model(kg, registry, "jim", owner="agent-j")
 
     world_id = await wm.assert_fact(
-        subject="Paris", predicate="capital_of", obj="France",
-        epistemic_type="confirmed", source=source, created_by="agent-w",
+        subject="Paris",
+        predicate="capital_of",
+        obj="France",
+        epistemic_type="confirmed",
+        source=source,
+        created_by="agent-w",
     )
     user_id = await um.assert_fact(
-        subject="Paris", predicate="home_city", obj="jim",
-        epistemic_type="inference", source=source, created_by="agent-j",
+        subject="Paris",
+        predicate="home_city",
+        obj="jim",
+        epistemic_type="inference",
+        source=source,
+        created_by="agent-j",
     )
 
     # Both claims use the same entity name "Paris" — confirm both are reachable via unscoped read
@@ -250,10 +279,14 @@ async def test_sc3_evidence_segregation() -> None:
     world_ev = await kg.evidence_for(world_id)
 
     assert len(agent_ev) == 11, f"Agent claim should have 11 evidence events, got {len(agent_ev)}"
-    assert len(world_ev) == 1, f"World claim should have exactly 1 evidence event, got {len(world_ev)}"
+    assert len(world_ev) == 1, (
+        f"World claim should have exactly 1 evidence event, got {len(world_ev)}"
+    )
 
 
-async def test_sc3_negative_control_scope_ignored_in_claim_id(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_sc3_negative_control_scope_ignored_in_claim_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Negative control: monkeypatch claim_id_for in the doubles module to ignore scope.
     → agent and world claims would collide to the same ID → world claim would accrue 11 events.
     Proves SC-3's positive assertion has teeth."""
@@ -324,8 +357,12 @@ async def test_sc4_add_evidence_cross_scope_raises() -> None:
     um = user_model(kg, registry, "alice", owner="agent-a")
 
     world_id = await wm.assert_fact(
-        subject="Test", predicate="prop", obj="val",
-        epistemic_type="confirmed", source=source, created_by="agent-w",
+        subject="Test",
+        predicate="prop",
+        obj="val",
+        epistemic_type="confirmed",
+        source=source,
+        created_by="agent-w",
     )
 
     ev = _evidence_event(source)
@@ -343,8 +380,12 @@ async def test_sc4_invalidate_cross_scope_raises() -> None:
     um = user_model(kg, registry, "alice", owner="agent-a")
 
     world_id = await wm.assert_fact(
-        subject="Test", predicate="prop", obj="val",
-        epistemic_type="confirmed", source=source, created_by="agent-w",
+        subject="Test",
+        predicate="prop",
+        obj="val",
+        epistemic_type="confirmed",
+        source=source,
+        created_by="agent-w",
     )
 
     with pytest.raises(ValueError):
@@ -371,12 +412,20 @@ async def test_sc4_multi_registry_same_process_known_gap() -> None:
     wm_b = world_model(kg, reg_b, owner="writer-b")
 
     id_a = await wm_a.assert_fact(
-        subject="Paris", predicate="capital_of", obj="France",
-        epistemic_type="observation", source=src, created_by="writer-a",
+        subject="Paris",
+        predicate="capital_of",
+        obj="France",
+        epistemic_type="observation",
+        source=src,
+        created_by="writer-a",
     )
     id_b = await wm_b.assert_fact(
-        subject="Paris", predicate="capital_of", obj="France",
-        epistemic_type="observation", source=src, created_by="writer-b",
+        subject="Paris",
+        predicate="capital_of",
+        obj="France",
+        epistemic_type="observation",
+        source=src,
+        created_by="writer-b",
     )
     # Same scope + same triple = same claim_id_for hash = same claim node
     assert id_a == id_b, "Both writers target the same claim node (scope-in-identity)"
@@ -572,7 +621,8 @@ def test_sc7_scopes_module_does_not_import_model_or_substrate() -> None:
         [
             sys.executable,
             "-c",
-            "from cogworx.knowledge.scopes import Scope, ScopeRegistry, ScopeWriteToken; print('ok')",
+            "from cogworx.knowledge.scopes import "
+            "Scope, ScopeRegistry, ScopeWriteToken; print('ok')",
         ],
         capture_output=True,
         text=True,

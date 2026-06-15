@@ -64,8 +64,8 @@ class ScopeRegistry:
     """
 
     def __init__(self) -> None:
-        self._scopes: dict[str, Scope] = {}   # scope_id -> Scope
-        self._owners: dict[str, str] = {}     # scope_id -> owner
+        self._scopes: dict[str, Scope] = {}  # scope_id -> Scope
+        self._owners: dict[str, str] = {}  # scope_id -> owner
 
     def declare(self, kind: ScopeKind, ref: str = "global") -> Scope:
         """Return a read-side Scope handle. Idempotent; no ownership claimed."""

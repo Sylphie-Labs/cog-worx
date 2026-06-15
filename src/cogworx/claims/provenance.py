@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 DEFAULT_SCOPE: Final[str] = "agent"
 
 EpistemicType = Literal["observation", "inference", "confirmed"]
+ClaimStatus = Literal["active", "defeasibly-defeated"]
 # "system" = engine/control-plane-originated, zero-model (exhaustion degradations, timeouts,
 # ceiling-fails). Distinct from "reflection"/"inference"/"extraction", which S1 reserves for
 # model-heavy cognition — a deterministic control event must not borrow that epistemic weight.
@@ -58,6 +59,13 @@ class Claim(BaseModel):
     # Which governed view owns this claim: "agent" (unscoped default), "world", or "user:<id>".
     # Default "agent" is backward-compatible — all pre-2.4 claims are unscoped.
     scope: str = DEFAULT_SCOPE
+    # Defeasible status — default "active" is backward-compatible with all pre-2.7 claims.
+    # Set to "defeasibly-defeated" by the Pod 2.7 coherence reconciler when a SUPERSEDES defeat is
+    # recorded; the losing claim is never deleted (bi-temporal honesty, S5).
+    status: ClaimStatus = "active"
+    # The id of the claim that defeated this one, or None if not defeated. Populated by the
+    # coherence reconciler's commit_reconciliation (coalesce — first-defeat-wins, never cleared).
+    defeated_by: str | None = None
 
 
 class Artifact(BaseModel):
@@ -75,6 +83,7 @@ __all__ = [
     "DEFAULT_SCOPE",
     "Artifact",
     "Claim",
+    "ClaimStatus",
     "EpistemicType",
     "Provenance",
     "ProvenanceSource",

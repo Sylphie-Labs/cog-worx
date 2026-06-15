@@ -52,8 +52,8 @@ def test_source_id_deterministic() -> None:
 def test_nfc_normalization() -> None:
     # é as NFC (U+00E9) vs NFD decomposed (e + combining accent U+0301) — both must produce
     # the same source_id and count as the same declaration.
-    nfc_ref = unicodedata.normalize("NFC", "é")   # é  (precomposed)
-    nfd_ref = unicodedata.normalize("NFD", "é")   # e + combining accent (decomposed)
+    nfc_ref = unicodedata.normalize("NFC", "é")  # é  (precomposed)
+    nfd_ref = unicodedata.normalize("NFD", "é")  # e + combining accent (decomposed)
     assert nfc_ref != nfd_ref  # confirm the test inputs actually differ
 
     registry = SourceRegistry()

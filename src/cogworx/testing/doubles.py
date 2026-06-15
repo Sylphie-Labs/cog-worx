@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 
 from cogworx.adapters.neo4j_procedural_kg import select_candidates, split_trial_id
-from cogworx.claims.provenance import Artifact, Claim, Provenance
+from cogworx.claims.provenance import Artifact, Claim, EpistemicType, Provenance
 from cogworx.knowledge.confidence import ClaimConfidence, claim_confidence
 from cogworx.knowledge.evidence import EvidenceEvent
 from cogworx.knowledge.identity import claim_id_for, normalize_topic_part
@@ -29,6 +29,12 @@ from cogworx.knowledge.procedural_confidence import (
 )
 from cogworx.knowledge.procedural_promotion import PromotionPolicy
 from cogworx.loop.state import RunStatus
+from cogworx.substrate.coherence import (
+    AdjudicationRecord,
+    DirtyKey,
+    DirtySubject,
+    ReconciliationOutcome,
+)
 from cogworx.substrate.entity_kg import ClaimProjection, ScoredClaim
 from cogworx.substrate.episodes import Episode
 from cogworx.substrate.journal import (
@@ -68,6 +74,7 @@ class _RunLog:
         self.pathway_fingerprint = pathway_fingerprint
         self.status = RunStatus.RUNNING
         self.steps: dict[int, StepRecord] = {}
+        self.tainted: bool = False
 
 
 class InMemoryJournal:
@@ -178,7 +185,15 @@ class InMemoryJournal:
             pathway_fingerprint=log.pathway_fingerprint,
             current_stage=current_stage,
             steps=steps,
+            tainted=log.tainted,
         )
+
+    async def set_run_tainted(self, run_id: str) -> None:
+        # Idempotent monotonic False→True write — mirrors the adapter's unconditional UPDATE.
+        # No await between read and write (asyncio single-threaded); unknown run_id is a no-op.
+        log = self._runs.get(run_id)
+        if log is not None:
+            log.tainted = True
 
     async def set_timer(self, timer: Timer) -> None:
         # Idempotent on timer_id (mirrors the adapter's ON CONFLICT DO NOTHING): a re-armed Wait is
@@ -370,8 +385,10 @@ def _to_utc_mem(dt: datetime) -> datetime:
 class InMemoryEntityKG:
     """An in-memory :class:`~cogworx.substrate.entity_kg.EntityKG` for deterministic unit tests.
 
-    Implements the full EntityKG contract in dicts — no Neo4j, no model calls. Cosine similarity
-    for ``claims_by_similarity`` is computed in pure Python (same algorithm as InMemoryLatentStore).
+    Implements the full EntityKG contract AND the
+    :class:`~cogworx.substrate.coherence.CoherenceStore` contract in dicts — no Neo4j, no model
+    calls. Cosine similarity for ``claims_by_similarity`` is computed in pure Python (same
+    algorithm as InMemoryLatentStore).
 
     Same identity-discipline ValueError, same invalidate first-wins, same as_of filtering, same
     lineage weakest-link (recursive ancestor walk capped at depth 5 with cycle guard) as the real
@@ -389,6 +406,13 @@ class InMemoryEntityKG:
         self._contradictions: set[frozenset[str]] = set()
         # projection cursors keyed by consumer — mirrors InMemoryProceduralKG._progress
         self._cursors: dict[str, ProjectionCursor] = {}
+        # CoherenceStore state
+        # dirty subjects keyed by DirtyKey
+        self._dirty: dict[DirtyKey, DirtySubject] = {}
+        # adjudication records keyed by id
+        self._adjudications: dict[str, AdjudicationRecord] = {}
+        # SUPERSEDES: (winner_id, loser_id) — set, idempotent
+        self._supersedes: set[tuple[str, str]] = set()
 
     async def upsert_claim(self, claim: Claim) -> str:
         """Sealed: raises NotImplementedError. Use write_claim instead.
@@ -404,20 +428,29 @@ class InMemoryEntityKG:
         )
 
     async def write_claim(self, claim: Claim, *, evidence: EvidenceEvent) -> str:
-        """MERGE claim + record evidence. Raises ValueError on identity-discipline failure."""
+        """MERGE claim + record evidence. Raises ValueError on identity-discipline failure.
+
+        Also marks ``(scope, subject_norm)`` dirty (Pod 2.7 coherence).
+        """
         _assert_identity_mem(claim)
         if claim.id not in self._claims:
             self._claims[claim.id] = claim
         if claim.id not in self._evidence:
             self._evidence[claim.id] = []
         self._evidence[claim.id].append(evidence)
+        self._dirty_mark(claim.scope, normalize_topic_part(claim.subject))
         return claim.id
 
     async def add_evidence(self, claim_id: str, event: EvidenceEvent) -> None:
-        """Append an evidence event. Raises ValueError if claim_id unknown."""
+        """Append an evidence event. Raises ValueError if claim_id unknown.
+
+        Also marks ``(scope, subject_norm)`` dirty (Pod 2.7 coherence).
+        """
         if claim_id not in self._claims:
             raise ValueError(f"add_evidence: unknown claim_id {claim_id!r}")
         self._evidence[claim_id].append(event)
+        claim = self._claims[claim_id]
+        self._dirty_mark(claim.scope, normalize_topic_part(claim.subject))
 
     async def get_claim(self, claim_id: str) -> Claim | None:
         """Return the claim by id, or None."""
@@ -442,13 +475,24 @@ class InMemoryEntityKG:
         """
         # UTC-normalise as_of so naive datetimes are accepted (matches adapter contract).
         as_of_utc = _to_utc_mem(as_of) if as_of is not None else None
+        # Normalise the entity parameter so callers may pass either the original subject name
+        # or the normalized form (the reconciler uses subject_norm from DirtySubject).
+        entity_norm = normalize_topic_part(entity)
         results: list[ScoredClaim] = []
         seen: set[str] = set()
         # Sort by ingest_time DESC for consistent ordering
         for claim in sorted(self._claims.values(), key=lambda c: c.ingest_time, reverse=True):
             if claim.id in seen:
                 continue
-            if claim.subject != entity and claim.object_entity != entity:
+            # Match on original name, normalized name, or object_entity.
+            subj_norm = normalize_topic_part(claim.subject)
+            obj_norm = normalize_topic_part(claim.object_entity) if claim.object_entity else None
+            if (
+                claim.subject != entity
+                and subj_norm != entity_norm
+                and claim.object_entity != entity
+                and obj_norm != entity_norm
+            ):
                 continue
             if as_of_utc is not None:
                 # Normalise claim datetimes to UTC for comparison so mixed-offset claims compare
@@ -694,6 +738,7 @@ class InMemoryEntityKG:
         """Set valid_to (first-invalidation-wins). Raises ValueError if claim unknown.
 
         valid_to is UTC-normalised before storage (matches adapter contract).
+        Also marks ``(scope, subject_norm)`` dirty (Pod 2.7 coherence).
         """
         claim = self._claims.get(claim_id)
         if claim is None:
@@ -701,6 +746,7 @@ class InMemoryEntityKG:
         # First-invalidation-wins: only update if currently None.
         if claim.valid_to is None:
             self._claims[claim_id] = claim.model_copy(update={"valid_to": _to_utc_mem(valid_to)})
+        self._dirty_mark(claim.scope, normalize_topic_part(claim.subject))
 
     async def read_cursor(self, consumer: str) -> ProjectionCursor | None:
         """Return the consumer's cursor, or None on cold start."""
@@ -717,12 +763,152 @@ class InMemoryEntityKG:
         The in-memory double has no partial-failure scenario, so the atomicity guarantee is
         behavioural: all writes happen before the cursor advances, mirroring the adapter's
         single-txn contract. Identity discipline is enforced via write_claim (raises ValueError
-        on failure).
+        on failure). Each write also dirty-marks the subject (Pod 2.7 coherence).
         """
         for cp in writes:
             await self.write_claim(cp.claim, evidence=cp.evidence)
         if progress is not None:
             self._cursors[consumer] = ordinal_max(self._cursors.get(consumer), progress) or progress
+
+    # -----------------------------------------------------------------------
+    # CoherenceStore Protocol implementation (Pod 2.7)
+    # -----------------------------------------------------------------------
+
+    def _dirty_key(self, scope: str, subject_norm: str) -> DirtyKey:
+        return f"{scope}\x1f{subject_norm}"
+
+    def _dirty_mark(self, scope: str, subject_norm: str) -> None:
+        """Merge-increment the dirty node for (scope, subject_norm)."""
+        key = self._dirty_key(scope, subject_norm)
+        now = datetime.now(UTC)
+        existing = self._dirty.get(key)
+        if existing is None:
+            self._dirty[key] = DirtySubject(
+                key=key,
+                scope=scope,
+                subject_norm=subject_norm,
+                epoch=1,
+                marked_at=now,
+                attempts=0,
+            )
+        else:
+            self._dirty[key] = existing.model_copy(
+                update={"epoch": existing.epoch + 1, "marked_at": now}
+            )
+
+    async def claim_dirty_subjects(self, *, limit: int = 16) -> Sequence[DirtySubject]:
+        """Return up to ``limit`` dirty subjects, oldest-first by marked_at."""
+        subjects = sorted(self._dirty.values(), key=lambda d: d.marked_at)
+        return tuple(subjects[:limit])
+
+    async def bump_dirty_attempts(self, key: DirtyKey) -> int:
+        """Atomically increment the attempt counter; return the new count."""
+        existing = self._dirty.get(key)
+        if existing is None:
+            return 0
+        bumped = existing.model_copy(update={"attempts": existing.attempts + 1})
+        self._dirty[key] = bumped
+        return bumped.attempts
+
+    async def adjudication_ids_for_subject(self, scope: str, subject_norm: str) -> Sequence[str]:
+        """Return all adjudication ids for (scope, subject_norm)."""
+        return tuple(
+            adj.id
+            for adj in self._adjudications.values()
+            if adj.scope == scope and adj.subject_norm == subject_norm
+        )
+
+    async def commit_reconciliation(
+        self,
+        outcome: ReconciliationOutcome,
+        *,
+        dirty_key: DirtyKey,
+        observed_epoch: int,
+    ) -> None:
+        """Apply the reconciliation outcome and epoch-guard-clear the dirty mark.
+
+        In-memory semantics match the Neo4j adapter:
+          - Adjudications are stored ON CREATE (setdefault — immutable-on-match).
+          - CONTRADICTS pairs are merged (frozenset dedup).
+          - Defeats: SUPERSEDES stored as (winner, loser) set; loser status set to
+            'defeasibly-defeated'; defeated_by coalesced (first-defeat-wins); valid_to set
+            only when set_valid_to is not None and current valid_to is None.
+          - Dirty node cleared only when current epoch == observed_epoch.
+        """
+        now = _to_utc_mem(outcome.recorded_at)
+
+        for adj in outcome.adjudications:
+            self._adjudications.setdefault(adj.id, adj)
+
+        for pair in outcome.contradictions:
+            self._contradictions.add(frozenset({pair[0], pair[1]}))
+
+        for defeat in outcome.defeats:
+            self._supersedes.add((defeat.winner_id, defeat.loser_id))
+            loser = self._claims.get(defeat.loser_id)
+            if loser is not None:
+                updates: dict[str, object] = {"status": "defeasibly-defeated"}
+                if loser.defeated_by is None:
+                    updates["defeated_by"] = defeat.winner_id
+                if defeat.set_valid_to is not None and loser.valid_to is None:
+                    updates["valid_to"] = _to_utc_mem(defeat.set_valid_to)
+                self._claims[defeat.loser_id] = loser.model_copy(update=updates)
+
+        dirty = self._dirty.get(dirty_key)
+        if dirty is not None and dirty.epoch == observed_epoch:
+            del self._dirty[dirty_key]
+
+        _ = now  # recorded_at is part of AdjudicationRecord, not a separate field here
+
+    async def current_epistemic_level(self, claim_id: str) -> EpistemicType | None:
+        """Return the claim's current epistemic_type, or None if not found."""
+        claim = self._claims.get(claim_id)
+        return claim.epistemic_type if claim is not None else None
+
+    async def apply_epistemic_upgrade(
+        self,
+        claim_id: str,
+        *,
+        new_level: EpistemicType,
+        evidence: EvidenceEvent,
+        actor: str,
+        recorded_at: datetime,
+    ) -> bool:
+        """Promote a claim's epistemic level (rank-guarded). Returns True iff changed."""
+        _rank: dict[str, int] = {"inference": 0, "observation": 1, "confirmed": 2}
+        claim = self._claims.get(claim_id)
+        if claim is None:
+            return False
+        current_rank = _rank.get(claim.epistemic_type, 0)
+        new_rank = _rank.get(new_level, 0)
+        if current_rank >= new_rank:
+            return False
+        self._claims[claim_id] = claim.model_copy(update={"epistemic_type": new_level})
+        if claim_id not in self._evidence:
+            self._evidence[claim_id] = []
+        self._evidence[claim_id].append(evidence)
+        self._dirty_mark(claim.scope, normalize_topic_part(claim.subject))
+        return True
+
+    async def copy_evidence(self, from_claim_id: str, to_claim_id: str, *, id_prefix: str) -> int:
+        """Copy evidence from one claim to another (MERGE-idempotent via id_prefix).
+
+        Returns count of matched source events.
+        """
+        source_events = self._evidence.get(from_claim_id, [])
+        if not source_events:
+            return 0
+        if to_claim_id not in self._evidence:
+            self._evidence[to_claim_id] = []
+        existing_ids = {ev.id for ev in self._evidence[to_claim_id]}
+        count = 0
+        for ev in source_events:
+            new_id = f"{id_prefix}:{ev.id}"
+            if new_id not in existing_ids:
+                self._evidence[to_claim_id].append(ev.model_copy(update={"id": new_id}))
+                existing_ids.add(new_id)
+            count += 1
+        return count
 
     def _lineage_min(
         self,

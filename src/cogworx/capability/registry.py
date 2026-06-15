@@ -4,17 +4,27 @@ A toggleable registry of ``Capability`` objects. ``disable`` is the lesion switc
 capability is not dispatchable but stays enumerable via ``features()``, which is the auto-enrolment
 hook the Test Kit uses to apply invariant suites to every registered feature. Generalized from tess
 ``tess/tools/registry.py``.
+
+Contract changelog:
+  - 2026-06-12 (Pod 3.2b §6.1): ``_build_input_schema`` now injects ``additionalProperties: false``
+    into the pydantic-derived schema so extra model-supplied keys are REJECTED by framework-side
+    jsonschema validation instead of silently splatted into ``**kwargs``.  Additive: no existing
+    callers are broken (the schema becomes stricter, which is the desired direction).
+  - 2026-06-12 (Pod 3.2 B2): replaced the manual top-level injection with ``harden_input_schema``
+    from ``cogworx.capability.schema`` — the single recursive hardening authority that closes the
+    nested-object gap for free.  Additive: no existing callers are broken.
 """
 
 from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, get_type_hints
+from typing import Any, cast, get_type_hints
 
 from pydantic import ConfigDict, Field, create_model
 
 from cogworx.capability.base import Capability, PermissionTier
+from cogworx.capability.schema import harden_input_schema
 
 
 class RegistryError(Exception):
@@ -153,9 +163,13 @@ def _build_input_schema(fn: Callable[..., Awaitable[Any]], name: str) -> dict[st
         __config__=ConfigDict(arbitrary_types_allowed=True),
         **fields,
     )
-    schema = model.model_json_schema()
+    raw = model.model_json_schema()
+    schema: dict[str, Any] = cast(dict[str, Any], raw)
     schema.pop("title", None)
-    return schema
+    # harden_input_schema (the single recursive authority, B2) injects additionalProperties:false
+    # at every absent object node — top-level AND nested — so extra model-supplied keys are
+    # rejected by framework-side jsonschema validation rather than splatted into **kwargs (S9).
+    return harden_input_schema(schema)
 
 
 __all__ = [

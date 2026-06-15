@@ -150,7 +150,7 @@ def test_two_channels_one_overlap() -> None:
 
     fused = fuse(
         {
-            "dense": [r_dense_pad, r_dense],       # shared at list pos 1 → rank 2
+            "dense": [r_dense_pad, r_dense],  # shared at list pos 1 → rank 2
             "bm25": [r_bm25_pad1, r_bm25_pad2, r_bm25],  # shared at list pos 2 → rank 3
         }
     )

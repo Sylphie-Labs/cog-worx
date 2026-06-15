@@ -35,7 +35,7 @@ from typing import Any
 import pytest
 
 from cogworx.claims.provenance import Artifact, Provenance
-from cogworx.cost.budget import BudgetExceededError, BudgetGuard
+from cogworx.cost.budget import BudgetExceededError, BudgetGuard, BudgetPolicy
 from cogworx.loop.graph import StageGraph
 from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Degraded, Done, StageResult, Transition
@@ -49,6 +49,8 @@ from cogworx.model.base import (
     ModelTier,
     ToolSpec,
 )
+from cogworx.model.guarded import BudgetGuardedModel
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.runtime.sweeper import Sweeper
 from cogworx.substrate.journal import Journal, RunState, StepRecord, Timer
@@ -223,16 +225,18 @@ def _make_build_engine(
     pathways: PathwayRegistry,
     *,
     clock: Callable[[], datetime] = _CLOCK_AT_T0,
-    budget: BudgetGuard | None = None,
+    budget_policy: BudgetPolicy | None = None,
 ) -> Callable[[Journal, ReplayModel], Engine]:
     def build(journal: Journal, model: ReplayModel) -> Engine:
+        registry = ModelRegistry()
+        registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
         return Engine(
-            model=model,
+            models=registry,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
             pathways=pathways,
-            budget=budget,
+            budget_policy=budget_policy,
             clock=clock,
         )
 
@@ -765,6 +769,9 @@ class _GatedModel:
         await self.gate.wait()
         return ModelResponse(text="work answer", model_id="gated", finish_reason="stop")
 
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text) // 4)
+
 
 async def test_r7_concurrent_retry_fire_executes_exactly_once() -> None:
     """Drive to RETRYING, then two concurrent ``fire_timer`` (gated at the re-attempt's model call)
@@ -779,8 +786,10 @@ async def test_r7_concurrent_retry_fire_executes_exactly_once() -> None:
     work = FailingWorkStage(
         fail_times=1, retry_policy=_retryable_policy(max_attempts=3), model_bearing=True
     )
+    _reg = ModelRegistry()
+    _reg.register("default", model)
     engine = Engine(
-        model=model,
+        models=_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -977,18 +986,33 @@ async def test_s11_retry_storm_hits_budget_ceiling_not_unbounded_loop() -> None:
     and enough ``max_attempts`` to exceed K, hits ``BudgetExceededError`` — a bounded structural
     ceiling, never an unbounded retry loop.
 
-    Each re-attempt that reaches the model calls ``budget.check()`` first; once K calls are recorded
-    the next ``check()`` raises ``BudgetExceededError``, which (being NON-retryable) propagates —
-    proving retry churn is bounded by ``max_attempts`` x ``BudgetGuard`` (S11), not ``max_steps``.
+    Each re-attempt that reaches the model calls ``budget.start_call()`` first; once K calls are
+    recorded the next ``start_call()`` raises ``BudgetExceededError``, which (being NON-retryable)
+    propagates — proving retry churn is bounded by ``max_attempts`` x ``BudgetGuard`` (S11), not
+    ``max_steps``.
+
+    Note (CF-3.0-B): ``BudgetPolicy`` mints a FRESH guard per drive, so a guard shared via
+    ``register_factory`` is used here to prove cross-retry ceiling enforcement — a persistent guard
+    that accumulates call counts across the retry drives for this run.
     """
     journal = InMemoryJournal()
-    model = ReplayModel(
+    inner = ReplayModel(
         [ModelResponse(text="x", model_id="replay", finish_reason="stop") for _ in range(10)]
     )
-    budget = BudgetGuard(max_calls=2)
-    # A model-bearing stage that ALWAYS fails AFTER calling the model: each attempt spends a call.
+    # A shared guard: persists across drives so the call count accumulates across retry attempts.
+    shared_guard = BudgetGuard(max_calls=2)
+    s11_registry = ModelRegistry()
+    s11_registry.register_factory("default", lambda _g: BudgetGuardedModel(inner, shared_guard))
     work = _AlwaysFailAfterModelStage(retry_policy=_retryable_policy(max_attempts=10))
-    engine = _make_build_engine(_retry_pathways(work), budget=budget)(journal, model)
+    engine = Engine(
+        models=s11_registry,
+        journal=journal,
+        graph_store=InMemoryGraphStore(),
+        latent=InMemoryLatentStore(),
+        pathways=_retry_pathways(work),
+        clock=_CLOCK_AT_T0,
+    )
+    model = inner  # alias for the assertion below
 
     with pytest.raises(BudgetExceededError):
         state = await engine.run(

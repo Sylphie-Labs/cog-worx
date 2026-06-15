@@ -25,7 +25,7 @@ from cogworx.adapters.neo4j_entity_kg import Neo4jEntityKG
 from cogworx.claims.provenance import Claim, Provenance
 from cogworx.knowledge.evidence import make_evidence
 from cogworx.knowledge.identity import claim_id_for
-from cogworx.knowledge.scoped_kg import world_model, user_model
+from cogworx.knowledge.scoped_kg import user_model, world_model
 from cogworx.knowledge.scopes import ScopeRegistry
 from cogworx.knowledge.source_registry import SourceRegistry
 

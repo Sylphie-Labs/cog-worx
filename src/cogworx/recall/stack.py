@@ -114,9 +114,7 @@ class RecallStack:
                 return (
                     ch.name,
                     [],
-                    ChannelStatus(
-                        channel=ch.name, state="failed", count=0, error=repr(exc)
-                    ),
+                    ChannelStatus(channel=ch.name, state="failed", count=0, error=repr(exc)),
                 )
 
         outcomes = await asyncio.gather(*[_run_channel(ch) for ch in self._channels])
@@ -148,6 +146,8 @@ def default_recall_stack(
     latent_store: LatentStore | None = None,
     reranker: Reranker | None = None,
     k_rrf: int = _FACTORY_K_RRF,
+    latent_hot_first: bool = False,
+    latent_min_similarity: float = 0.80,
 ) -> RecallStack:
     """Build the standard 5-channel recall stack; omit channels whose store is None (S8 lesion).
 
@@ -164,6 +164,11 @@ def default_recall_stack(
             :class:`~cogworx.recall.channels.LatentDenseChannel`.
         reranker: Optional reranker; defaults to :class:`~cogworx.recall.rerank.NoopReranker`.
         k_rrf: RRF constant; defaults to :data:`~cogworx.recall.fusion.RRF_K_DEFAULT`.
+        latent_hot_first: Passed to :class:`~cogworx.recall.channels.LatentDenseChannel` as
+            ``hot_first``.  When ``True``, the channel applies the similarity-gated hot-first
+            composite (Pod 2.6).  Default ``False`` (tier-agnostic, S8/S12).
+        latent_min_similarity: Passed to :class:`~cogworx.recall.channels.LatentDenseChannel`
+            as ``min_similarity`` (τ threshold for the hot-first gate).  Default ``0.80``.
 
     Returns:
         A fully configured :class:`RecallStack`.
@@ -176,5 +181,11 @@ def default_recall_stack(
     if episode_store is not None:
         channels.append(EpisodeRecencyChannel(episode_store))
     if latent_store is not None:
-        channels.append(LatentDenseChannel(latent_store))
+        channels.append(
+            LatentDenseChannel(
+                latent_store,
+                hot_first=latent_hot_first,
+                min_similarity=latent_min_similarity,
+            )
+        )
     return RecallStack(channels, reranker=reranker, k_rrf=k_rrf)

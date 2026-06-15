@@ -40,6 +40,7 @@ from cogworx.loop.result import Degraded, Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import ChatMessage, ModelResponse
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import Journal
 from cogworx.testing.doubles import (
@@ -176,8 +177,10 @@ def _engine_factory(
     """Return a factory for Engine."""
 
     def build(journal: Journal, model: ReplayModel) -> Engine:
+        _reg = ModelRegistry()
+        _reg.register("default", model)
         return Engine(
-            model=model,
+            models=_reg,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
@@ -337,8 +340,10 @@ async def test_s5_kg_write_stage_output_carries_provenance() -> None:
     pathways.register(_PATHWAY_ID, _build_extraction_pathway(kg))
 
     model = echo_model("pluto has mass")
+    _reg = ModelRegistry()
+    _reg.register("default", model)
     engine = Engine(
-        model=model,
+        models=_reg,
         journal=InMemoryJournal(),
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -411,8 +416,10 @@ async def test_s8_lesion_entity_kg_write_disabled() -> None:
     pathways.register(_PATHWAY_ID, _build_extraction_pathway(kg, registry=registry))
 
     model = echo_model("pluto has mass")
+    _reg = ModelRegistry()
+    _reg.register("default", model)
     engine = Engine(
-        model=model,
+        models=_reg,
         journal=InMemoryJournal(),
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

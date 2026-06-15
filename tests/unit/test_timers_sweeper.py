@@ -36,6 +36,8 @@ from cogworx.model.base import (
     ModelTier,
     ToolSpec,
 )
+from cogworx.model.guarded import BudgetGuardedModel
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.runtime.sweeper import Sweeper
 from cogworx.substrate.journal import (
@@ -174,8 +176,10 @@ def _make_build_engine(
     pathways: PathwayRegistry, *, clock: Callable[[], datetime] = _CLOCK_AT_T0
 ) -> Callable[[Journal, ReplayModel], Engine]:
     def build(journal: Journal, model: ReplayModel) -> Engine:
+        _registry = ModelRegistry()
+        _registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
         return Engine(
-            model=model,
+            models=_registry,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
@@ -674,8 +678,10 @@ async def test_c5b_engine_pause_cas_lands_paused_then_unpause_completes() -> Non
 
     journal = InMemoryJournal()
     model = _GatedModel()
+    _r = ModelRegistry()
+    _r.register("default", model)
     engine = Engine(
-        model=model,
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -855,6 +861,9 @@ class _GatedModel:
         await self.gate.wait()
         return ModelResponse(text="post-wait answer", model_id="gated", finish_reason="stop")
 
+    def count_tokens(self, text: str) -> int:
+        return max(1, len(text) // 4)
+
 
 async def test_f6_concurrent_fire_timer_calls_model_exactly_once() -> None:
     """Two ``fire_timer`` on the SAME WAITING run -> model called ONCE, run COMPLETED, no dup index.
@@ -865,8 +874,10 @@ async def test_f6_concurrent_fire_timer_calls_model_exactly_once() -> None:
     """
     journal = InMemoryJournal()
     model = _GatedModel()
+    _r = ModelRegistry()
+    _r.register("default", model)
     engine = Engine(
-        model=model,
+        models=_r,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

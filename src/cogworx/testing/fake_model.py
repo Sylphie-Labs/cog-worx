@@ -7,7 +7,7 @@ re-call on replay). Generalized from tess ``StubLLMClient`` (tess/tess/llm.py:30
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -42,10 +42,12 @@ class ReplayModel:
         responses: Sequence[ModelResponse] = (),
         *,
         capabilities: ModelCapabilities | None = None,
+        token_counter: Callable[[str], int] | None = None,
     ) -> None:
         self._responses: list[ModelResponse] = list(responses)
         self._calls: list[ReplayCall] = []
         self._capabilities = capabilities or ModelCapabilities(structured_output=True, tools=True)
+        self._token_counter: Callable[[str], int] | None = token_counter
 
     @property
     def capabilities(self) -> ModelCapabilities:
@@ -72,6 +74,11 @@ class ReplayModel:
                 f"ReplayModel exhausted: no scripted response for call #{len(self._calls)}"
             )
         return self._responses.pop(0)
+
+    def count_tokens(self, text: str) -> int:
+        if self._token_counter is not None:
+            return self._token_counter(text)
+        return max(1, len(text) // 4)
 
     @property
     def calls(self) -> tuple[ReplayCall, ...]:

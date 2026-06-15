@@ -86,6 +86,8 @@ class Model(Protocol):
         json_schema: Mapping[str, Any] | None = None,
     ) -> ModelResponse: ...
 
+    def count_tokens(self, text: str) -> int: ...
+
 
 __all__ = [
     "ChatMessage",

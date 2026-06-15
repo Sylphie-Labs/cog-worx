@@ -155,9 +155,9 @@ def test_dropped_count_exact() -> None:
 
 def test_relevance_rank_admission_order() -> None:
     # k1 fits, k2 is too large (skipped), k3 fits — ranks should be 1 and 2
-    k1 = _result("k1", "a" * 4, fused_rank=1)    # approx_tokens = 1
+    k1 = _result("k1", "a" * 4, fused_rank=1)  # approx_tokens = 1
     k2 = _result("k2", "b" * 800, fused_rank=2)  # approx_tokens = 200 (skipped)
-    k3 = _result("k3", "c" * 4, fused_rank=3)    # approx_tokens = 1
+    k3 = _result("k3", "c" * 4, fused_rank=3)  # approx_tokens = 1
     ctx = assemble([k1, k2, k3], budget=10)
 
     by_key = {c.key: c for c in ctx.chunks}
@@ -288,9 +288,9 @@ def test_custom_token_counter_char_level() -> None:
     # Use char-level counter: len(s)
     char_counter = lambda s: len(s)  # noqa: E731
 
-    r1 = _result("k1", "hello", fused_rank=1)     # 5 chars
-    r2 = _result("k2", "world!", fused_rank=2)     # 6 chars
-    r3 = _result("k3", "x", fused_rank=3)          # 1 char
+    r1 = _result("k1", "hello", fused_rank=1)  # 5 chars
+    r2 = _result("k2", "world!", fused_rank=2)  # 6 chars
+    r3 = _result("k3", "x", fused_rank=3)  # 1 char
 
     # budget=6: "hello"(5) fits, "world!"(6) exceeds (5+6=11>6), "x"(1) fits (5+1=6)
     ctx = assemble([r1, r2, r3], budget=6, count_tokens=char_counter)

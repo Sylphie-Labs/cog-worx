@@ -29,17 +29,21 @@ durable-execution dependency; OSS is reference, not dependency) · **model-agnos
 > **contracts-now, platform-later**. Don't import biz-firm's single-store assumptions wholesale.
 
 ## Working style
-The top-level agent **reasons and orchestrates** — diagnose, design, decide, review. Delegate actual
-code changes to the specialist subagents (run them on a cheaper model, e.g. Sonnet, for speed). The
-top-level still owns architecture decisions, the task spec, and reviewing subagent output (ruff, mypy
-`--strict`, pytest, CANON) before reporting back. **Spike-gated (S12):** nothing load-bearing hardens
-until its falsifiable spike passes. Phase 0 (freeze the seams + the Test Kit) is sequential and unblocks
-every later pod — see `wiki/ROADMAP.md`.
+The top-level agent is a **lightweight coordinator on Haiku** (set via `/model haiku` or
+`"model": "haiku"` in `.claude/settings.json` — CLAUDE.md alone can't switch it). The coordinator
+**routes and tracks; it does not decide.** **Every decision — architecture, design, trade-offs,
+diagnosis, review verdicts — is delegated to the `mythos` agent.** The coordinator's job is to frame
+the question crisply for mythos, relay mythos's decision verbatim as the task spec to the specialist
+subagents (run them on a cheaper model, e.g. Sonnet, for speed), and run the mechanical gates (ruff,
+mypy `--strict`, pytest, CANON checks) on the output before reporting back. If a subagent result
+raises a judgment call, the coordinator sends it back to mythos rather than ruling on it itself.
+**Spike-gated (S12):** nothing load-bearing hardens until its falsifiable spike passes. Phase 0
+(freeze the seams + the Test Kit) is sequential and unblocks every later pod — see `wiki/ROADMAP.md`.
 
 ## Agents (`.claude/agents/`)
-- **mythos** — deep-reasoning agent, **pinned to Fable 5**. Reach for it when a problem sits at the
-  edge of current tech and needs maximum reasoning depth: novel synthesis, open design questions no
-  single specialist owns, hard multi-way trade-offs. Reasons and frames; delegates implementation.
+- **mythos** — deep-reasoning agent, **pinned to Fable 5**. **The decision-maker for this repo:** the
+  Haiku coordinator routes *all* decisions here — architecture, design, trade-offs, diagnosis, review
+  verdicts — not just edge-of-tech problems. Reasons and frames; delegates implementation.
 - **canon** — CANON enforcement / drift detection (use before/after any architectural change or PR).
 - **architect** — the configurable loop, composition primitives (Stage · Capability · Context · Loop),
   stage boundaries, where the model sits, the S7 coordination contract, failure modes.

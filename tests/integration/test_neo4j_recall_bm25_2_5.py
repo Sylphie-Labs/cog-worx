@@ -137,9 +137,7 @@ async def test_exact_term_match(kg: Neo4jEntityKG) -> None:
 
     assert len(results) >= 1, "Expected at least one result for 'photosynthesis'"
     top = results[0]
-    assert top.claim.id == matching.id, (
-        f"Expected matching claim first; got {top.claim.id!r}"
-    )
+    assert top.claim.id == matching.id, f"Expected matching claim first; got {top.claim.id!r}"
     assert top.text_score is not None and top.text_score > 0, (
         f"Expected text_score > 0; got {top.text_score}"
     )
@@ -269,23 +267,17 @@ async def test_as_of_filter(kg: Neo4jEntityKG) -> None:
     # as_of = T0 — past_claim is within its validity window → should appear
     results_t0 = await kg.claims_full_text("mercury", k=10, as_of=_T0)
     t0_ids = {sc.claim.id for sc in results_t0}
-    assert past_id in t0_ids, (
-        f"Past claim should be visible at T0; results: {t0_ids}"
-    )
+    assert past_id in t0_ids, f"Past claim should be visible at T0; results: {t0_ids}"
 
     # as_of = T2 — past_claim's valid_to (T1) has passed → must not appear
     results_t2 = await kg.claims_full_text("mercury", k=10, as_of=_T2)
     t2_ids = {sc.claim.id for sc in results_t2}
-    assert past_id not in t2_ids, (
-        f"Invalidated claim must not appear at T2; results: {t2_ids}"
-    )
+    assert past_id not in t2_ids, f"Invalidated claim must not appear at T2; results: {t2_ids}"
 
     # live_claim appears at T2 regardless
     results_live = await kg.claims_full_text("jupiter", k=10, as_of=_T2)
     live_ids = {sc.claim.id for sc in results_live}
-    assert live_claim.id in live_ids, (
-        f"Live claim must appear at T2; results: {live_ids}"
-    )
+    assert live_claim.id in live_ids, f"Live claim must appear at T2; results: {live_ids}"
 
 
 # ---------------------------------------------------------------------------

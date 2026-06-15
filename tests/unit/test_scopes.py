@@ -19,11 +19,9 @@ import pytest
 from cogworx.knowledge.scopes import (
     DEFAULT_SCOPE,
     Scope,
-    ScopeKind,
     ScopeRegistry,
     ScopeWriteToken,
 )
-
 
 # ---------------------------------------------------------------------------
 # U1 — Scope construction + scope_id derivation
@@ -46,7 +44,7 @@ def test_user_scope_id_nfc_normalised() -> None:
     """scope_id for user scopes uses NFC-normalised ref (same as SourceDeclaration convention)."""
     # café with combining acute vs precomposed — both should yield the same scope_id
     ref_decomposed = "café"  # e + combining acute
-    ref_precomposed = "café"   # precomposed é
+    ref_precomposed = "café"  # precomposed é
     s_dec = Scope(kind="user", ref=ref_decomposed)
     s_pre = Scope(kind="user", ref=ref_precomposed)
     assert s_dec.scope_id == s_pre.scope_id

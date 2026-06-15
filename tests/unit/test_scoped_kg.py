@@ -72,7 +72,8 @@ async def test_k1_world_and_user_claims_have_different_ids() -> None:
 
 
 async def test_k1_wm_get_claim_returns_world_claim() -> None:
-    """wm.get_claim(world_id) returns the claim; um.get_claim(world_id) returns None (view semantics)."""
+    """wm.get_claim(world_id) returns the claim; um.get_claim(world_id) returns None
+    (view semantics)."""
     kg = InMemoryEntityKG()
     registry = ScopeRegistry()
     source = _source_decl()
@@ -433,7 +434,6 @@ async def test_k6_invalidate_same_scope_succeeds() -> None:
     registry = ScopeRegistry()
     source = _source_decl()
     # Construct ScopedKG directly so we can inject the fixed clock.
-    from cogworx.knowledge.scopes import ScopeWriteToken
     token = registry.claim_write_token("world", owner="agent-w")
     wm = ScopedKG(kg, token, _clock=_CLOCK)
 

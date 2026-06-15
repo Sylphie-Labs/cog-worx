@@ -17,6 +17,7 @@ from cogworx.loop.pathway import PathwayRegistry
 from cogworx.loop.result import Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Clock, Engine
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
 from cogworx.testing.fake_model import ReplayModel
@@ -103,8 +104,11 @@ async def test_unbounded_cycle_terminates_failed_at_step_ceiling() -> None:
     """An unbounded cyclic pathway is FAILED at a small ``max_steps`` and emits ``RUN_FAILED``."""
     sink: list[Event] = []
     max_steps = 8
+    _model = ReplayModel([])
+    _reg = ModelRegistry()
+    _reg.register("default", _model)
     engine = Engine(
-        model=ReplayModel([]),  # the cycle is model-free; any model call would exhaust.
+        models=_reg,
         journal=InMemoryJournal(),
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

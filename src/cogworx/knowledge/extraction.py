@@ -79,7 +79,8 @@ def validate_raw_model_json(raw: Any) -> list[RawClaimItem]:
     Raises ValueError on schema mismatch (raw not a dict, or raw['claims'] not a list) — the
     caller (ClaimExtractor._extract_session) does not catch ValueError, so this stalls the
     cursor (fail-stall, D6).
-    Drops individual items missing required fields (subject, predicate, object, supporting_turn_index).
+    Drops individual items missing required fields
+    (subject, predicate, object, supporting_turn_index).
     supporting_turn_index must be a non-negative integer.
     """
     if not isinstance(raw, dict):

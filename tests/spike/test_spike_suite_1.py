@@ -61,6 +61,7 @@ from cogworx.loop.result import Degraded, Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import ChatMessage, ModelResponse
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import (
     Journal,
@@ -295,8 +296,10 @@ def _make_build_engine(pathways: PathwayRegistry) -> Callable[[Journal, ReplayMo
     # B share this factory's registry, so engine B rehydrates the graph from the run's stored
     # pathway pointer — true cold resume, no in-process graph carried.
     def build(journal: Journal, model: ReplayModel) -> Engine:
+        registry = ModelRegistry()
+        registry.register("default", model)
         return Engine(
-            model=model,
+            models=registry,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
@@ -428,8 +431,11 @@ async def _make_recall_engine(
     )
     pathways = PathwayRegistry()
     pathways.register(_SPIKE_RECALL_PATHWAY_ID, _build_recall_graph())
+    _recall_model = ReplayModel([])  # the recall graph is model-free; any model call would exhaust.
+    _recall_reg = ModelRegistry()
+    _recall_reg.register("default", _recall_model)
     engine = Engine(
-        model=ReplayModel([]),  # the recall graph is model-free; any model call would exhaust.
+        models=_recall_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=latent,
@@ -762,8 +768,10 @@ async def test_criterion_4_cyclic_per_visit_durability_cold_resume(
         crash_journal = _CrashAfterStageVisitJournal(
             inner=journal, crash_after_stage="work", crash_after_visit=2
         )
+        _reg_a = ModelRegistry()
+        _reg_a.register("default", scripted)
         engine_a = Engine(
-            model=scripted,
+            models=_reg_a,
             journal=crash_journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
@@ -797,8 +805,10 @@ async def test_criterion_4_cyclic_per_visit_durability_cold_resume(
 
         # --- Engine B: a FRESH engine, SAME registry + SAME real journal, ZERO-response model. ---
         zero_model = ReplayModel([])  # any model re-call on resume raises ReplayExhaustedError.
+        _reg_b = ModelRegistry()
+        _reg_b.register("default", zero_model)
         engine_b = Engine(
-            model=zero_model,
+            models=_reg_b,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),
@@ -884,8 +894,11 @@ async def test_criterion_4b_step_ceiling_fails_runaway_on_real_timescale(
         _SPIKE_RUNAWAY_PATHWAY_ID,
         StageGraph([_LivePingStage(), _LivePongStage(), _LiveStopStage()], entry="ping"),
     )
+    _runaway_model = ReplayModel([])  # the cycle is model-free; any model call would exhaust.
+    _runaway_reg = ModelRegistry()
+    _runaway_reg.register("default", _runaway_model)
     engine = Engine(
-        model=ReplayModel([]),  # the cycle is model-free; any model call would exhaust.
+        models=_runaway_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

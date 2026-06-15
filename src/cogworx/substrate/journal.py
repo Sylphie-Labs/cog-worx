@@ -85,6 +85,13 @@ class ProjectedStep(BaseModel):
 
 
 class RunState(BaseModel):
+    """Contract changelog: 2026-06-12 (Pod 3.2 B1): added ``tainted: bool = False`` — additive
+    (defaulted field on a frozen value type). NOTE: the companion ``Journal.set_run_tainted`` method
+    is a NEW PROTOCOL MEMBER — C3-**breaking**, handled via the §6 amendment path: **Jim-approved
+    this session** (durable lethal-trifecta taint, S10+S6).
+    Recorded breaking-but-approved for audit.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     run_id: str
@@ -95,6 +102,7 @@ class RunState(BaseModel):
     pathway_fingerprint: str
     current_stage: str | None = None
     steps: tuple[StepRecord, ...] = ()
+    tainted: bool = False
 
 
 class Timer(BaseModel):
@@ -195,6 +203,19 @@ class Journal(Protocol):
         ...
 
     async def load_run(self, run_id: str) -> RunState | None: ...
+
+    async def set_run_tainted(self, run_id: str) -> None:
+        """Idempotent monotonic flip of the run's ``tainted`` flag to ``True`` (S6 ordering).
+
+        A single unconditional ``UPDATE … SET tainted = true WHERE run_id = …`` — writing
+        ``True`` when already ``True`` is a no-op at the row level (no CAS needed; monotonic
+        from False to True only).  If the run is unknown this silently does nothing.
+
+        MUST be awaited BEFORE ``cap.invoke`` in ``dispatch_one`` so that a crash between the
+        journal write and the invocation leaves the run correctly tainted on resume (fail-closed:
+        the journal write failing propagates without invoking the tool).
+        """
+        ...
 
     async def set_timer(self, timer: Timer) -> None:
         """Arm a durable timer; idempotent on ``timer_id`` (a re-armed ``Wait`` is a no-op)."""

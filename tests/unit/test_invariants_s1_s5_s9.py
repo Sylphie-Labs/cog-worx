@@ -21,6 +21,7 @@ from cogworx.loop.result import Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import ChatMessage, ModelResponse
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import Journal
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
@@ -47,8 +48,10 @@ def _engine_factory(pathways: PathwayRegistry) -> EngineFactory:
     is what makes a cold resume (engine B rehydrating the graph from the registry) work."""
 
     def build(journal: Journal, model: ReplayModel) -> Engine:
+        reg = ModelRegistry()
+        reg.register("default", model)
         return Engine(
-            model=model,
+            models=reg,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),

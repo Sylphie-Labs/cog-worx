@@ -172,9 +172,7 @@ async def test_before_filter_exclusive(store: PgEpisodeStore) -> None:
 
 async def test_before_none_returns_all(store: PgEpisodeStore) -> None:
     """before=None applies no upper-bound filter and returns all episodes up to limit."""
-    episodes = [
-        _episode(episode_id=f"r1:{i}:0", step_index=i, turn_index=0) for i in range(4)
-    ]
+    episodes = [_episode(episode_id=f"r1:{i}:0", step_index=i, turn_index=0) for i in range(4)]
     await _project(store, episodes, step_index=3)
 
     result = await store.recent_episodes("sess-1", before=None)
@@ -188,9 +186,7 @@ async def test_before_none_returns_all(store: PgEpisodeStore) -> None:
 
 async def test_limit_cap(store: PgEpisodeStore) -> None:
     """limit=2 returns exactly the 2 most recent episodes."""
-    episodes = [
-        _episode(episode_id=f"r1:{i}:0", step_index=i, turn_index=0) for i in range(5)
-    ]
+    episodes = [_episode(episode_id=f"r1:{i}:0", step_index=i, turn_index=0) for i in range(5)]
     await _project(store, episodes, step_index=4)
 
     result = await store.recent_episodes("sess-1", limit=2)

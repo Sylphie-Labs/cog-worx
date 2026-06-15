@@ -211,11 +211,28 @@ already done in biz-firm, so this is port + generalize.
 >   rerank seam → token-budget assembly with lost-in-the-middle ordering (per biz-firm c3/c1).
 > - **Pod 2.6 — Memory injection.** Per-stage recall riding 2.5 into `StageContext` (token-budget,
 >   minimum-source guarantees; sylphie activation/budget math as reference).
-> - **Pod 2.7 — Coherence reconciler.** Async/batched, dirty-subject queue; embedding pre-filter →
->   specificity check → MUS+QuickXplain judge seam; AGM entrenchment ordering; `SUPERSEDES` +
->   `defeasibly-defeated` status — **surface, never silently delete** (per biz-firm c2). Owns the
->   **explicit epistemic-upgrade surface** (2.0 carry-forward: stored levels are first-write-wins
->   until promotion-with-provenance lands here).
+> - **Pod 2.7 — Coherence reconciler — DONE** ✅ (CANON-COMPLIANT, red-team-hardened, 1012 unit+spike tests green):
+>   Neo4j-resident dirty-subject queue (MERGE-in-same-txn as claim writes, epoch-guarded clear);
+>   `CoherenceReconciler` sweeper (4-stage pipeline: eligibility gate → oracle → QuickXplain MUS →
+>   AGM resolution); `SUPERSEDES` + `defeasibly-defeated` — surface, never delete (per biz-firm c2);
+>   **explicit epistemic-upgrade surface** (`epistemic_upgrade` — monotonic ladder, first-hand-evidence-
+>   gated, audit-noded); **`ScopePromoter`** (CF-4: structural-rules-only agent→world/user routing,
+>   S9-clean); `ModelConsistencyOracle` (binary flash-tier, constrained decoding, S4); `find_mus`
+>   (Junker-2004 QuickXplain, call-bounded, verification-gated); `decide_resolution` (two-mode AGM
+>   decision table — update-supersession vs revision-defeat, lexicographic entrenchment dominance,
+>   LCB margin gate, confirmed-vs-confirmed always escalates). Spike SC-1–SC-7 PASS (813 unit tests
+>   green). **Carry-forwards:** CF-A (reopening resolved adjudications when evidence flips
+>   entrenchment); CF-B (defeated-status down-weighting in 2.5 rerank + 2.6 injection); CF-C
+>   (cross-scope contradiction — v1 reconciles within one scope cell); CF-D (structured-scope
+>   specificity; full c2 step 2 deferred until payloads gain scope annotations); CF-F (cross-process
+>   reconciler exclusion → ops pod); CF-G (cross-predicate no-embedding pairs skipped-and-counted);
+>   neo4j adapter: `current_epistemic_level` + normalized `claims_about` query (needed before live
+>   integration tier uses `Neo4jEntityKG` as `CoherenceStore`). Red-team caught + fixed 2 CRITICAL and 4 HIGH before VALIDATED:
+>   ① inverted `EPISTEMIC_RANK` in both store impls (inference→observation upgrades silently failed);
+>   ② UPDATE MODE bypassed `confirmed-vs-confirmed` escalation (auto-defeated confirmed claims via
+>   temporal supersession); ③ SC-2 vacuous on false-positive noise path (added consistent-set-under-
+>   noise test); ④ SC-4 mutation-non-resistant (added `escalation_reason` pin); ⑤ promotion non-atomic
+>   (documented at-least-once self-healing pattern + test; matches ClaimExtractor D6 posture).
 
 - [x] **Procedural KG** (Neo4j) · **Entity KG** (Neo4j) *(entity KG = Pod 2.0 ✅ DONE · procedural
       = Pod 2.1 ✅ DONE — validated 2026-06-10: derive-at-read posterior, trial-as-projection of the
@@ -232,21 +249,134 @@ already done in biz-firm, so this is port + generalize.
       Spike SC-1–SC-7 PASS. Red-team PASS (4 MEDs carried forward: fuse-outside-try, fused_rank semantics,
       SC-2 tautological neg-controls, naive-datetime in validity filter; CF-1 S1 transitive import via
       loop/__init__ — fix requires moving StageResult outside cogworx.loop entirely, architect scope).)*
-- [ ] **Memory injection** *(Pod 2.6)*
+- [x] **Memory injection** *(Pod 2.6 — VALIDATED 2026-06-10, spike SC-1–SC-8 PASS, red-team PASS)*
 - [x] **Conversation extraction / classification / storage** *(Pod 2.3 ✅ DONE — see above)*
-- [ ] **Coherence** — async/batched reconciler; **surface, don't silently delete** *(Pod 2.7)*
-- [ ] **⛓ Spike** — recall-quality eval (LongMemEval-style) + provenance/epistemic-typing invariant (S5)
+- [x] **Coherence** — async/batched reconciler; **surface, don't silently delete** *(Pod 2.7 ✅ DONE — VALIDATED 2026-06-10)*
+- [x] **⛓ Spike** — recall-quality eval (LongMemEval-style) + provenance/epistemic-typing invariant (S5)
+      ✅ **PASSED 2026-06-10** (1065 unit+spike tests green, red-team-hardened). Gate scenarios GE-1–GE-10
+      (single-hop, multi-session, temporal, contradiction/reconciler, revision-defeat pin, graph multihop,
+      scope isolation, RRF-beats-noise, aggregation, end-to-end injection); S5 storm across all 5 Phase 2
+      write surfaces; S8 lesion (no-injector discriminable + partial substrate + dead channel); nDCG@5/MRR
+      = 1.000 on deterministic fixture (baseline for nightly real-embedding eval, recorded as carry-forward
+      in Ops · Eval harness). Red-team caught + fixed 4 structural failures before VALIDATED: ① GE-8/GE-2
+      tested scope filtering not RRF (fixed: scope=None queries, pairwise C1>DX); ② dense channel
+      `_validity_filter` one-sided (fixed: added `valid_from ≤ as_of` guard + GE-3 C3-absent assertion);
+      ③ GE-4 absence conditional bypass (fixed: unconditional + valid_to assertion); ④ GE-10 U-fold and S1
+      assertions trivially true (fixed: back-edge rank-2 pin + FailOnCallModel structural guard).
+      **Phase 2 is COMPLETE. Phase 3 is unblocked.**
 
 ---
 
 ## Phase 3 — Cognition (per step)
 
-- [ ] **Model routing** — per-agent provider selection, graceful capability degradation (S4)
-- [ ] **Context assembly** — per-stage, token budget, lost-in-the-middle ordering
-- [ ] **Capabilities** — permission-tiered tools, **tool routing in code** (not model-as-text), **MCP**
-- [ ] **Personality injection**
-- [ ] **Internal unbreakable rules**
-- [ ] **⛓ Spike** — structured-output reliability + security-by-structure (S10) + cost guards (S11)
+> **Pod plan (mythos, 2026-06-11):** 3.0 model routing + capability surface (the substrate every other
+> Phase-3 pod calls through) → 3.1 context assembly → (3.2 capabilities ∥ 3.3 personality) → 3.4 internal
+> unbreakable rules → ⛓ gate spike. See memory `cogworx-phase3-architecture` + session logs.
+
+> **Pod 3.0 (model routing + capability surface) — CODE-COMPLETE, CANON-COMPLIANT WITH CONCERNS**
+> (2026-06-11, red-team-hardened, 968 unit tests green; **NOT yet HARDENED — the S12 structured-output
+> live-provider spike has not run**): per-agent provider selection over the frozen Phase-0 `Model` seam.
+> Delivered as sub-pods — **3.0a-1** CF-1 de-cycle of `cogworx.loop` (PEP-562 lazy `__getattr__`;
+> resolves the Pod 2.5/2.6 `StageResult` cycle); **3.0a-2** `BudgetGuardedModel` (S11 chokepoint, exact
+> pre-call call-ceiling via `start_call` reserve-then-increment); **3.0b** `StructuredOutputModel` ladder
+> (native → constrained-decoding → schema-validated-retry, EVERY rung jsonschema-validated framework-side
+> — S9; rung selection by capability flag only — S4); **3.0c** `ClaudeModel` + shared `ProviderConfig`/
+> `PriceTable`; **3.0d** `OpenAICompatModel` (OpenAI/DeepSeek/Ollama via `base_url`, static capabilities
+> required — never probed); **3.0e** `ModelRegistry` + `build_model` (`StructuredOutputModel(BudgetGuarded
+> Model(adapter, guard))`). Red-team caught + fixed a CRITICAL (Claude structured-output left `text=None`
+> → ladder raised on every schema call; adapter now unwraps the synthetic tool call) and 3 HIGH (first
+> over-budget USD call slipped through → fail-fast + default estimator; failed calls weren't counted →
+> pre-call slot reservation; adapter/ladder double-mechanism → ladder-owns-validation ruling).
+> **Carry-forwards:** ① **engine-integration — ✅ RESOLVED 2026-06-11:** engine takes `ModelRegistry` +
+> `model_profile` + `BudgetPolicy`, mints a fresh per-run guard in `_build_context` via
+> `registry.assemble → build_model` (ladder now on the engine path — **S9 gap closed**); engine-side wrap
+> deleted; price table made optional (`ZERO_PRICE_TABLE`); 15 call sites migrated; 69 `tests/` ruff errors
+> fixed; 970 tests green. **Engine rewrite red-teamed 2026-06-12 → F1/F2/F3 fixed:** F1 single
+> `_build_context` per drive (`start()`/`pause()` use an engine-level emit, no ghost guard); F2 honest
+> `BudgetPolicy.max_*_per_drive` naming + **CANON S11 clarified** (drive-segment is the hard unit; per-run
+> cumulative = CF-3.0-B, Jim-approved); F3 de-vacuified engine tests (`register_factory` live guard) +
+> new end-to-end proofs that the ladder validates a schema call AND the budget enforces on the engine
+> drive path. ② guard accounting (concurrent-USD reservation, cross-resume durability, failed-call cost —
+> CF-3.0-B, now a scheduled item per the S11 clarification); ③ real cost estimator + Anthropic
+> `output_format` beta; ④ **open for Jim:** ~~C3 rule~~ ✅ ratified into **CANON §6.1**; ~~price-table~~
+> ✅ opt-in; ~~S11 letter-gap~~ ✅ clarified; ⑤ ~~`tests/` ruff debt~~ ✅ fixed.
+
+> **Pod 3.1 (context assembly) — DONE** ✅ (2026-06-12, mythos-designed, CANON-COMPLIANT, red-team-
+> hardened over two passes): new `cogworx/context/` package that **composes** (not subsumes) the Pod-2.6
+> `MemoryInjector` as one slot. Banded U-fold layout (head=rules/personality/instructions → one system
+> msg · body=memory → one user msg · tail=task · tools out-of-band but token-counted); necessity classes
+> (required/preferred/evictable) with two-phase budget arbitration — **rules + task NEVER evict**
+> (over-budget on required → loud `ContextBudgetError`), personality dropped whole, tools dropped
+> per-tool. Sub-pods 3.1a types · 3.1b CF-B defeated-claim exclusion · 3.1c four contributors · 3.1d
+> assembler core · 3.1e wiring into `StageContext` + engine `_build_context` (**D8 BREAKING StageContext
+> Protocol addition — Jim-approved via /update-canon**) · 3.1f spike — all ✅. **Red-team caught + fixed 2
+> blockers before VALIDATED:** ① HIGH — the S8 unwired degrade path bypassed the S11 budget guard (same
+> over-budget input the wired path rejected shipped silently → now raises `ContextBudgetError` with the
+> real token counter on every path); ② MED — SC-3 didn't actually exercise U-fold (a `recall/assembly.py`
+> pass-through lesion survived the whole 3.1 suite → added a real-injector ≥3-chunk positional test that
+> fails under the lesion; 3.1 owns order-preservation-through-the-pipeline, the algorithm is owned at Pod
+> 2.5). Re-validation PASS. Carry-forwards: CF-3.1-Episode-echo (defeated-fact echoed via an Episode —
+> pinned, deferred); tool-token wire-format accounting → handed to Pod 3.2.
+
+> **Pod 3.2 (capabilities) — DONE** ✅ (2026-06-12, mythos-designed, CANON-COMPLIANT WITH CONCERNS,
+> red-team-hardened over two passes): permission-tiered **code-routed** tools (S10) on the Phase-0
+> `capability/` seam — **fully additive, zero frozen-seam changes**. `ToolGate` = one object, two
+> checkpoints (`exposed_specs` filters by tier; `check_dispatch` re-checks at call time — both off one
+> `effective_tiers`, so they can't drift) + a **taint latch** (once untrusted content enters the drive,
+> `external` is structurally removed). `dispatch_one` chokepoint shared by `route_tool_calls` and
+> `RunContext.dispatch`: ①tier ②jsonschema-validate ③taint+persist ④invoke; `run_tool_loop` with a hard
+> `ToolLoopLimit` (S11). MCP (`bind_mcp_tools`) tiers by **framework policy** (default external +
+> `untrusted-source` tag), NEVER server self-declaration (S9); opt-in `cogworx[mcp]` extra, core never
+> imports it. Sub-pods 3.2a policy/gate · 3.2b router · 3.2c wiring (`RegistryToolContributor` +
+> `bind_tool_policy`, concrete-only, no Protocol break) · 3.2d MCP · 3.2e spike (SC-1…SC-8) — all ✅.
+> **Red-team caught + fixed 3 S10 blockers before VALIDATED:** ① CRITICAL — taint wasn't durable; every
+> resume/timer/await-human reset the trifecta latch (proven post-park exfil) → **mythos revoked its own
+> CF-2 deferral**; fixed with an **additive S6 Journal seam** `RunState.tainted` + `set_run_tainted`
+> (monotonic, written BEFORE invoke = fail-closed, rehydrated on resume; **Jim-approved seam change** —
+> C3-breaking Protocol member via the §6 path); ② HIGH — MCP registered raw server schemas (model-injected
+> keys reached `call_tool`) → recursive `harden_input_schema` shared by native + MCP paths; ③ MED — taint
+> latched after invoke returned → reordered to latch-before-invoke. SC-2b durable-taint spike proves the
+> bit survives to a **fresh engine sharing only the journal**. Carry-forwards: **CF-3.2-B** (untagged
+> read-tier ingestion doesn't taint — tag-at-ingest deferred to architect); **Timescale `set_run_tainted`
+> impl** before Pod 3.0 live integration; CF-3.1-TOKENS (tool-token wire-format, xfail). **Open infra
+> ticket:** the full `tests/spike` tier has a pre-existing cross-test resource leak (each spike passes in
+> isolation; the combined tier wedges) — all runs are `timeout`-wrapped, single-file. See session log
+> `docs/sessions/2026-06-12-phase-3-pod-3.2.md`.
+
+- [x] **Model routing** — per-agent provider selection, graceful capability degradation (S4)
+      *(Pod 3.0 ✅ code-complete — see above; HARDENING pending the S12 live-provider spike)*
+- [x] **Context assembly** — per-stage, token budget, lost-in-the-middle ordering *(Pod 3.1 ✅ DONE —
+      VALIDATED 2026-06-12, red-team-hardened; see above)*
+- [x] **Capabilities** — permission-tiered tools, **tool routing in code** (not model-as-text), **MCP**
+      *(Pod 3.2 ✅ DONE — VALIDATED 2026-06-12, red-team-hardened over two passes; durable lethal-trifecta
+      taint; see above)*
+- [x] **Personality injection** *(Pod 3.3 ✅ DONE — VALIDATED 2026-06-13, red-team-hardened: F1/F2/F3
+      newline-injection guard extended to ALL string fields via _NEWLINE_CHARS frozenset;
+      SC-1–SC-8 PASS, 56 unit+spike tests green)*
+- [x] **Internal unbreakable rules** *(Pod 3.4 ✅ DONE — VALIDATED 2026-06-13, red-team-hardened: `Rule`+`RuleSet`+`render_rules`+`RulesContributor` in `context/rules.py`; shared `context/_text.py` guard (NEL U+0085 added; personality.py refactored to import from it); Engine `rules=` kwarg; assembler required-slot empty-chunk guard → `ContextAssemblyError`; SC-1–SC-9 + contract-violation sub-test PASS. Red-team fixed HIGH (assembler contract gap), MED (NEL missing from newline guard), LOW (stale docstring). 1391 unit+spike tests green.)*
+- [x] **⛓ Spike** — structured-output reliability + security-by-structure (S10) + cost guards (S11)
+      ✅ **VALIDATED 2026-06-12** (1387 deterministic tests green, red-team-hardened over two passes;
+      live-provider + live-Postgres tiers implemented and ruff+mypy clean, require `ANTHROPIC_API_KEY`
+      + docker-compose stack). **Source changes (all additive, Jim-approved via §6):**
+      ① `timescale_journal.py` — `tainted` column + migration, `set_run_tainted`, `load_run` rehydration
+      fix (critical: without this, every fresh-engine resume laundered the taint); ② `policy.py` —
+      `ApprovalRequired` exception + `ToolGate.check_approval` (tainted ∧ consequential ∧ irreversible ∧
+      ¬approved → raise, S10); ③ `router.py` — `approved=False` kwarg on `dispatch_one`; `ApprovalRequired`
+      re-raises in `route_tool_calls` (NEVER ToolResult — model must not receive approval feedback it could
+      negotiate with, S9); ④ `runtime/context.py` — `dispatch_approved` concrete-only on `RunContext`
+      (NOT Protocol — stages type-narrow with `assert isinstance(ctx, RunContext)`, S9/S10). **Test
+      tiers:** SC-J1–J5 (taint journal contract, 5 unit tests) · SC-U1–U6 (approval gate truth table +
+      no-self-approve, 14 unit tests) · SC-1–SC-8 (assembled cognition + safety posture, 33 spike tests,
+      deterministic, ReplayModel) · SC-9–SC-12 (structured-output rung wire format + S10 live injection +
+      S11 real-spend + CF-3.1-TOKENS 3× band, 10 live-provider tests) · SC-13–SC-15 (durable taint +
+      HITL approval end-to-end on real Postgres, 12 live-substrate tests incl. engine-death + crash-window
+      + duplicate-answer + H3 `resume()` paths). **Carry-forwards: CF-3.5-A** (journaled one-shot
+      approval token — deferred; `approved=True` is a trusted-stage assertion, same trust class as CF-1
+      in Pod 2.4); **CF-3.1-TOKENS** (tool-token wire-format fix; SC-12 3× catastrophe band is the
+      regression catch). **One design finding surfaced by SC-15:** finish stages that call `dispatch_approved`
+      must explicitly declare `tool_policy = StageToolPolicy(allowed_tiers=frozenset({"external"}),
+      taint_drops_external=False)` — without it `check_dispatch` blocks `dispatch_approved`; architect
+      scope (HITL approval stage is a special trust boundary). **Phase 3 is COMPLETE. Phase 4 is unblocked.**
 
 ---
 

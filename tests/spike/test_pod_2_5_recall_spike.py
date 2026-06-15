@@ -65,15 +65,8 @@ import pytest
 from cogworx.claims.provenance import DEFAULT_SCOPE, Claim, Provenance
 from cogworx.knowledge.evidence import make_evidence
 from cogworx.knowledge.identity import claim_id_for
-from cogworx.recall.assembly import approx_tokens, assemble
-from cogworx.recall.channels import (
-    ClaimDenseChannel,
-    ClaimGraphChannel,
-    ClaimTextChannel,
-    EpisodeRecencyChannel,
-    LatentDenseChannel,
-)
-from cogworx.recall.fusion import RRF_K_DEFAULT, fuse
+from cogworx.recall.assembly import assemble
+from cogworx.recall.fusion import fuse
 from cogworx.recall.query import RecallQuery
 from cogworx.recall.results import ChannelHit, FusedResult
 from cogworx.recall.stack import RecallStack, default_recall_stack
@@ -95,6 +88,7 @@ _OLDEST = datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_evidence():
     return make_evidence(
@@ -167,9 +161,7 @@ _LATENT_PAYLOAD_TEXT = "latent context snippet"
 
 # Episode (temporal-relevant)
 _SESSION_ID = "session_spike"
-_EPISODE_IDS = [
-    f"run-spike:1:{i}" for i in range(3)
-]
+_EPISODE_IDS = [f"run-spike:1:{i}" for i in range(3)]
 
 # Distractor claims: don't match any channel-exclusive criteria
 _DISTRACTORS = [
@@ -179,30 +171,22 @@ _DISTRACTORS = [
 ]
 
 
-async def _build_corpus() -> tuple[
-    InMemoryEntityKG, InMemoryEpisodeStore, InMemoryLatentStore
-]:
+async def _build_corpus() -> tuple[InMemoryEntityKG, InMemoryEpisodeStore, InMemoryLatentStore]:
     """Build the channel-exclusive corpus on in-memory doubles."""
     kg = InMemoryEntityKG()
     episode_store = InMemoryEpisodeStore()
     latent_store = InMemoryLatentStore(clock=lambda: _NOW)
 
     # Dense-only claim (embedding near Q_dense; no rare terms; no anchor entity)
-    dense_claim = _make_claim(
-        _DENSE_SUBJECT, _DENSE_PREDICATE, _DENSE_PAYLOAD, _DENSE_EMBEDDING
-    )
+    dense_claim = _make_claim(_DENSE_SUBJECT, _DENSE_PREDICATE, _DENSE_PAYLOAD, _DENSE_EMBEDDING)
     await kg.write_claim(dense_claim, evidence=_make_evidence())
 
     # BM25-only claim (unique token; embedding far from all queries)
-    bm25_claim = _make_claim(
-        _BM25_SUBJECT, _BM25_PREDICATE, _BM25_PAYLOAD, _BM25_EMBEDDING
-    )
+    bm25_claim = _make_claim(_BM25_SUBJECT, _BM25_PREDICATE, _BM25_PAYLOAD, _BM25_EMBEDDING)
     await kg.write_claim(bm25_claim, evidence=_make_evidence())
 
     # Graph-only claim (anchored to anchor_entity_A; no rare terms; embedding far from queries)
-    graph_claim = _make_claim(
-        _GRAPH_SUBJECT, _GRAPH_PREDICATE, _GRAPH_PAYLOAD, _GRAPH_EMBEDDING
-    )
+    graph_claim = _make_claim(_GRAPH_SUBJECT, _GRAPH_PREDICATE, _GRAPH_PAYLOAD, _GRAPH_EMBEDDING)
     await kg.write_claim(graph_claim, evidence=_make_evidence())
 
     # Distractor claims (don't exclusively match any channel)
@@ -247,6 +231,7 @@ async def _build_corpus() -> tuple[
         ),
     ]
     from cogworx.substrate.journal import ProjectionCursor
+
     cursor = ProjectionCursor(commit_ordinal=1, run_id="run-spike", step_index=1)
     await episode_store.project_episodes("spike-consumer", episodes, cursor)
 
@@ -265,6 +250,7 @@ async def _build_corpus() -> tuple[
 # ---------------------------------------------------------------------------
 # Recall helpers
 # ---------------------------------------------------------------------------
+
 
 def _dense_claim_key() -> str:
     return f"claim:{claim_id_for(_DENSE_SUBJECT, _DENSE_PREDICATE, _DENSE_PAYLOAD)}"
@@ -333,7 +319,13 @@ async def test_sc1_rrf_beats_best_single_channel() -> None:
         ),
     ]
 
-    channel_names = ["dense.claims", "bm25.claims", "graph.claims", "temporal.episodes", "dense.latent"]
+    channel_names = [
+        "dense.claims",
+        "bm25.claims",
+        "graph.claims",
+        "temporal.episodes",
+        "dense.latent",
+    ]
 
     fused_recalls: list[float] = []
     # per channel: list of recall@10 across all queries
@@ -347,7 +339,9 @@ async def test_sc1_rrf_beats_best_single_channel() -> None:
         # Single-channel runs: each channel alone through fuse
         for ch_name in channel_names:
             ch_obj = next(
-                c for c in stack._channels if c.name == ch_name  # type: ignore[attr-defined]
+                c
+                for c in stack._channels
+                if c.name == ch_name  # type: ignore[attr-defined]
             )
             if not ch_obj.can_serve(query):
                 single_channel_recalls[ch_name].append(0.0)
@@ -366,7 +360,8 @@ async def test_sc1_rrf_beats_best_single_channel() -> None:
 
     assert macro_fused >= best_single, (
         f"SC-1 FAIL: fused macro Recall@10={macro_fused:.3f} < "
-        f"best single channel={best_single:.3f} ({max(macro_per_channel, key=macro_per_channel.get)})"
+        f"best single channel={best_single:.3f} "
+        f"({max(macro_per_channel, key=macro_per_channel.get)})"
     )
     assert best_single < 1.0, (
         f"SC-1 FAIL: best single channel Recall@10={best_single:.3f} == 1.0 — "
@@ -375,7 +370,8 @@ async def test_sc1_rrf_beats_best_single_channel() -> None:
 
 
 async def test_sc1_negative_control_single_channel_below_fused() -> None:
-    """Negative control: running only the dense channel in isolation scores <= fused on the BM25 query.
+    """Negative control: running only the dense channel in isolation scores <= fused on the
+    BM25 query.
 
     The dense channel cannot retrieve the BM25-exclusive item by cosine (orthogonal embedding),
     so the single-channel score must be 0.0 for that query while fused can get it via BM25.
@@ -404,11 +400,13 @@ async def test_sc1_negative_control_single_channel_below_fused() -> None:
 
     # Fused gets the BM25 item; dense-alone does not
     assert r_fused >= r_single_dense, (
-        f"SC-1 negative control: fused={r_fused} should be >= dense-solo={r_single_dense} on BM25 query"
+        f"SC-1 negative control: fused={r_fused} should be >= "
+        f"dense-solo={r_single_dense} on BM25 query"
     )
     # The critical assertion: dense alone misses the BM25-exclusive item
     assert r_single_dense == 0.0, (
-        f"SC-1 negative control: dense-solo should score 0.0 on BM25-exclusive item, got {r_single_dense}"
+        f"SC-1 negative control: dense-solo should score 0.0 on BM25-exclusive item, "
+        f"got {r_single_dense}"
     )
 
 
@@ -535,11 +533,19 @@ async def test_sc2_negative_control_unrelated_lesion_has_no_effect() -> None:
     # (query, relevant_key, channel_to_remove_for_negative_control)
     cases = [
         # Dense query: remove temporal (unrelated)
-        (RecallQuery(embedding=(1.0, 0.0, 0.0, 0.0), k=20), _dense_claim_key(), "temporal.episodes"),
+        (
+            RecallQuery(embedding=(1.0, 0.0, 0.0, 0.0), k=20),
+            _dense_claim_key(),
+            "temporal.episodes",
+        ),
         # BM25 query: remove graph (unrelated; graph can't serve text-only query anyway)
         (RecallQuery(text="xyzzy_unique_token", k=20), _bm25_claim_key(), "graph.claims"),
         # Graph query: remove temporal (unrelated)
-        (RecallQuery(anchor_entities=("anchor_entity_A",), k=20), _graph_claim_key(), "temporal.episodes"),
+        (
+            RecallQuery(anchor_entities=("anchor_entity_A",), k=20),
+            _graph_claim_key(),
+            "temporal.episodes",
+        ),
         # Temporal query: remove dense.latent (unrelated)
         (RecallQuery(session_id=_SESSION_ID, k=20), _temporal_episode_key(), "dense.latent"),
     ]
@@ -577,7 +583,13 @@ async def test_sc3_k_rrf_sensitivity() -> None:
         (RecallQuery(anchor_entities=("anchor_entity_A",), k=20), _graph_claim_key()),
         (RecallQuery(session_id=_SESSION_ID, k=20), _temporal_episode_key()),
     ]
-    channel_names = ["dense.claims", "bm25.claims", "graph.claims", "temporal.episodes", "dense.latent"]
+    channel_names = [
+        "dense.claims",
+        "bm25.claims",
+        "graph.claims",
+        "temporal.episodes",
+        "dense.latent",
+    ]
 
     for k_rrf in (20, 60, 120):
         stack = default_recall_stack(
@@ -601,9 +613,7 @@ async def test_sc3_k_rrf_sensitivity() -> None:
                     continue
                 ch_results = list(await ch_obj.search(query))
                 fused_single = fuse({ch_name: ch_results}, k_rrf=k_rrf)
-                single_recalls[ch_name].append(
-                    recall_at_k(list(fused_single), relevant_key, 10)
-                )
+                single_recalls[ch_name].append(recall_at_k(list(fused_single), relevant_key, 10))
 
         macro_fused = mean(fused_recalls)
         best_single = max(mean(r) for r in single_recalls.values())
@@ -654,9 +664,7 @@ async def test_sc4_provenance_on_every_fused_result() -> None:
     # Assemble and verify provenance propagates to ContextChunks
     assembled = assemble(outcome.results, budget=4000)
     for chunk in assembled.chunks:
-        assert len(chunk.hits) >= 1, (
-            f"S5 violation: ContextChunk key={chunk.key!r} has no hits"
-        )
+        assert len(chunk.hits) >= 1, f"S5 violation: ContextChunk key={chunk.key!r} has no hits"
         assert chunk.hits[0].channel in _KNOWN_CHANNEL_NAMES, (
             f"S5 violation: ContextChunk channel={chunk.hits[0].channel!r} not in known channels"
         )
@@ -706,9 +714,7 @@ async def test_sc4_negative_control_no_hits_detected() -> None:
         f"SC-4 negative control: mutant FusedResult with hits=() should produce 1 S5 violation, "
         f"got {len(violations)}: {violations}"
     )
-    assert "S5 violation" in violations[0], (
-        f"Expected S5 violation message, got: {violations[0]!r}"
-    )
+    assert "S5 violation" in violations[0], f"Expected S5 violation message, got: {violations[0]!r}"
 
     # Also verify assemble() propagates empty hits to ContextChunks (the violation is detectable)
     assembled = assemble([mutant_result], budget=2000)
@@ -719,9 +725,7 @@ async def test_sc4_negative_control_no_hits_detected() -> None:
     )
     # The downstream S5 check would detect this
     chunk_violations = [
-        f"chunk {chunk.key!r} has no hits"
-        for chunk in assembled.chunks
-        if len(chunk.hits) < 1
+        f"chunk {chunk.key!r} has no hits" for chunk in assembled.chunks if len(chunk.hits) < 1
     ]
     assert len(chunk_violations) == 1, (
         "SC-4 negative control: assemble must preserve empty hits so downstream check can catch it"
@@ -894,10 +898,7 @@ def test_sc6_budget_never_exceeded() -> None:
 def test_sc6_u_fold_shape() -> None:
     """U-fold ordering: rank-1 at position 0, rank-2 at last, rank-3 at position 1, etc."""
     # Build 6 items that all fit in a large budget
-    items = [
-        _make_fused_result(f"item-{i}", "test", i + 1)
-        for i in range(6)
-    ]
+    items = [_make_fused_result(f"item-{i}", "test", i + 1) for i in range(6)]
     assembled = assemble(items, budget=10000)
     chunks = assembled.chunks
     assert len(chunks) == 6, f"Expected 6 chunks, got {len(chunks)}"
@@ -922,9 +923,7 @@ def test_sc6_greedy_skip_oversized_head() -> None:
     small_item = _make_fused_result("small", "y" * 40, rank=2)
 
     assembled = assemble([big_item, small_item], budget=50)
-    assert assembled.dropped == 1, (
-        f"SC-6 greedy-skip: expected dropped=1, got {assembled.dropped}"
-    )
+    assert assembled.dropped == 1, f"SC-6 greedy-skip: expected dropped=1, got {assembled.dropped}"
     assert len(assembled.chunks) == 1, (
         f"SC-6 greedy-skip: expected 1 admitted chunk, got {len(assembled.chunks)}"
     )

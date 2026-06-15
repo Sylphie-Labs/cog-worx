@@ -27,7 +27,13 @@ __all__ = [
 ]
 
 EvidenceType = Literal[
-    "tool_proof", "refutation", "antithesis_survival", "corroboration", "recall", "extraction"
+    "tool_proof",
+    "refutation",
+    "antithesis_survival",
+    "corroboration",
+    "recall",
+    "extraction",
+    "attestation",
 ]
 # "+" contributes to alpha (supports the claim); "-" is first-hand disconfirmation only (S1 —
 # only our own tool execution or direct contradiction qualifies; model self-assessment does not).
@@ -41,6 +47,7 @@ Polarity = Literal["+", "-"]
 #   corroboration  — independent source agrees; less decisive than first-hand.
 #   recall         — recalled from memory/prior context; weakest signal, easy to over-count.
 #   extraction     — model-extracted inference from a first-hand user statement; second-hand.
+#   attestation    — first-hand human statement; direct primary source (same tier as tool_proof).
 # Source: tess.stats.EVIDENCE_BASE_WEIGHTS (calibrated 2026-05 against reliability-curve eval).
 EVIDENCE_BASE_WEIGHTS: dict[EvidenceType, float] = {
     "tool_proof": 3.0,
@@ -49,6 +56,7 @@ EVIDENCE_BASE_WEIGHTS: dict[EvidenceType, float] = {
     "corroboration": 1.0,
     "recall": 0.5,
     "extraction": 1.0,
+    "attestation": 3.0,
 }
 
 

@@ -23,6 +23,8 @@ from cogworx.loop.result import Done, StageResult, Transition
 from cogworx.loop.stage import StageContext
 from cogworx.loop.state import RunStatus
 from cogworx.model.base import ChatMessage, ModelResponse
+from cogworx.model.guarded import BudgetGuardedModel
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine
 from cogworx.substrate.journal import Journal
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
@@ -104,8 +106,10 @@ def _make_build_engine(pathways: PathwayRegistry) -> Callable[[Journal, ReplayMo
     graph carried."""
 
     def build(journal: Journal, model: ReplayModel) -> Engine:
+        registry = ModelRegistry()
+        registry.register_factory("default", lambda g, m=model: BudgetGuardedModel(m, g))
         return Engine(
-            model=model,
+            models=registry,
             journal=journal,
             graph_store=InMemoryGraphStore(),
             latent=InMemoryLatentStore(),

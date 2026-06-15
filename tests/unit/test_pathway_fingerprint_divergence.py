@@ -29,6 +29,7 @@ from cogworx.loop.pathway import PathwayRegistry, pathway_fingerprint
 from cogworx.loop.result import Done, StageResult, Transition
 from cogworx.loop.retry import RetryPolicy
 from cogworx.loop.stage import StageContext
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.engine import Engine, ResumeError
 from cogworx.substrate.journal import Journal, StepRecord
 from cogworx.testing.doubles import InMemoryGraphStore, InMemoryJournal, InMemoryLatentStore
@@ -138,8 +139,10 @@ def _exhausting_graph(*, exhausted_to: str | None) -> StageGraph:
 
 
 def _build_engine(journal: Journal, model: ReplayModel, pathways: PathwayRegistry) -> Engine:
+    _reg = ModelRegistry()
+    _reg.register("default", model)
     return Engine(
-        model=model,
+        models=_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),

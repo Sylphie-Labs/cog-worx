@@ -81,10 +81,10 @@ class EntityKG(Protocol):
       ``epistemic_type`` is not part of claim identity, so a re-derivation of the same triple at a
       DIFFERENT level (e.g. an ``observation`` arriving after an ``inference``) accumulates its
       evidence under the FIRST writer's level — the stored level never silently changes, which is
-      exactly S5's "never silently merged": the first level sticks until an EXPLICIT epistemic
-      upgrade surface (the Pod 2.7 coherence reconciler) promotes it with provenance. Callers that
-      need the distinction NOW must mint a distinct predicate. Evidence types (``tool_proof`` vs
-      ``recall``) carry the structural truth-weight in the meantime.
+      exactly S5's "never silently merged": the first level sticks until an EXPLICIT upgrade via
+      ``CoherenceStore.apply_epistemic_upgrade`` (Pod 2.7), which records provenance and marks the
+      subject dirty. Callers that need the distinction NOW must mint a distinct predicate. Evidence
+      types (``tool_proof`` vs ``recall``) carry the structural truth-weight in the meantime.
 
     add_evidence / invalidate_claim
       Raise ``ValueError`` on an unknown ``claim_id``.
@@ -127,6 +127,7 @@ class EntityKG(Protocol):
         """MERGE the claim node and CREATE one evidence event. Returns the canonical claim id.
 
         Raises ``ValueError`` if ``claim.id`` fails identity-discipline check.
+        Also marks ``(scope, subject_norm)`` dirty in the same transaction (Pod 2.7 coherence).
         """
         ...
 
@@ -134,6 +135,7 @@ class EntityKG(Protocol):
         """Append a new evidence event to an existing claim.
 
         Raises ``ValueError`` if ``claim_id`` is not known.
+        Also marks ``(scope, subject_norm)`` dirty in the same transaction (Pod 2.7 coherence).
         """
         ...
 
@@ -223,7 +225,8 @@ class EntityKG(Protocol):
     async def invalidate_claim(self, claim_id: str, *, valid_to: datetime) -> None:
         """Set valid_to on the claim (first-invalidation-wins; later calls are no-ops).
 
-        Raises ``ValueError`` if ``claim_id`` is not known.
+        Raises ``ValueError`` if ``claim_id`` is not known. Never deletes.
+        Also marks ``(scope, subject_norm)`` dirty in the same transaction (Pod 2.7 coherence).
         """
         ...
 
@@ -253,6 +256,9 @@ class EntityKG(Protocol):
 
         progress=None: no cursor advance (useful for one-shot imports).
         writes=[]: a no-op (cursor still advances if progress is not None).
+
+        Each claim write also marks ``(scope, subject_norm)`` dirty in the same transaction
+        (Pod 2.7 coherence).
 
         Raises ValueError if any claim.id fails identity-discipline check.
         """

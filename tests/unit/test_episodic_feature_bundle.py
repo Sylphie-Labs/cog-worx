@@ -43,7 +43,6 @@ Additional:
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 import pytest
@@ -51,7 +50,6 @@ import pytest
 from cogworx.claims.provenance import Artifact, Provenance
 from cogworx.knowledge.episodes import Turn, stamp_turns, turns_of
 from cogworx.knowledge.extraction import (
-    ExtractionResult,
     RawClaimItem,
     mint_extraction_claims,
     render_transcript,
@@ -61,11 +59,12 @@ from cogworx.knowledge.identity import claim_id_for
 from cogworx.knowledge.source_registry import SourceDeclaration, SourceRegistry
 from cogworx.loop.result import Done, Transition
 from cogworx.model.base import ModelResponse
+from cogworx.model.registry import ModelRegistry
 from cogworx.runtime.episode_projector import DEFAULT_EPISODE_CONSUMER, EpisodeProjector
 from cogworx.substrate.journal import ProjectionCursor, StepRecord
 from cogworx.testing.doubles import (
-    InMemoryEpisodeStore,
     InMemoryEntityKG,
+    InMemoryEpisodeStore,
     InMemoryGraphStore,
     InMemoryJournal,
     InMemoryLatentStore,
@@ -87,7 +86,9 @@ def _prov(*, source: str = "system") -> Provenance:
     return Provenance(source=source, confidence=1.0, recorded_at=_NOW)
 
 
-def _artifact(text: str = "ok", *, source: str = "system", turns: list[Turn] | None = None) -> Artifact:
+def _artifact(
+    text: str = "ok", *, source: str = "system", turns: list[Turn] | None = None
+) -> Artifact:
     data: dict = {"text": text}
     if turns:
         stamp_turns(data, turns)
@@ -130,9 +131,7 @@ async def _commit_turns(
 ) -> None:
     art = _artifact("turn-step", turns=turns)
     result: Done | Transition = (
-        Transition(to=transition_to, output=art)
-        if transition_to is not None
-        else Done(output=art)
+        Transition(to=transition_to, output=art) if transition_to is not None else Done(output=art)
     )
     await journal.commit_step(
         StepRecord(
@@ -212,7 +211,8 @@ async def test_i1_projector_tick_does_not_call_model() -> None:
 
 
 async def test_i1_projector_tick_episodes_appear_in_store() -> None:
-    """Episodes appear in InMemoryEpisodeStore after a single tick — turn-stamping is the capture."""
+    """Episodes appear in InMemoryEpisodeStore after a single tick —
+    turn-stamping is the capture."""
     journal, store = InMemoryJournal(), InMemoryEpisodeStore()
     turns = _conversation_turns("what is Mars?", "Mars is the red planet")
     await _start(journal, "r1", session_id="sess-mars")
@@ -255,7 +255,8 @@ async def test_i2_second_tick_sees_empty() -> None:
 
 
 async def test_i2_cursor_advances_to_last_scanned_row() -> None:
-    """The cursor advances to the last scanned row even when a batch has zero episodes (S6 / P0-2)."""
+    """The cursor advances to the last scanned row even when a batch has zero episodes
+    (S6 / P0-2)."""
     journal, store = InMemoryJournal(), InMemoryEpisodeStore()
     await _start(journal, "r1")
     # A plain (turn-free) step
@@ -289,7 +290,7 @@ async def test_i2_negative_control_without_cursor_advance_would_double_project()
     """Negative control: if project_episodes were NOT called (no cursor advance), re-ticking on the
     same journal would re-project the same rows.  Prove the assertion in i2 is sensitive by
     simulating the broken path directly against the store's own first-write-wins semantics."""
-    journal, store = InMemoryJournal(), InMemoryEpisodeStore()
+    journal, _store = InMemoryJournal(), InMemoryEpisodeStore()
     turns = _conversation_turns("x", "y")
     await _start(journal, "r1", session_id="sess-neg")
     await _commit_turns(journal, run_id="r1", step_index=0, turns=turns)
@@ -329,7 +330,7 @@ async def test_i3_uncommitted_attempt_produces_no_episodes() -> None:
     # Attempt 1: increment the attempt counter (as the engine would on a failed attempt),
     # but DO NOT commit a step — the turns from attempt 1 are never durable.
     await journal.increment_attempt("r1", 0)
-    attempt1_turns = _conversation_turns("attempt1 question", "attempt1 answer")
+    _attempt1_turns = _conversation_turns("attempt1 question", "attempt1 answer")
     # (We do NOT call _commit_turns here — attempt 1 was abandoned without committing.)
 
     # Attempt 2: commit with different, recognisable content.
@@ -360,7 +361,8 @@ async def test_i3_uncommitted_attempt_produces_no_episodes() -> None:
 
 
 async def test_i3_negative_control_committed_turns_always_appear() -> None:
-    """Negative control: if a step IS committed, its turns MUST appear (confirms detection power)."""
+    """Negative control: if a step IS committed, its turns MUST appear
+    (confirms detection power)."""
     journal, store = InMemoryJournal(), InMemoryEpisodeStore()
     await _start(journal, "r1", session_id="sess-neg3")
     turns = _conversation_turns("real question", "real answer")
@@ -387,7 +389,9 @@ async def test_i4_assistant_turn_index_rejected() -> None:
         Turn(role="assistant", content="noted", kind="conversation"),
     ]
     raw_items = [
-        RawClaimItem(subject="Alice", predicate="lives_in", object="Paris", supporting_turn_index=1),
+        RawClaimItem(
+            subject="Alice", predicate="lives_in", object="Paris", supporting_turn_index=1
+        ),
     ]
     result = mint_extraction_claims(
         raw_items,
@@ -577,7 +581,8 @@ async def test_i5_in_memory_entity_kg_project_claims_idempotent() -> None:
 
 
 async def test_i6_lesion_projector_absent_engine_runs_normally() -> None:
-    """S8: with no EpisodeProjector, the engine runs normally and turns are committed to the journal.
+    """S8: with no EpisodeProjector, the engine runs normally and turns are committed to
+    the journal.
 
     The engine does not know about EpisodeProjector — the projector is an external sweeper.
     This test confirms the engine's stage still stamps turns and commits them to the journal;
@@ -603,9 +608,11 @@ async def test_i6_lesion_projector_absent_engine_runs_normally() -> None:
     pathways.register(pathway_id, StageGraph([_TurnsStage()], entry="turns_stage"))
 
     model = ReplayModel([])  # no model calls expected in a no-model stage
+    _reg = ModelRegistry()
+    _reg.register("default", model)
     journal = InMemoryJournal()
     engine = Engine(
-        model=model,
+        models=_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -655,9 +662,11 @@ async def test_i6_lesion_extractor_absent_engine_runs_normally() -> None:
     pathways.register(pathway_id, StageGraph([_TurnsStage()], entry="turns_stage"))
 
     model = ReplayModel([])
+    _reg = ModelRegistry()
+    _reg.register("default", model)
     journal = InMemoryJournal()
     engine = Engine(
-        model=model,
+        models=_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -710,9 +719,11 @@ async def test_i6_lesion_both_absent_model_call_count_unchanged() -> None:
     model = ReplayModel(
         [ModelResponse(text="hello from model", model_id="replay", finish_reason="stop")]
     )
+    _reg = ModelRegistry()
+    _reg.register("default", model)
     journal = InMemoryJournal()
     engine = Engine(
-        model=model,
+        models=_reg,
         journal=journal,
         graph_store=InMemoryGraphStore(),
         latent=InMemoryLatentStore(),
@@ -944,7 +955,12 @@ def test_validate_raw_model_json_happy_path() -> None:
     """Valid JSON is parsed into RawClaimItems."""
     raw = {
         "claims": [
-            {"subject": "Alice", "predicate": "lives_in", "object": "Paris", "supporting_turn_index": 0},
+            {
+                "subject": "Alice",
+                "predicate": "lives_in",
+                "object": "Paris",
+                "supporting_turn_index": 0,
+            },
         ]
     }
     items = validate_raw_model_json(raw)
@@ -993,7 +1009,12 @@ def test_validate_raw_model_json_mixed_valid_and_invalid() -> None:
         "claims": [
             {"subject": "Alice", "predicate": "is", "object": "human", "supporting_turn_index": 0},
             {"subject": "Bob"},  # incomplete
-            {"subject": "Carol", "predicate": "lives_in", "object": "Rome", "supporting_turn_index": 2},
+            {
+                "subject": "Carol",
+                "predicate": "lives_in",
+                "object": "Rome",
+                "supporting_turn_index": 2,
+            },
         ]
     }
     items = validate_raw_model_json(raw)

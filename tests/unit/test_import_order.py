@@ -6,6 +6,11 @@ import cycle (``substrate.journal`` -> ``loop.result`` -> ``loop/__init__`` -> `
 The cycle only fires when the vulnerable edge is imported first, so in-suite imports can never
 catch it — the whole package is already initialized by earlier test imports. Hence subprocess
 isolation: one fresh interpreter per entry point.
+
+CF-1 (Task 3.0a-1): the ``TYPE_CHECKING`` band-aid in ``stage``/``graph`` is replaced by a
+PEP-562 lazy ``__getattr__`` in ``loop/__init__``.  The two new tests below verify the structural
+guarantee: importing ``cogworx.loop`` or cherry-picking ``StageResult`` must NOT pull
+``cogworx.substrate.journal`` into ``sys.modules``.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ PACKAGES = (
     "cogworx.adapters",
     "cogworx.capability",
     "cogworx.claims",
+    "cogworx.context",
     "cogworx.coordination",
     "cogworx.cost",
     "cogworx.loop",
@@ -43,4 +49,65 @@ def test_package_imports_first_in_fresh_interpreter(package: str) -> None:
     assert proc.returncode == 0, (
         f"`import {package}` failed in a fresh interpreter (import-cycle regression):\n"
         f"{proc.stderr}"
+    )
+
+
+# ── CF-1 regression: PEP-562 lazy loader must keep substrate.journal off the hot path ──
+
+_NO_JOURNAL_SCRIPT = """\
+import sys
+import cogworx.loop
+assert "cogworx.substrate.journal" not in sys.modules, (
+    "import cogworx.loop eagerly pulled in cogworx.substrate.journal -- "
+    "the import cycle is NOT broken; check loop/__init__.py lazy loader"
+)
+"""
+
+_NO_JOURNAL_STAGE_RESULT_SCRIPT = """\
+import sys
+from cogworx.loop import StageResult
+assert "cogworx.substrate.journal" not in sys.modules, (
+    "from cogworx.loop import StageResult eagerly pulled in cogworx.substrate.journal -- "
+    "the import cycle is NOT broken; check loop/__init__.py lazy loader"
+)
+# Verify StageResult is actually usable (not a broken import).
+from cogworx.loop.result import Transition
+assert StageResult is not None
+"""
+
+
+def _run_isolated(script: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_import_cogworx_loop_does_not_pull_substrate_journal() -> None:
+    """CF-1: ``import cogworx.loop`` must NOT import ``cogworx.substrate.journal``.
+
+    The PEP-562 lazy ``__getattr__`` in ``loop/__init__`` defers ``stage``/``graph`` (which are
+    on the substrate.journal cycle edge).  Importing the package alone must never cross that edge.
+    """
+    proc = _run_isolated(_NO_JOURNAL_SCRIPT)
+    assert proc.returncode == 0, (
+        "CF-1 cycle regression: import cogworx.loop pulled substrate.journal or failed:\n"
+        f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+    )
+
+
+def test_stage_result_import_does_not_pull_substrate_journal() -> None:
+    """CF-1: ``from cogworx.loop import StageResult`` must NOT import ``cogworx.substrate.journal``.
+
+    ``StageResult`` lives in ``loop.result`` (a leaf module with no substrate dependency).  The
+    lazy loader must resolve it from the eagerly-loaded ``result`` module, never touching
+    ``stage`` or ``graph``.
+    """
+    proc = _run_isolated(_NO_JOURNAL_STAGE_RESULT_SCRIPT)
+    assert proc.returncode == 0, (
+        "CF-1 cycle regression: from cogworx.loop import StageResult pulled substrate.journal "
+        f"or failed:\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
     )

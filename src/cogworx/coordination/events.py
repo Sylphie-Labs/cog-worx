@@ -54,6 +54,9 @@ class EventType(StrEnum):
     TIMER_FIRED = "timer_fired"
     HUMAN_INPUT_RECEIVED = "human_input_received"
     RUN_CRASHED = "run_crashed"
+    TOOL_CALL_DISPATCHED = "tool_call_dispatched"
+    TOOL_CALL_COMPLETED = "tool_call_completed"
+    TOOL_TIER_REFUSED = "tool_tier_refused"
 
 
 class Event(BaseModel):
@@ -95,6 +98,9 @@ EVENT_BOUNDARY_MAP: dict[EventType, Subsystem] = {
     EventType.RUN_CRASHED: Subsystem.SPINE,
     EventType.CLAIM_WRITTEN: Subsystem.MEMORY,
     EventType.CAPABILITY_INVOKED: Subsystem.COGNITION,
+    EventType.TOOL_CALL_DISPATCHED: Subsystem.COGNITION,
+    EventType.TOOL_CALL_COMPLETED: Subsystem.COGNITION,
+    EventType.TOOL_TIER_REFUSED: Subsystem.COGNITION,
     EventType.BUDGET_EXCEEDED: Subsystem.OPERATIONS,
     EventType.LESION_ENABLED: Subsystem.OPERATIONS,
     EventType.LESION_DISABLED: Subsystem.OPERATIONS,
