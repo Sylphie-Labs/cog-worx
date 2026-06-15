@@ -32,7 +32,7 @@ from cogworx.verification.honest_failure import (
     route_failure,
 )
 from cogworx.verification.oracle import Oracle, OracleRegistry
-from cogworx.verification.oracles import LLMJudgeOracle
+from cogworx.verification.oracles import CodeOracle, LLMJudgeOracle
 from cogworx.verification.outcome import (
     VerdictRole,
     VerificationRecord,
@@ -47,6 +47,7 @@ __all__ = [
     "TRANSIENT_EXCEPTION_TYPES",
     "AntithesisDisposition",
     "AntithesisVerdict",
+    "CodeOracle",
     "ErrorClass",
     "FailureOutcome",
     "LLMJudgeOracle",
