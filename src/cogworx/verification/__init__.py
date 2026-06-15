@@ -16,6 +16,13 @@ from cogworx.verification.contracts import (
     Verdict,
 )
 from cogworx.verification.oracle import Oracle, OracleRegistry
+from cogworx.verification.outcome import (
+    VerdictRole,
+    VerificationRecord,
+    record_for,
+    stamps_procedural_beta,
+)
+from cogworx.verification.quarantine import new_nonce, quarantine, unwrap
 
 __all__ = [
     "EXECUTABLE_SOURCES",
@@ -24,4 +31,11 @@ __all__ = [
     "OracleRegistry",
     "Thesis",
     "Verdict",
+    "VerdictRole",
+    "VerificationRecord",
+    "new_nonce",
+    "quarantine",
+    "record_for",
+    "stamps_procedural_beta",
+    "unwrap",
 ]
