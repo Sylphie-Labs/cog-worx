@@ -20,10 +20,15 @@ truth-posterior evidence and NEVER stamps the procedural Beta; it only drives ro
 procedural Beta is stamped ONLY on ``valid_check`` AND an executable source (F1) — an invalid or
 model-judge experiment stamps nothing, which keeps the Pod 2.1 posterior honest.
 
-PENDING mythos ratification (plan open-item #3): the F1/F2 redesign was authored under the
-mythos-inactive override. The antithesis-role calibration here (survival = indirect positive; a
-model-claimed break is routing-only, not a first-hand refutation) is conservative and faithful to
-the shipped evidence weights, but the deep-reasoning ratification of the stream is still owed.
+F1/F2 calibration ratified — architect, 2026-06-15: the antithesis-role calibration (survival =
+indirect positive; a model-claimed break is routing-only, not a first-hand refutation) was reviewed
+as part of the H4 OB-PROV ruling and confirmed conservative + faithful. No longer owed.
+
+Contract changelog (CANON §6.1):
+  - 2026-06-15 (Pod 4.3, ADDITIVE): added :func:`verdict_from_antithesis`, the pure
+    ``AntithesisVerdict`` -> ``Verdict`` adapter the verification-evidence projector uses to reuse
+    :func:`record_for` for the antithesis role. A new function — no existing caller or implementer
+    of this module becomes non-conformant, so it is additive (no pre-approval required).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from typing import TYPE_CHECKING, Literal
 from cogworx.claims.provenance import EpistemicType
 from cogworx.knowledge.evidence import EvidenceType, Polarity
 from cogworx.verification.contracts import Verdict
+from cogworx.verification.honest_failure import AntithesisDisposition, AntithesisVerdict
 
 if TYPE_CHECKING:
     # Annotation-only — avoids importing the substrate.procedural_kg chain at runtime.
@@ -90,9 +96,48 @@ def record_for(verdict: Verdict, *, role: VerdictRole) -> VerificationRecord | N
     return None  # a model-claimed break drives refinement (routing), not truth evidence.
 
 
+def verdict_from_antithesis(av: AntithesisVerdict) -> Verdict:
+    """Adapt an :class:`~cogworx.verification.honest_failure.AntithesisVerdict` to a
+    :class:`~cogworx.verification.contracts.Verdict` so the evidence projector can pass it to
+    :func:`record_for` uniformly.
+
+    Faithful to ``record_for``'s antithesis semantics (``outcome.py:86-90``):
+
+    * ``COULD_NOT_BREAK`` → ``holds=True, valid_check=True`` → ``antithesis_survival "+"``
+      (epistemic ``confirmed`` iff executable, else ``inference``).
+    * ``BROKE`` → ``holds=False, valid_check=True`` → ``record_for`` returns ``None`` (a
+      model-claimed break drives refinement, not truth evidence — S9).
+    * ``ABSTAINED`` → ``valid_check=False`` → ``record_for`` returns ``None``.
+
+    The ``source`` mapping is the ONLY place the ``oracle_backed`` bit crosses into the evidence
+    stream.  This mapping is safe ONLY because of **OB-PROV** (§2.3 of the Pod 4.3 plan): the
+    producing stage sets ``oracle_backed`` from its own oracle call, never from parsed model output.
+    In v1 (model adversary, no executable oracle) ``oracle_backed`` is always ``False``, so this
+    adapter always yields ``source="inference"`` — antithesis-survival evidence is epistemic
+    ``inference``, never ``confirmed``.
+    """
+    # OB-PROV: oracle_backed was set by the stage's own oracle call, never from model output.
+    source = "tool" if av.oracle_backed else "inference"
+    if av.disposition is AntithesisDisposition.ABSTAINED:
+        return Verdict(
+            holds=False,
+            valid_check=False,
+            reasoning="Antithesis abstained — no meaningful challenge could be formed.",
+            source=source,
+        )
+    holds = av.disposition is AntithesisDisposition.COULD_NOT_BREAK
+    return Verdict(
+        holds=holds,
+        valid_check=True,
+        reasoning=av.breakage or "Antithesis could not find a concrete flaw.",
+        source=source,
+    )
+
+
 __all__ = [
     "VerdictRole",
     "VerificationRecord",
     "record_for",
     "stamps_procedural_beta",
+    "verdict_from_antithesis",
 ]

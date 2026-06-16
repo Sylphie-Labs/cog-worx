@@ -26,8 +26,27 @@ from cogworx.testing.reference_agent import (
     build_reference_graph,
     reference_initial,
 )
+from cogworx.testing.reference_dialectic import (
+    DIALECTIC_PATHWAY_ID,
+    PLANTED_CORRECT_THESIS,
+    PLANTED_FLAWED_THESIS,
+    PLANTED_INJECTION_STRING,
+    PLANTED_SECRET_TOKEN,
+    StubJudgeOracle,
+    StubOracle,
+    build_dialectic_graph,
+    build_dialectic_stages,
+    dialectic_initial,
+    dialectic_pathways,
+    make_stub_oracle_registry,
+)
 
 __all__ = [
+    "DIALECTIC_PATHWAY_ID",
+    "PLANTED_CORRECT_THESIS",
+    "PLANTED_FLAWED_THESIS",
+    "PLANTED_INJECTION_STRING",
+    "PLANTED_SECRET_TOKEN",
     "InMemoryEntityKG",
     "InMemoryGraphStore",
     "InMemoryJournal",
@@ -38,7 +57,14 @@ __all__ = [
     "ReplayExhaustedError",
     "ReplayModel",
     "RespondStage",
+    "StubJudgeOracle",
+    "StubOracle",
+    "build_dialectic_graph",
+    "build_dialectic_stages",
     "build_reference_graph",
+    "dialectic_initial",
+    "dialectic_pathways",
     "echo_model",
+    "make_stub_oracle_registry",
     "reference_initial",
 ]
