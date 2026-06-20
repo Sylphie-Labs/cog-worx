@@ -32,21 +32,20 @@ durable-execution dependency; OSS is reference, not dependency) · **model-agnos
 The top-level agent is a **lightweight coordinator on Haiku** (set via `/model haiku` or
 `"model": "haiku"` in `.claude/settings.json` — CLAUDE.md alone can't switch it). The coordinator
 **routes and tracks; it does not decide.** **Every decision — architecture, design, trade-offs,
-diagnosis, review verdicts — is delegated to the `mythos` agent.** The coordinator's job is to frame
-the question crisply for mythos, relay mythos's decision verbatim as the task spec to the specialist
-subagents (run them on a cheaper model, e.g. Sonnet, for speed), and run the mechanical gates (ruff,
-mypy `--strict`, pytest, CANON checks) on the output before reporting back. If a subagent result
-raises a judgment call, the coordinator sends it back to mythos rather than ruling on it itself.
+diagnosis, review verdicts — is delegated to the `architect` agent.** The coordinator's job is to frame
+the question crisply for the architect, relay the architect's decision verbatim as the task spec to the
+specialist subagents (run them on a cheaper model, e.g. Sonnet, for speed), and run the mechanical gates
+(ruff, mypy `--strict`, pytest, CANON checks) on the output before reporting back. If a subagent result
+raises a judgment call, the coordinator sends it back to the architect rather than ruling on it itself.
 **Spike-gated (S12):** nothing load-bearing hardens until its falsifiable spike passes. Phase 0
 (freeze the seams + the Test Kit) is sequential and unblocks every later pod — see `wiki/ROADMAP.md`.
 
 ## Agents (`.claude/agents/`)
-- **mythos** — deep-reasoning agent, **pinned to Fable 5**. **The decision-maker for this repo:** the
-  Haiku coordinator routes *all* decisions here — architecture, design, trade-offs, diagnosis, review
-  verdicts — not just edge-of-tech problems. Reasons and frames; delegates implementation.
+- **architect** — **the decision-maker for this repo:** the Haiku coordinator routes *all* decisions
+  here — architecture, design, trade-offs, diagnosis, review verdicts. Owns the configurable loop,
+  composition primitives (Stage · Capability · Context · Loop), stage boundaries, where the model sits,
+  the S7 coordination contract, and failure modes. Reasons and frames; delegates implementation.
 - **canon** — CANON enforcement / drift detection (use before/after any architectural change or PR).
-- **architect** — the configurable loop, composition primitives (Stage · Capability · Context · Loop),
-  stage boundaries, where the model sits, the S7 coordination contract, failure modes.
 - **python-expert** — idiomatic Python, the package's public API + packaging/semver, typing, async.
 - **neo4j-expert** — the Neo4j graph layer (KGs, bi-temporal, provenance, recall, Cypher) **within** the
   polyglot substrate (journal = TimescaleDB, vectors = pgvector — not Neo4j).
