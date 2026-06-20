@@ -43,6 +43,9 @@ runs/
 .memory-pkg-backup-*/
 .claude/memory/
 
+# codebase-pkg generated sync state (machine-local; .last-sync-commit + state.json)
+.codebase-pkg/
+
 # Machine-local MCP server config (contains absolute, per-machine paths)
 .mcp.json
 # Claude Code settings backups
