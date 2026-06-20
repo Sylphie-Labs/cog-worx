@@ -41,7 +41,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from cogworx.verification.contracts import OracleFrame, Thesis, Verdict
 from cogworx.verification.quarantine import quarantine
@@ -272,12 +272,20 @@ def _run_pytest_docker(  # pragma: no cover - needs docker
             return _RunResult(-1, stdout or "", stderr or "", timed_out=True)
 
 
-def verdict_from_result(result: _RunResult, *, timeout_s: float) -> Verdict:
+def verdict_from_result(
+    result: _RunResult,
+    *,
+    timeout_s: float,
+    test_provenance: Literal["thesis", "frozen"] = "thesis",
+) -> Verdict:
     """Map a pytest ``_RunResult`` to a ``Verdict`` (source ``"tool"`` — first-hand execution).
 
     The subprocess stdout/stderr is attacker-influenceable (model-emitted test code prints whatever
     it likes), so it is wrapped via the quarantine channel before becoming ``reasoning`` — a
     downstream antithesis/refine prompt cannot be hijacked by injected instructions (S10).
+
+    ``test_provenance`` is stamped from the caller's ``test_source`` selector — NEVER from model
+    output (S9 audit-only discipline; mirrors ``Verdict.source``).
     """
     if result.timed_out:
         return Verdict(
@@ -285,6 +293,7 @@ def verdict_from_result(result: _RunResult, *, timeout_s: float) -> Verdict:
             valid_check=False,
             reasoning=quarantine(f"timeout after {timeout_s}s (process killed)"),
             source="tool",
+            test_provenance=test_provenance,
         )
     match result.returncode:
         case 0:
@@ -294,7 +303,13 @@ def verdict_from_result(result: _RunResult, *, timeout_s: float) -> Verdict:
         case _:  # 5 (no tests), 2/3/4 (collection/usage), 137 (OOM), anything else
             holds, valid_check = False, False
     reasoning = quarantine(_tail(result.stdout + "\n" + result.stderr, DEFAULT_REASONING_TAIL))
-    return Verdict(holds=holds, valid_check=valid_check, reasoning=reasoning, source="tool")
+    return Verdict(
+        holds=holds,
+        valid_check=valid_check,
+        reasoning=reasoning,
+        source="tool",
+        test_provenance=test_provenance,
+    )
 
 
 class CodeOracle:
@@ -306,6 +321,20 @@ class CodeOracle:
       * tainted drive (or ``always_sandbox=True``) → the docker-hardened tier; if docker is
         unavailable, REFUSE — return a zero-execution ``Verdict`` (``source="system"``,
         ``valid_check=False``) rather than execute adversary-influenced code unsandboxed (S10).
+
+    ``test_source`` selector (Pod 4.4b):
+      * ``"thesis"`` (default) — test body extracted from ``thesis.experiment_design`` via
+        ``_extract_python``, preserving all pre-4.4b behaviour byte-for-byte.
+      * ``"frozen"`` — test body is ``frozen_test_code`` (raw Python, corpus-author-supplied at
+        construction; no ``_extract_python`` call on it because the caller already holds raw
+        Python, not a fenced markdown block). This is misconfiguration if ``frozen_test_code`` is
+        ``None``; ``__init__`` raises :exc:`ValueError` immediately (not a runtime S8 degrade).
+
+    The solution is ALWAYS extracted from ``thesis.proposed_solution`` regardless of
+    ``test_source``; only the test body changes.
+
+    Semver note (Pod 4.4b): ``test_source`` + ``frozen_test_code`` are new optional kwargs;
+    all existing construction sites keep their current behaviour (additive, minor bump → 0.5.0).
     """
 
     def __init__(
@@ -315,18 +344,33 @@ class CodeOracle:
         always_sandbox: bool = False,
         image: str = SANDBOX_IMAGE,
         docker_path: str | None = None,
+        test_source: Literal["thesis", "frozen"] = "thesis",
+        frozen_test_code: str | None = None,
     ) -> None:
+        if test_source == "frozen" and frozen_test_code is None:
+            raise ValueError(
+                "CodeOracle: test_source='frozen' requires frozen_test_code to be provided; "
+                "a frozen oracle with no frozen test is misconfiguration."
+            )
         self._timeout_s = timeout_s
         self._always_sandbox = always_sandbox
         self._image = image
         self._docker_path = docker_path
+        self._test_source: Literal["thesis", "frozen"] = test_source
+        # After the guard above, frozen_test_code is str when test_source=="frozen".
+        # Store as str | None; evaluate() narrows below via the same selector.
+        self._frozen_test_code: str | None = frozen_test_code
 
     async def evaluate(self, *, frame: OracleFrame, thesis: Thesis, ctx: StageContext) -> Verdict:
         run = await ctx.journal.load_run(ctx.run_id)
         tainted = bool(run.tainted) if run is not None else False
 
         solution_code = _extract_python(thesis.proposed_solution)
-        test_code = _extract_python(thesis.experiment_design)
+        if self._test_source == "frozen":
+            # __init__ guarantees non-None when test_source=="frozen"; cast narrows for mypy.
+            test_code = cast(str, self._frozen_test_code)
+        else:
+            test_code = _extract_python(thesis.experiment_design)
 
         if tainted or self._always_sandbox:
             docker_bin = _docker_bin(self._docker_path)
@@ -344,7 +388,9 @@ class CodeOracle:
             result = await asyncio.to_thread(
                 _run_pytest_local, solution_code, test_code, timeout_s=self._timeout_s
             )
-        return verdict_from_result(result, timeout_s=self._timeout_s)
+        return verdict_from_result(
+            result, timeout_s=self._timeout_s, test_provenance=self._test_source
+        )
 
     def _refusal(self, *, tainted: bool) -> Verdict:
         """A zero-execution refusal Verdict (F7/S10). ``source="system"`` — a deterministic control

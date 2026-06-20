@@ -1,0 +1,210 @@
+{
+  "master_seed": 20260619,
+  "n_outer": 50000,
+  "s_pairs": 40,
+  "passed": true,
+  "true_null_mean_bias_threshold": 0.00018043873846967682,
+  "configs": [
+    {
+      "name": "planting-effect",
+      "n_outer": 50000,
+      "s_pairs": 40,
+      "passed": true,
+      "se_bound_flag": false,
+      "functionals": [
+        {
+          "functional": "mean",
+          "dbar": 1.3077678571433993e-05,
+          "se_dbar": 5.0061748127247436e-05,
+          "k": 4.0,
+          "bound": 0.00020024699250898974,
+          "passed": true,
+          "sd_stdlib": 0.0002238829437699961,
+          "sd_fast": 0.00020221589844315264,
+          "spread_ok": true,
+          "se_perrun": 0.0002238829437699961,
+          "analytic_mean_se": 0.0001812376531133098
+        },
+        {
+          "functional": "lo",
+          "dbar": -0.00035714285714281144,
+          "se_dbar": 0.0003246115800727318,
+          "k": 5.0,
+          "bound": 0.001623057900363659,
+          "passed": true,
+          "sd_stdlib": 0.0014517071186524889,
+          "sd_fast": 0.0013095758397921652,
+          "spread_ok": true,
+          "se_perrun": 0.0014517071186524889,
+          "analytic_mean_se": null
+        },
+        {
+          "functional": "hi",
+          "dbar": -0.0004910714285714157,
+          "se_dbar": 0.0003195342531443068,
+          "k": 5.0,
+          "bound": 0.001597671265721534,
+          "passed": true,
+          "sd_stdlib": 0.0014290006223405918,
+          "sd_fast": 0.0014580296087994742,
+          "spread_ok": true,
+          "se_perrun": 0.0014290006223405918,
+          "analytic_mean_se": null
+        }
+      ]
+    },
+    {
+      "name": "pessimistic-corner",
+      "n_outer": 50000,
+      "s_pairs": 40,
+      "passed": true,
+      "se_bound_flag": false,
+      "functionals": [
+        {
+          "functional": "mean",
+          "dbar": -7.393749999991261e-06,
+          "se_dbar": 4.936438079904668e-05,
+          "k": 4.0,
+          "bound": 0.0001974575231961867,
+          "passed": true,
+          "sd_stdlib": 0.00022076422226770752,
+          "sd_fast": 0.00022599639990202912,
+          "spread_ok": true,
+          "se_perrun": 0.00022076422226770752,
+          "analytic_mean_se": 0.00019644324859185522
+        },
+        {
+          "functional": "lo",
+          "dbar": -4.464285714285699e-05,
+          "se_dbar": 0.00029836216749646585,
+          "k": 5.0,
+          "bound": 0.0014918108374823292,
+          "passed": true,
+          "sd_stdlib": 0.0013343161768725519,
+          "sd_fast": 0.0013979080954886368,
+          "spread_ok": true,
+          "se_perrun": 0.0013343161768725519,
+          "analytic_mean_se": null
+        },
+        {
+          "functional": "hi",
+          "dbar": -0.0007589285714285077,
+          "se_dbar": 0.0003258685512035877,
+          "k": 5.0,
+          "bound": 0.0016293427560179386,
+          "passed": true,
+          "sd_stdlib": 0.001457328464441186,
+          "sd_fast": 0.0012659242088545323,
+          "spread_ok": true,
+          "se_perrun": 0.001457328464441186,
+          "analytic_mean_se": null
+        }
+      ]
+    },
+    {
+      "name": "true-null",
+      "n_outer": 50000,
+      "s_pairs": 40,
+      "passed": true,
+      "se_bound_flag": false,
+      "functionals": [
+        {
+          "functional": "mean",
+          "dbar": 1.5666964285713723e-05,
+          "se_dbar": 4.5109684617419204e-05,
+          "k": 4.0,
+          "bound": 0.00018043873846967682,
+          "passed": true,
+          "sd_stdlib": 0.00020173664249625186,
+          "sd_fast": 0.0002734801363088748,
+          "spread_ok": true,
+          "se_perrun": 0.00020173664249625186,
+          "analytic_mean_se": 0.0002190025122066677
+        },
+        {
+          "functional": "lo",
+          "dbar": 0.0006249999999999645,
+          "se_dbar": 0.0003547020532397066,
+          "k": 5.0,
+          "bound": 0.0017735102661985331,
+          "passed": true,
+          "sd_stdlib": 0.0015862758056054672,
+          "sd_fast": 0.0014000997478855529,
+          "spread_ok": true,
+          "se_perrun": 0.0015862758056054672,
+          "analytic_mean_se": null
+        },
+        {
+          "functional": "hi",
+          "dbar": 0.00017857142857143903,
+          "se_dbar": 0.0003407405669439332,
+          "k": 5.0,
+          "bound": 0.001703702834719666,
+          "passed": true,
+          "sd_stdlib": 0.001523838140756905,
+          "sd_fast": 0.0015765816275939248,
+          "spread_ok": true,
+          "se_perrun": 0.001523838140756905,
+          "analytic_mean_se": null
+        }
+      ]
+    },
+    {
+      "name": "small-n",
+      "n_outer": 50000,
+      "s_pairs": 40,
+      "passed": true,
+      "se_bound_flag": false,
+      "functionals": [
+        {
+          "functional": "mean",
+          "dbar": 7.760586734694013e-05,
+          "se_dbar": 6.967187941190891e-05,
+          "k": 4.0,
+          "bound": 0.00027868751764763565,
+          "passed": true,
+          "sd_stdlib": 0.0003115821169703928,
+          "sd_fast": 0.00026396597102420696,
+          "spread_ok": true,
+          "se_perrun": 0.0003115821169703928,
+          "analytic_mean_se": 0.0002566352857972434
+        },
+        {
+          "functional": "lo",
+          "dbar": -0.00025510204081632406,
+          "se_dbar": 0.00046373082867532615,
+          "k": 5.0,
+          "bound": 0.0023186541433766307,
+          "passed": true,
+          "sd_stdlib": 0.002073867312360676,
+          "sd_fast": 0.0016730653077514706,
+          "spread_ok": true,
+          "se_perrun": 0.002073867312360676,
+          "analytic_mean_se": null
+        },
+        {
+          "functional": "hi",
+          "dbar": -6.377551020405048e-05,
+          "se_dbar": 0.00046575047406901117,
+          "k": 5.0,
+          "bound": 0.0023287523703450557,
+          "passed": true,
+          "sd_stdlib": 0.002082899441142124,
+          "sd_fast": 0.002160561719530678,
+          "spread_ok": true,
+          "se_perrun": 0.002082899441142124,
+          "analytic_mean_se": null
+        }
+      ]
+    }
+  ],
+  "boundary": {
+    "n_boundary": 172,
+    "n_flip": 3,
+    "clears_stdlib": 41,
+    "clears_fast": 38,
+    "exact_ties": 4,
+    "flip_ok": true,
+    "clears_ok": true
+  }
+}

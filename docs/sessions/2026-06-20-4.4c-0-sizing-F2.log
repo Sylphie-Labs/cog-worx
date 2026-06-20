@@ -1,0 +1,13 @@
+PESS      n= 30 clears=426/500 power_lcb=0.8237  t=92s  [elapsed 92s]
+PESS      n= 56 clears=500/500 power_lcb=0.9940  t=174s  [elapsed 266s]
+PESS      n= 80 clears=500/500 power_lcb=0.9940  t=238s  [elapsed 504s]
+PLAN      n= 30 clears=395/500 power_lcb=0.7583  t=93s  [elapsed 597s]
+PLAN      n= 80 clears=500/500 power_lcb=0.9940  t=250s  [elapsed 847s]
+TRUENULL  n= 80 clears=0/500 power_lcb=0.0001  t=246s  [elapsed 1093s]
+
+=== F2 DECISION: E1 ===
+power_lcb(56) pess=0.9940  power_lcb(80) pess=0.9940
+under-power tripwire: planning p30=0.7583 < 0.80 <= p80=0.9940  -> OK
+true-null p=0.0001 (<=0.10) -> OK
+DONE_F2
+F2_EXIT=0

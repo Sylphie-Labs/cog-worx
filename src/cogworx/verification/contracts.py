@@ -11,11 +11,16 @@ Ported from tess ``artifacts.py`` (``FrameArtifact`` / ``ThesisArtifact`` / ``Ex
 and MUST NOT be parsed for control. ``source`` is the honest-provenance bit (F1) — the epistemic
 class of the verdict, set by the oracle from its OWN structural nature and NEVER from model output,
 so a model-judge verdict can never be laundered into a confirmed tool-proof.
+
+Contract changelog (CANON §6.1):
+  - 2026-06-16 (Pod 4.4b, ADDITIVE): ``Verdict.test_provenance``
+    (``Literal["thesis","frozen","n/a"]``, default ``"n/a"``) — audit-only test-provenance bit for
+    INV-3a; control-inert (``is_executable`` still derives from ``source`` only).
 """
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -92,6 +97,24 @@ class Verdict(BaseModel):
     confidence, and stamps the procedural-KG Beta ONLY when ``valid_check`` and
     :attr:`is_executable`. Structural enforcement is the F2 routing invariant + code review; this
     contract is the interim discipline.
+    """
+
+    test_provenance: Literal["thesis", "frozen", "n/a"] = "n/a"
+    """Audit-only record of which test corpus was used in the code-execution oracle (INV-3a).
+
+    Set by :class:`~cogworx.verification.oracles.code.CodeOracle` from its OWN ``test_source``
+    selector (``"thesis"`` or ``"frozen"``); every other oracle and every direct ``Verdict``
+    construction keeps the default ``"n/a"``.
+
+    CONTRACT (S9 / audit-only discipline — mirrors ``source`` and ``reasoning``):
+      (a) NEVER read for routing, gating, or control flow anywhere in the system.
+      (b) :attr:`is_executable` continues to derive ONLY from ``source``; ``test_provenance``
+          plays no role in it.
+      (c) MUST be set by the oracle from its own ``test_source`` configuration, NEVER from model
+          output.  A model-supplied value here is an S9 violation of the same class as a
+          model-supplied ``source``.
+    Wiring this field into confirmed-minting or epistemic decisions is deferred as
+    CF-4.4-CODEORACLE-SELFTEST (Jim-gated carry-forward).
     """
 
     @property

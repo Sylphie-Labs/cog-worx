@@ -111,6 +111,32 @@ async def test_refuses_to_execute_on_tainted_drive() -> None:
     assert "refused" in verdict.reasoning.lower()
 
 
+async def test_thesis_source_stamps_test_provenance_thesis() -> None:
+    """Pod 4.4b: default (thesis) oracle stamps test_provenance='thesis' on evaluate()."""
+    verdict = await CodeOracle().evaluate(
+        frame=_frame(), thesis=_thesis(_GOOD_SOLUTION, _PASSING_TEST), ctx=await _ctx()
+    )
+    assert verdict.test_provenance == "thesis"
+    assert verdict.source == "tool"
+    assert verdict.is_executable  # control-inertness: test_provenance does NOT touch is_executable
+
+
+async def test_frozen_source_stamps_test_provenance_frozen_and_uses_frozen_test() -> None:
+    """Pod 4.4b: frozen oracle uses the frozen test (not thesis test) and stamps 'frozen'."""
+    # The frozen test PASSES the good solution; the thesis experiment_design is the FAILING test.
+    # If the oracle used the thesis test instead, holds would be False — which would falsify this.
+    frozen = _PASSING_TEST
+    oracle = CodeOracle(test_source="frozen", frozen_test_code=frozen)
+    verdict = await oracle.evaluate(
+        frame=_frame(), thesis=_thesis(_GOOD_SOLUTION, _FAILING_TEST), ctx=await _ctx()
+    )
+    assert verdict.test_provenance == "frozen"
+    assert verdict.holds is True   # frozen test passed
+    assert verdict.valid_check is True
+    assert verdict.source == "tool"
+    assert verdict.is_executable  # test_provenance is audit-only; is_executable still source-only
+
+
 def test_build_docker_cmd_carries_the_hardening_flags() -> None:
     cmd = build_docker_cmd(tmp_str="/tmp/x", container_name="c", image="img", docker_bin="docker")
     assert "--network" in cmd and cmd[cmd.index("--network") + 1] == "none"

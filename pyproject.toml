@@ -32,6 +32,13 @@ otlp = ["opentelemetry-exporter-otlp-proto-http>=1.42.1"]
 # StdioMCPClient is the only surface that requires it; FakeMCPClient
 # and bind_mcp_tools work without it.
 mcp = ["mcp>=1.3.0"]
+# Sizing fast-kernel extra (Pod 4.4c-0). numpy powers the vectorized
+# `cogworx.eval._sizing_fast` SAME-estimator bootstrap for the heavy sizing
+# sweep ONLY. It is lazy-imported inside `sizing.run_sizing(kernel="fast")`
+# and never touched by the core or the live gate, so `import cogworx.eval`
+# works with numpy absent (CANON S2: numpy is the adopter's burden, opt-in).
+# Additive optional extra -> pre-1.0 minor bump, no breaking change.
+sizing = ["numpy>=1.26"]
 
 [dependency-groups]
 dev = [
@@ -86,6 +93,14 @@ ignore_missing_imports = true
 # MCP SDK is an optional dep (the `mcp` extra); lazy-imported inside methods only.
 [[tool.mypy.overrides]]
 module = ["mcp.*"]
+ignore_missing_imports = true
+
+# numpy is the optional `sizing` extra: top-level-imported only by the private
+# `cogworx.eval._sizing_fast` fast kernel and lazy-imported by `sizing.py`. A
+# checkout without the extra must still type-check (numpy ships its own stubs
+# when installed; ignore when absent).
+[[tool.mypy.overrides]]
+module = ["numpy.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

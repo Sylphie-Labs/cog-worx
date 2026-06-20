@@ -1,0 +1,77 @@
+{
+  "master_seed": 20260616,
+  "n_studies": 500,
+  "n_outer": 20000,
+  "kernel": "fast",
+  "corrected_quantile": 0.0025,
+  "pessimistic_corner": [
+    0.045,
+    0.028
+  ],
+  "decision": "E1",
+  "pessimistic_corner_corrected": [
+    {
+      "n": 30,
+      "sb_sens": 0.045,
+      "sb_spec": 0.028,
+      "quantile": 0.0025,
+      "n_studies": 500,
+      "n_outer": 20000,
+      "clears": 426,
+      "power_lcb": 0.8236784897744656
+    },
+    {
+      "n": 56,
+      "sb_sens": 0.045,
+      "sb_spec": 0.028,
+      "quantile": 0.0025,
+      "n_studies": 500,
+      "n_outer": 20000,
+      "clears": 500,
+      "power_lcb": 0.9940383397042751
+    },
+    {
+      "n": 80,
+      "sb_sens": 0.045,
+      "sb_spec": 0.028,
+      "quantile": 0.0025,
+      "n_studies": 500,
+      "n_outer": 20000,
+      "clears": 500,
+      "power_lcb": 0.9940383397042751
+    }
+  ],
+  "power_lcb_56": 0.9940383397042751,
+  "power_lcb_80": 0.9940383397042751,
+  "tripwire_planning_30": {
+    "n": 30,
+    "sb_sens": 0.02,
+    "sb_spec": 0.01,
+    "quantile": 0.0025,
+    "n_studies": 500,
+    "n_outer": 20000,
+    "clears": 395,
+    "power_lcb": 0.7582674361765385
+  },
+  "tripwire_planning_80": {
+    "n": 80,
+    "sb_sens": 0.02,
+    "sb_spec": 0.01,
+    "quantile": 0.0025,
+    "n_studies": 500,
+    "n_outer": 20000,
+    "clears": 500,
+    "power_lcb": 0.9940383397042751
+  },
+  "true_null": {
+    "n": 80,
+    "sb_sens": 0.02,
+    "sb_spec": 0.01,
+    "quantile": 0.0025,
+    "n_studies": 500,
+    "n_outer": 20000,
+    "clears": 0,
+    "power_lcb": 0.00010237470269203186
+  },
+  "wall_s": 1093.0
+}
