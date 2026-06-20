@@ -93,11 +93,18 @@ def test_columnar_round_trip_is_lossless() -> None:
     order-insensitive, so set-equality on the keyed records is the meaningful losslessness. Pins the
     fast kernel reads the EXACT frozen Cell schema (shared-schema invariant)."""
     cells = _make_cells(0)
+    # Stamp a per-item regime so the round-trip is exercised on a NON-default value (synth cells all
+    # carry regime="" -- without this the pin would not prove regime survives cells->arrays->cells).
+    _REGIMES = ("logic-wrong", "edge-case-miss", "spec-misread", "silent-degradation", "")
+    cells = [c.model_copy(update={"regime": _REGIMES[c.item_id % len(_REGIMES)]}) for c in cells]
     col = cells_to_columnar(cells, arm_a="D", arm_b="C")
     back = columnar_to_cells(col)
 
-    def keyed(cs: Sequence[Cell]) -> dict[tuple[int, str, int], tuple[int, int, str, str]]:
-        return {(c.item_id, c.arm, c.trial): (c.flagged, c.seed, c.route, c.stratum) for c in cs}
+    def keyed(cs: Sequence[Cell]) -> dict[tuple[int, str, int], tuple[int, int, str, str, str]]:
+        return {
+            (c.item_id, c.arm, c.trial): (c.flagged, c.seed, c.route, c.stratum, c.regime)
+            for c in cs
+        }
 
     assert keyed(back) == keyed(cells)
     assert len(back) == len(cells)

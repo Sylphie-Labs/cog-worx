@@ -65,6 +65,7 @@ class ColumnarArtifact:
         "flags_b",
         "item_ids",
         "r",
+        "regimes",
         "routes",
         "seeds",
         "strata",
@@ -85,6 +86,7 @@ class ColumnarArtifact:
         trials: np.ndarray,
         seeds: np.ndarray,
         routes: list[list[tuple[str, str]]],
+        regimes: list[str],
     ) -> None:
         self.item_ids = item_ids
         self.strata = strata
@@ -96,6 +98,7 @@ class ColumnarArtifact:
         self.trials = trials
         self.seeds = seeds
         self.routes = routes
+        self.regimes = regimes
         self.stratum_rows: dict[Stratum, np.ndarray] = {
             s: np.flatnonzero(np.array([st == s for st in strata]))
             for s in dict.fromkeys(strata)
@@ -109,13 +112,14 @@ def cells_to_columnar(artifact: Sequence[Cell], *, arm_a: str, arm_b: str) -> Co
     boundary validation -- the artifact is external input to the fast path -- requires every item to
     carry exactly two arms (``arm_a``, ``arm_b``), one stratum, and a constant trial count R.
     """
-    by_item: dict[int, dict[str, dict[int, tuple[Stratum, int, int, str]]]] = {}
+    by_item: dict[int, dict[str, dict[int, tuple[Stratum, int, int, str, str]]]] = {}
     for c in artifact:
         by_item.setdefault(c.item_id, {}).setdefault(c.arm, {})[c.trial] = (
             c.stratum,
             c.seed,
             c.flagged,
             c.route,
+            c.regime,
         )
 
     item_ids_sorted = sorted(by_item)
@@ -131,6 +135,7 @@ def cells_to_columnar(artifact: Sequence[Cell], *, arm_a: str, arm_b: str) -> Co
     seeds = np.empty((n, r), dtype=np.int64)
     trials = np.empty((n, r), dtype=np.int64)
     strata: list[Stratum] = []
+    regimes: list[str] = []
     routes: list[list[tuple[str, str]]] = []
 
     for row, item_id in enumerate(item_ids_sorted):
@@ -144,12 +149,16 @@ def cells_to_columnar(artifact: Sequence[Cell], *, arm_a: str, arm_b: str) -> Co
         item_strata = {v[0] for v in a_trials.values()} | {v[0] for v in b_trials.values()}
         if len(item_strata) != 1:
             raise ValueError(f"item {item_id} spans strata {item_strata}; expected exactly one")
+        item_regimes = {v[4] for v in a_trials.values()} | {v[4] for v in b_trials.values()}
+        if len(item_regimes) != 1:
+            raise ValueError(f"item {item_id} spans regimes {item_regimes}; expected exactly one")
         item_ids[row] = item_id
         strata.append(item_strata.pop())
+        regimes.append(item_regimes.pop())
         row_routes: list[tuple[str, str]] = []
         for trial in range(r):
-            _stratum_a, seed_a, flag_a, route_a = a_trials[trial]
-            _stratum_b, _seed_b, flag_b, route_b = b_trials[trial]
+            _stratum_a, seed_a, flag_a, route_a, _regime_a = a_trials[trial]
+            _stratum_b, _seed_b, flag_b, route_b, _regime_b = b_trials[trial]
             flags_a[row, trial] = flag_a
             flags_b[row, trial] = flag_b
             seeds[row, trial] = seed_a
@@ -168,6 +177,7 @@ def cells_to_columnar(artifact: Sequence[Cell], *, arm_a: str, arm_b: str) -> Co
         trials=trials,
         seeds=seeds,
         routes=routes,
+        regimes=regimes,
     )
 
 
@@ -180,6 +190,7 @@ def columnar_to_cells(col: ColumnarArtifact) -> list[Cell]:
     cells: list[Cell] = []
     for row, item_id in enumerate(col.item_ids.tolist()):
         stratum = col.strata[row]
+        regime = col.regimes[row]
         for trial in range(col.r):
             seed = int(col.seeds[row, trial])
             route_a, route_b = col.routes[row][trial]
@@ -192,6 +203,7 @@ def columnar_to_cells(col: ColumnarArtifact) -> list[Cell]:
                     seed=seed,
                     flagged=int(col.flags_a[row, trial]),
                     route=route_a,
+                    regime=regime,
                 )
             )
             cells.append(
@@ -203,6 +215,7 @@ def columnar_to_cells(col: ColumnarArtifact) -> list[Cell]:
                     seed=seed,
                     flagged=int(col.flags_b[row, trial]),
                     route=route_b,
+                    regime=regime,
                 )
             )
     return cells

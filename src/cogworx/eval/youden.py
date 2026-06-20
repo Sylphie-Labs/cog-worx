@@ -19,6 +19,17 @@ needs spec; resampling it per-arm would inject artificial independence.
 
 Pure stdlib + :mod:`cogworx.knowledge.beta`. No scipy, no numpy (CANON S2). All Monte-Carlo uses a
 seeded :class:`random.Random` so every result is reproducible.
+
+Contract changelog:
+  - 2026-06-16 (Pod 4.4a): initial -- Cell (frozen value type), synth_cells, nested_bootstrap_delta,
+    power_lcb_from_studies, realized_variance_diagnostic.  Additive new module; no existing callers.
+  - 2026-06-19 (Pod 4.4c-0): nested_bootstrap_delta gains ``quantile: float = 0.025`` (the look-
+    corrected gate quantile is plumbed via this kwarg).  Additive: the default reproduces the
+    shipped 2.5/97.5 CI byte-for-byte, so existing callers are unaffected (pinned).
+  - 2026-06-20 (Pod 4.4c-1): Cell gains ``regime: str = ""`` (reported-only error-regime taxonomy
+    tag; never read by nested_bootstrap_delta / _index_cells, which partition on stratum).  Additive
+    per CANON S6.1: default "" leaves every pre-existing Cell byte-identical; the three schema-pin
+    sites + the _sizing_fast columnar round-trip moved in lockstep.
 """
 
 from __future__ import annotations
@@ -52,9 +63,12 @@ class Cell(BaseModel):
 
     ``seed`` is the CRN pairing unit: for a given ``(item_id, trial)`` every arm ran under the same
     seed, so a paired delta cancels the shared luck. ``flagged`` is the only outcome bit the scorer
-    reads (1 = the arm raised a flag on this item); ``route`` is audit/diagnostic only. This is the
-    EXACT schema both :func:`synth_cells` emits and :func:`nested_bootstrap_delta` consumes -- the
-    shared-schema invariant the sizing simulation depends on (plan sec 13.6).
+    reads (1 = the arm raised a flag on this item); ``route`` is audit/diagnostic only.
+    ``regime`` is the error-regime taxonomy tag (plan sec 2.A) -- reported-only corpus metadata,
+    defaulting to ``""`` so the bootstrap, which partitions error-vs-clean purely from ``stratum``,
+    never reads it. This is the EXACT schema both :func:`synth_cells` emits and
+    :func:`nested_bootstrap_delta` consumes -- the shared-schema invariant the sizing simulation
+    depends on (plan sec 13.6).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -66,6 +80,7 @@ class Cell(BaseModel):
     seed: int
     flagged: int
     route: str
+    regime: str = ""
 
 
 class VarianceDiagnostic(BaseModel):
@@ -441,6 +456,7 @@ def synth_cells(
         "seed",
         "flagged",
         "route",
+        "regime",
     }
     return cells
 

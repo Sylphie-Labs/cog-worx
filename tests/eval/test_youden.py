@@ -103,6 +103,7 @@ def test_cell_schema_is_exactly_the_frozen_record() -> None:
         "seed",
         "flagged",
         "route",
+        "regime",
     }
 
 
