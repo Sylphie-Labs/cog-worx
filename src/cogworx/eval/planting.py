@@ -52,6 +52,18 @@ Contract changelog (CANON §6.1):
     ``[0, n_clean_singletons]`` (eval-stats option (a)) — fixes a false ``InfeasibleSplitError`` on
     an honest corpus (1 K-pair + 1 O-pair). K/O strata keep the (unreachable-on-valid-input)
     ``_check_deficit`` defensive assert. No public-surface change.
+  - 2026-06-21 (Pod 4.4c-6b fix, ADDITIVE): ``K_REGIME_TO_SPLIT_BUCKET`` (Final) +
+    ``canonical_split_regime`` (pure read-through) — the regime->canon split projection closing the
+    4.4c-6b integration gap: a ``KInjector`` corpus carrying RAW ``K_ERROR_KINDS`` tags
+    (``spec-misread`` / ``silent-degradation``) previously crashed / monocultured ``draw_splits``
+    (its step-1 cell key read the raw candidate tag, which is not a canonical split bucket).
+    ``draw_splits`` now keys its step-1 cells on ``canonical_split_regime(err)``: O/detK items pass
+    through unchanged (behavior-preserving for the already-passing paths), each K kind round-robins
+    across TWO buckets (eval-stats A1: a 2->1 scalar map is degenerate, permanently zeroing one
+    bucket). LAUNDERING WALL: ``canonical_split_regime`` is PURE — it NEVER writes the bucket back
+    to ``item.error_regime``; the raw candidate tag survives verbatim into the §2.C second-author
+    audit, and the bucket is allocation-only (NEVER reaches ``Cell.regime`` / the §2.B bound).
+    Additive new public surface; the O/detK draw is byte-identical.
 """
 
 from __future__ import annotations
@@ -691,6 +703,78 @@ SPLIT_TARGET_MEASUREMENT: Final = 0.70
 
 _REGIMES: Final = ("logic-wrong", "edge-case-miss", "off-by-semantics")
 
+K_REGIME_TO_SPLIT_BUCKET: Final[dict[str, tuple[str, ...]]] = {
+    "spec-misread": ("logic-wrong", "edge-case-miss"),
+    "silent-degradation": ("off-by-semantics", "edge-case-miss"),
+}
+"""Frozen projection of the 2 oracle-blind K error kinds (:data:`K_ERROR_KINDS`) onto the canonical
+split buckets (:data:`_REGIMES`) — ALLOCATION-ONLY (the §2.C split-draw cell axis), NEVER a label.
+
+Why each K kind maps across TWO buckets (eval-stats A1): a scalar 2-input -> 1-bucket map is
+DEGENERATE by cardinality. Two K kinds onto two distinct singletons can reach at most 2 of the 3
+canonical buckets, so one bucket (here ``edge-case-miss``) is PERMANENTLY zeroed — a silent 2-regime
+K monoculture that biases the K split marginal. Mapping each kind across two buckets makes the union
+image cover all 3 ``_REGIMES`` (``edge-case-miss`` is shared), so the deterministic round-robin in
+:func:`canonical_split_regime` keeps every K-split bucket reachable.
+
+This is the SPLIT-DRAW allocation axis ONLY. It is NEVER written back to ``item.error_regime`` and
+MUST NOT reach ``Cell.regime`` or the §2.B contribution bound: the raw ``spec-misread`` /
+``silent-degradation`` candidate tag survives verbatim into the §2.C second-author audit. eval-stats
+targets (A1)."""
+
+# Firewall: the projection's domain is EXACTLY the K kinds, and its image lies inside the canonical
+# split buckets — so a drift in either vocabulary trips at import, not silently in the draw.
+assert set(K_REGIME_TO_SPLIT_BUCKET) == set(K_ERROR_KINDS), (
+    "K_REGIME_TO_SPLIT_BUCKET domain must be exactly K_ERROR_KINDS"
+)
+assert all(
+    bucket in _REGIMES
+    for buckets in K_REGIME_TO_SPLIT_BUCKET.values()
+    for bucket in buckets
+), "K_REGIME_TO_SPLIT_BUCKET image must lie inside the canonical split buckets (_REGIMES)"
+assert {b for buckets in K_REGIME_TO_SPLIT_BUCKET.values() for b in buckets} == set(_REGIMES), (
+    "K_REGIME_TO_SPLIT_BUCKET image must COVER all 3 canonical buckets (no permanent monoculture)"
+)
+
+
+def canonical_split_regime(item: PlantedItem) -> str:
+    """Project ``item.error_regime`` onto a canonical SPLIT bucket (allocation-only; PURE read).
+
+    The split-draw cells (:func:`draw_splits` step 1) are keyed on the canonical :data:`_REGIMES`.
+    Deterministic-O and detK items already carry a canonical ``error_regime`` (operator-derived via
+    :func:`_derive_o_regime`), so they pass through UNCHANGED — behavior-preserving for the O/detK
+    paths. A cross-family LLM-K item carries a CANDIDATE ``error_regime`` in :data:`K_ERROR_KINDS`
+    (``spec-misread`` / ``silent-degradation``), which is NOT a canonical split bucket — left raw
+    it crashes / monocultures the draw (the 4.4c-6b integration gap). Such an item is projected onto
+    one of its kind's two buckets (:data:`K_REGIME_TO_SPLIT_BUCKET`) by a DETERMINISTIC round-robin
+    keyed on the item's stable ``provisional_id`` and folded into :data:`SPLIT_SEED`, so the
+    assignment is reproducible and keeps all 3 K-split buckets reachable.
+
+    LAUNDERING WALL (the red-team-critical invariant): this is a PURE function — it NEVER mutates
+    ``item.error_regime``. The candidate ``spec-misread`` / ``silent-degradation`` tag MUST survive
+    verbatim into the §2.C second-author audit (labeling reads ``item.error_regime`` as the
+    candidate). The returned bucket is consumed ONLY by the split allocation; it must NEVER reach
+    ``Cell.regime`` or the §2.B contribution bound.
+
+    LOUD on the unknown (mirrors :func:`_derive_o_regime`): an ``error_regime`` that is neither a
+    canonical bucket nor a known K kind RAISES :exc:`ValueError` — no silent default.
+    """
+    regime = item.error_regime
+    if regime in _REGIMES:
+        return regime  # already canonical (deterministic-O / detK) — pass through unchanged
+    if regime in K_REGIME_TO_SPLIT_BUCKET:
+        buckets = K_REGIME_TO_SPLIT_BUCKET[regime]
+        # Deterministic round-robin keyed on the stable id, folded into SPLIT_SEED so the bucket
+        # choice is reproducible from the frozen seed alone (no mutation of item.error_regime).
+        idx = hash((SPLIT_SEED, "k_split_bucket", regime, item.provisional_id)) % len(buckets)
+        return buckets[idx]
+    raise ValueError(
+        f"canonical_split_regime: error_regime {regime!r} (item {item.provisional_id}) is neither "
+        f"a canonical split bucket {_REGIMES!r} nor a known K kind "
+        f"{tuple(K_REGIME_TO_SPLIT_BUCKET)!r} — no silent default (mirrors _derive_o_regime's "
+        f"loud-on-unknown discipline)"
+    )
+
 
 def _hamilton_apportion(total: int, weights: Sequence[float], keys: Sequence[str]) -> list[int]:
     """Largest-remainder (Hamilton) apportionment of ``total`` across cells with the given
@@ -792,8 +876,13 @@ def draw_splits(
         cell_pairs: dict[str, list[PlantedPair]] = {r: [] for r in _REGIMES}
         for pair in pairs:
             err = pair.error_item
-            if err.candidate_stratum == stratum and err.error_regime in cell_pairs:
-                cell_pairs[err.error_regime].append(pair)
+            if err.candidate_stratum == stratum:
+                # ALLOCATION-ONLY canonical bucket: K candidate tags (spec-misread /
+                # silent-degradation) are projected onto a canonical split bucket here; O/detK pass
+                # through unchanged. The raw err.error_regime is NEVER mutated (laundering wall) —
+                # the candidate tag survives verbatim into the §2.C second-author audit.
+                bucket = canonical_split_regime(err)
+                cell_pairs[bucket].append(pair)
         stratum_total = sum(len(v) for v in cell_pairs.values())
         n_meas_stratum = round(target * stratum_total)
         weights = [target * len(cell_pairs[r]) for r in _REGIMES]
@@ -865,6 +954,7 @@ __all__ = [
     "DETK_MIN_POOL",
     "DETK_PROBE_OPERATOR",
     "K_ERROR_KINDS",
+    "K_REGIME_TO_SPLIT_BUCKET",
     "MAX_PLANTING_CALLS",
     "MAX_RETRIES_PER_ITEM",
     "OPERATOR_REGIME_TABLE",
@@ -880,6 +970,7 @@ __all__ = [
     "SameFamilyFallback",
     "Seed",
     "build_detk_pair",
+    "canonical_split_regime",
     "draw_splits",
     "is_detk",
     "mutate_source",

@@ -22,6 +22,8 @@ from cogworx.eval.planting import (
     ANSWER_BEARING_FIELDS,
     DETK_MIN_POOL,
     DETK_PROBE_OPERATOR,
+    K_ERROR_KINDS,
+    K_REGIME_TO_SPLIT_BUCKET,
     OPERATOR_REGIME_TABLE,
     InfeasibleSplitError,
     KInjector,
@@ -33,6 +35,7 @@ from cogworx.eval.planting import (
     Seed,
     _derive_o_regime,
     build_detk_pair,
+    canonical_split_regime,
     draw_splits,
     is_detk,
     mutate_source,
@@ -774,6 +777,195 @@ def test_split_draw_T7_property_no_refuse_every_stratum_near_target(
             continue
         frac = _meas_count(asg, items) / total
         assert abs(frac - 0.70) <= 1 / total
+
+
+# ---------------------------------------------------------------------------
+# Pin 4b — regime->canon split projection (4.4c-6b fix): raw K kinds draw a feasible split,
+# the round-robin keeps all 3 buckets reachable, and the candidate tag is NEVER laundered.
+# ---------------------------------------------------------------------------
+
+
+def _raw_k_pair(error_id: int, clean_id: int, kind: str) -> PlantedPair:
+    """A K pair whose error member carries a RAW candidate K kind (spec-misread /
+    silent-degradation) — exactly what ``KInjector.plant`` stamps. This is the crash scenario: the
+    raw kind is NOT a canonical split bucket, so pre-fix ``draw_splits`` skipped/monocultured it."""
+    err = _planted(
+        provisional_id=error_id,
+        is_error=1,
+        candidate_stratum="K",
+        error_regime=kind,
+        planter=LLMPlanterStamp(model_family="other-fam", model_id="other-fam/x"),
+        matched_sibling_id=clean_id,
+        split="tuning",
+    )
+    clean = _planted(
+        provisional_id=clean_id,
+        is_error=0,
+        candidate_stratum="clean",
+        error_regime="",
+        planter=LLMPlanterStamp(model_family="other-fam", model_id="other-fam/x"),
+        matched_sibling_id=error_id,
+        split="tuning",
+    )
+    return PlantedPair(error_item=err, clean_item=clean)
+
+
+def _raw_k_corpus(n_per_kind: int) -> list[PlantedPair]:
+    """``n_per_kind`` K-pairs for EACH raw K kind (both kinds present), globally-unique ids."""
+    pairs: list[PlantedPair] = []
+    pid = 0
+    for kind in K_ERROR_KINDS:
+        for _ in range(n_per_kind):
+            pairs.append(_raw_k_pair(pid, pid + 1, kind))
+            pid += 2
+    return pairs
+
+
+def test_k_regime_projection_domain_is_exactly_k_error_kinds() -> None:
+    """The projection's domain is EXACTLY the 2 oracle-blind K kinds (a drift in either vocabulary
+    trips here, not silently in the draw)."""
+    assert set(K_REGIME_TO_SPLIT_BUCKET) == set(K_ERROR_KINDS)
+
+
+def test_k_regime_projection_image_covers_all_three_buckets() -> None:
+    """eval-stats A1: the union image must cover all 3 canonical buckets — a 2->1 scalar map would
+    permanently zero one bucket (a silent 2-regime K monoculture)."""
+    image = {b for buckets in K_REGIME_TO_SPLIT_BUCKET.values() for b in buckets}
+    assert image == {"logic-wrong", "edge-case-miss", "off-by-semantics"}
+    # each kind maps across exactly two buckets (degeneracy-avoidance)
+    assert all(len(buckets) == 2 for buckets in K_REGIME_TO_SPLIT_BUCKET.values())
+    assert K_REGIME_TO_SPLIT_BUCKET["spec-misread"] == ("logic-wrong", "edge-case-miss")
+    assert K_REGIME_TO_SPLIT_BUCKET["silent-degradation"] == ("off-by-semantics", "edge-case-miss")
+
+
+def test_canonical_split_regime_passes_through_o_regimes_unchanged() -> None:
+    """Behavior-preserving: a deterministic-O / detK item already carries a canonical regime —
+    ``canonical_split_regime`` returns it UNCHANGED (the already-passing O/detK paths)."""
+    for regime in ("logic-wrong", "edge-case-miss", "off-by-semantics"):
+        item = _planted(candidate_stratum="O", error_regime=regime)
+        assert canonical_split_regime(item) == regime
+
+
+def test_canonical_split_regime_projects_raw_k_kind_into_a_bucket() -> None:
+    """A raw K candidate tag projects into ONE of its kind's two split buckets — never left raw."""
+    for kind in K_ERROR_KINDS:
+        item = _planted(candidate_stratum="K", error_regime=kind)
+        bucket = canonical_split_regime(item)
+        assert bucket in K_REGIME_TO_SPLIT_BUCKET[kind]
+        assert bucket in ("logic-wrong", "edge-case-miss", "off-by-semantics")
+
+
+def test_canonical_split_regime_unknown_regime_raises_loudly() -> None:
+    """Mirrors ``_derive_o_regime``: a regime that is neither canonical nor a known K kind RAISES —
+    no silent default."""
+    item = _planted(candidate_stratum="K", error_regime="not-a-regime")
+    with pytest.raises(ValueError, match="no silent default"):
+        canonical_split_regime(item)
+
+
+def test_canonical_split_regime_is_pure_does_not_mutate_item() -> None:
+    """The laundering wall (unit level): calling the helper does NOT change ``item.error_regime`` —
+    the raw candidate tag is preserved. (PlantedItem is frozen, so a write would also raise.)"""
+    item = _planted(candidate_stratum="K", error_regime="spec-misread")
+    _ = canonical_split_regime(item)
+    assert item.error_regime == "spec-misread"
+
+
+def test_split_draw_raw_k_corpus_does_not_raise() -> None:
+    """THE 4.4c-6b CRASH SCENARIO: a corpus of RAW K-kind tags (spec-misread / silent-degradation)
+    now draws a FEASIBLE split. Pre-fix, step-1 read the raw candidate tag (not a canonical bucket)
+    and either skipped every K pair (monoculture) or mis-counted -> InfeasibleSplitError."""
+    pairs = _raw_k_corpus(20)  # 20 spec-misread + 20 silent-degradation K-pairs
+    asg = draw_splits(pairs, [])  # MUST NOT raise
+    k_err = [p.error_item for p in pairs]
+    # the K stratum hits its 0.70 marginal (not monocultured / under-placed)
+    assert _meas_count(asg, k_err) == round(0.70 * len(k_err)) == 28
+
+
+def test_split_draw_raw_k_round_robin_keeps_all_buckets_reachable() -> None:
+    """Round-robin reachability: with BOTH K kinds present, every one of the 3 K-split buckets
+    receives at least one pair (no permanently-empty bucket — the monoculture the 2->1 map caused).
+    Asserted on the ALLOCATION buckets via the same projection draw_splits uses."""
+    pairs = _raw_k_corpus(20)
+    buckets_hit = {canonical_split_regime(p.error_item) for p in pairs}
+    assert buckets_hit == {"logic-wrong", "edge-case-miss", "off-by-semantics"}
+
+
+def test_split_draw_does_not_launder_raw_k_candidate_tag() -> None:
+    """THE RED-TEAM-CRITICAL INVARIANT (laundering wall): after ``draw_splits``, every K item's
+    ``error_regime`` is STILL its original raw candidate (spec-misread / silent-degradation). The
+    split bucket is allocation-only — it must NEVER be written back to ``error_regime`` (which feeds
+    Cell.regime / the §2.B contribution bound + the §2.C second-author audit)."""
+    pairs = _raw_k_corpus(20)
+    raw_before = {p.error_item.provisional_id: p.error_item.error_regime for p in pairs}
+    _ = draw_splits(pairs, [])
+    for p in pairs:
+        # the tag is unchanged AND is still a raw K kind, never a canonical split bucket
+        assert p.error_item.error_regime == raw_before[p.error_item.provisional_id]
+        assert p.error_item.error_regime in K_ERROR_KINDS
+        assert p.error_item.error_regime not in (
+            "logic-wrong",
+            "edge-case-miss",
+            "off-by-semantics",
+        )
+
+
+def test_split_draw_raw_k_is_reproducible_under_split_seed() -> None:
+    """Reproducibility: same SPLIT_SEED (frozen) -> identical bucket assignment + identical split
+    draw across two independent calls on the raw-K corpus."""
+    pairs = _raw_k_corpus(20)
+    assert draw_splits(pairs, []) == draw_splits(pairs, [])
+    # the round-robin bucket choice is itself reproducible (folds into SPLIT_SEED)
+    first = [canonical_split_regime(p.error_item) for p in pairs]
+    second = [canonical_split_regime(p.error_item) for p in pairs]
+    assert first == second
+
+
+def test_split_draw_o_path_byte_identical_after_fix() -> None:
+    """Behavior-preserving guard: the O draw is UNCHANGED by the projection (O regimes pass through
+    canonical_split_regime untouched) — same assignment as the canonical 80-pair O headline."""
+    pairs = _o_corpus_80_pairs()
+    asg = draw_splits(pairs, [])
+    per_cell = {}
+    for regime in ("logic-wrong", "edge-case-miss", "off-by-semantics"):
+        cell = [p for p in pairs if p.error_item.error_regime == regime]
+        per_cell[regime] = sum(
+            1 for p in cell if asg[p.error_item.provisional_id] == "measurement"
+        )
+    assert per_cell == {"logic-wrong": 19, "edge-case-miss": 19, "off-by-semantics": 18}
+
+
+# --- The mutation test: reverting draw_splits to read error_regime directly re-breaks ---------
+
+
+def test_mutation_reading_raw_error_regime_directly_reproduces_the_crash() -> None:
+    """MUTATION-RESISTANCE (the spec's required mutation test): a faithful re-creation of the
+    PRE-FIX step-1 placement — keying the cell on the RAW ``err.error_regime`` with the old
+    ``in cell_pairs`` skip-guard — monocultures the K stratum (every raw-K pair is skipped because
+    its tag is not a canonical bucket), so the K measurement marginal collapses to 0. This pins that
+    the fix (``canonical_split_regime``) is load-bearing: revert it and this regime-projection guard
+    fails. (The original symptom was crash-OR-monoculture; we assert the monoculture branch, which
+    is deterministic and does not depend on singleton mis-counts.)"""
+    from cogworx.eval.planting import _REGIMES
+
+    pairs = _raw_k_corpus(20)
+    # Re-create the buggy step-1 cell assignment verbatim (raw read + skip-guard).
+    buggy_cells: dict[str, list[PlantedPair]] = {r: [] for r in _REGIMES}
+    placed = 0
+    for pair in pairs:
+        err = pair.error_item
+        if err.candidate_stratum == "K" and err.error_regime in buggy_cells:  # the pre-fix guard
+            buggy_cells[err.error_regime].append(pair)
+            placed += 1
+    # Pre-fix: NO raw-K pair lands in any canonical cell -> a total monoculture (all skipped).
+    assert placed == 0
+    # The fix routes all of them through canonical_split_regime -> they DO land.
+    fixed_placed = sum(
+        1
+        for pair in pairs
+        if canonical_split_regime(pair.error_item) in _REGIMES
+    )
+    assert fixed_placed == len(pairs) == 40
 
 
 # ---------------------------------------------------------------------------
