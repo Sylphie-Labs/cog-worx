@@ -14,6 +14,19 @@ reproduces the shipped 2.5/97.5 CI byte-for-byte -> an additive minor bump, no b
 
 from __future__ import annotations
 
+from cogworx.eval.corpus import (
+    Adjudication,
+    CorpusItem,
+    CorpusLoadError,
+    DeterministicPlanterStamp,
+    DifficultyMarker,
+    HumanLabelProvenance,
+    LabelProvenance,
+    LLMPlanterStamp,
+    OracleLabelProvenance,
+    PlanterStamp,
+    load_corpus,
+)
 from cogworx.eval.youden import (
     Cell,
     VarianceDiagnostic,
@@ -25,8 +38,19 @@ from cogworx.eval.youden import (
 )
 
 __all__ = [
+    "Adjudication",
     "Cell",
+    "CorpusItem",
+    "CorpusLoadError",
+    "DeterministicPlanterStamp",
+    "DifficultyMarker",
+    "HumanLabelProvenance",
+    "LLMPlanterStamp",
+    "LabelProvenance",
+    "OracleLabelProvenance",
+    "PlanterStamp",
     "VarianceDiagnostic",
+    "load_corpus",
     "mc_proportion_lcb",
     "nested_bootstrap_delta",
     "power_lcb_from_studies",
