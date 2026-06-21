@@ -77,6 +77,48 @@ class Adjudication(BaseModel):
     timestamp: datetime
 
 
+class RegimeAdjudication(BaseModel):
+    """A second author's K-stratum error-regime audit verdict (eval-stats §6.D, Pod 4.4c-4).
+
+    SEPARATE from :class:`Adjudication` by design: this records the regime second-author audit
+    over the K-stratum, with its own verdict vocabulary. Do NOT fold this into ``Adjudication`` —
+    the two ``abstain`` semantics are opposite (an :class:`Adjudication` ``abstain`` DROPS the item;
+    a regime ``abstain`` KEEPS it in the pooled δ), and widening ``Adjudication.verdict`` would
+    conflate them. This record is the single source of truth for a K-item's ``error_regime``.
+
+    Downstream semantics:
+      - ``confirm-regime`` keeps the planter's tag (the :class:`DeterministicPlanterStamp` /
+        :class:`LLMPlanterStamp`-derived regime stands).
+      - ``reassign-regime`` makes :attr:`reassigned_regime` the SOLE source of
+        :attr:`CorpusItem.error_regime` — never the planter stamp.
+      - ``abstain`` ⟹ ``error_regime=""``: the item STAYS in the pooled δ but is excluded from the
+        §2.B per-regime contribution check.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    adjudicator_id: str
+    verdict: Literal["confirm-regime", "reassign-regime", "abstain"]
+    reassigned_regime: str | None = None
+    """The new regime when ``verdict == "reassign-regime"``; MUST be ``None`` for
+    ``confirm-regime`` / ``abstain``. When set, it is the SOLE source of
+    :attr:`CorpusItem.error_regime`."""
+    rationale: str
+    timestamp: datetime
+
+    @model_validator(mode="after")
+    def _reassign_iff_regime_present(self) -> RegimeAdjudication:
+        """``verdict == "reassign-regime"`` ⟺ ``reassigned_regime is not None`` — a reassignment
+        MUST carry the new regime; a confirm/abstain MUST NOT."""
+        if (self.verdict == "reassign-regime") != (self.reassigned_regime is not None):
+            raise ValueError(
+                f"verdict {self.verdict!r} disagrees with reassigned_regime "
+                f"{self.reassigned_regime!r}: reassign-regime requires a regime, "
+                f"confirm/abstain forbid one"
+            )
+        return self
+
+
 class HumanLabelProvenance(BaseModel):
     """The adjudications behind a human label (§3.4). ``adjudications`` holds >=1 record; a
     ``tie_breaker_id`` names the adjudicator who resolved a split decision, if any."""
@@ -362,5 +404,6 @@ __all__ = [
     "LabelProvenance",
     "OracleLabelProvenance",
     "PlanterStamp",
+    "RegimeAdjudication",
     "load_corpus",
 ]

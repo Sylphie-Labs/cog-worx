@@ -25,6 +25,7 @@ from cogworx.eval.corpus import (
     HumanLabelProvenance,
     LLMPlanterStamp,
     OracleLabelProvenance,
+    RegimeAdjudication,
     load_corpus,
 )
 from cogworx.verification.contracts import OracleFrame, Thesis
@@ -250,6 +251,110 @@ def test_adjudication_is_frozen() -> None:
     adj = _human_prov().adjudications[0]
     with pytest.raises(ValidationError):
         adj.verdict = "clean"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# RegimeAdjudication — K-stratum error-regime second-author audit (eval-stats §6.D).
+# Separate verdict vocabulary; reassign-regime ⟺ reassigned_regime is not None.
+# ---------------------------------------------------------------------------
+
+
+def test_regime_adjudication_field_set_is_pinned() -> None:
+    assert set(RegimeAdjudication.model_fields) == {
+        "adjudicator_id",
+        "verdict",
+        "reassigned_regime",
+        "rationale",
+        "timestamp",
+    }
+
+
+def test_regime_adjudication_confirm_regime_valid() -> None:
+    adj = RegimeAdjudication(
+        adjudicator_id="r1",
+        verdict="confirm-regime",
+        rationale="planter tag stands",
+        timestamp=_TS,
+    )
+    assert adj.verdict == "confirm-regime"
+    assert adj.reassigned_regime is None
+
+
+def test_regime_adjudication_reassign_regime_valid() -> None:
+    adj = RegimeAdjudication(
+        adjudicator_id="r1",
+        verdict="reassign-regime",
+        reassigned_regime="wrong-operator",
+        rationale="mistagged by planter",
+        timestamp=_TS,
+    )
+    assert adj.verdict == "reassign-regime"
+    assert adj.reassigned_regime == "wrong-operator"
+
+
+def test_regime_adjudication_abstain_valid() -> None:
+    adj = RegimeAdjudication(
+        adjudicator_id="r1",
+        verdict="abstain",
+        rationale="cannot establish a regime",
+        timestamp=_TS,
+    )
+    assert adj.verdict == "abstain"
+    assert adj.reassigned_regime is None
+
+
+def test_regime_adjudication_reassign_without_regime_raises() -> None:
+    with pytest.raises(ValidationError):
+        RegimeAdjudication(
+            adjudicator_id="r1",
+            verdict="reassign-regime",
+            reassigned_regime=None,
+            rationale="x",
+            timestamp=_TS,
+        )
+
+
+def test_regime_adjudication_confirm_with_regime_raises() -> None:
+    with pytest.raises(ValidationError):
+        RegimeAdjudication(
+            adjudicator_id="r1",
+            verdict="confirm-regime",
+            reassigned_regime="wrong-operator",
+            rationale="x",
+            timestamp=_TS,
+        )
+
+
+def test_regime_adjudication_abstain_with_regime_raises() -> None:
+    with pytest.raises(ValidationError):
+        RegimeAdjudication(
+            adjudicator_id="r1",
+            verdict="abstain",
+            reassigned_regime="wrong-operator",
+            rationale="x",
+            timestamp=_TS,
+        )
+
+
+def test_regime_adjudication_rejects_unknown_verdict() -> None:
+    with pytest.raises(ValidationError):
+        RegimeAdjudication(
+            adjudicator_id="r1",
+            verdict="error",  # type: ignore[arg-type]
+            rationale="x",
+            timestamp=_TS,
+        )
+
+
+def test_regime_adjudication_is_frozen() -> None:
+    adj = RegimeAdjudication(
+        adjudicator_id="r1",
+        verdict="confirm-regime",
+        rationale="planter tag stands",
+        timestamp=_TS,
+    )
+    with pytest.raises(ValidationError):
+        adj.verdict = "abstain"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
