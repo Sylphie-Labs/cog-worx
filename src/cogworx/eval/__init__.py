@@ -60,13 +60,19 @@ from cogworx.eval.labeling import (
     reverify_clean,
 )
 from cogworx.eval.lock import (
+    BijectionResult,
+    CorpusLockError,
     ExecEnvIdentity,
     MeasurementFingerprint,
+    assert_arm_a_floor,
+    assert_no_contamination,
+    assert_spec_ceiling,
     build_fingerprint,
     content_hash,
     lock_corpus,
     read_exec_env,
     read_git_sha,
+    revalidate_bijection,
 )
 from cogworx.eval.planting import (
     PlantedItem,
@@ -91,6 +97,7 @@ __all__ = [
     "AdjudicationOutcome",
     "AdjudicationRequest",
     "AdversaryPanel",
+    "BijectionResult",
     "Cell",
     "CleanLabel",
     "ConversionAudit",
@@ -98,6 +105,7 @@ __all__ = [
     "ConvertedPlanterStamp",
     "CorpusItem",
     "CorpusLoadError",
+    "CorpusLockError",
     "CounterExampleAdversary",
     "DeterministicPlanterStamp",
     "DifficultyMarker",
@@ -124,6 +132,9 @@ __all__ = [
     "TieBreakCallback",
     "VarianceDiagnostic",
     "adjudicate_item",
+    "assert_arm_a_floor",
+    "assert_no_contamination",
+    "assert_spec_ceiling",
     "assign_stratum",
     "build_fingerprint",
     "content_hash",
@@ -138,6 +149,7 @@ __all__ = [
     "read_exec_env",
     "read_git_sha",
     "realized_variance_diagnostic",
+    "revalidate_bijection",
     "reverify_clean",
     "synth_cells",
 ]

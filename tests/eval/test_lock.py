@@ -10,6 +10,7 @@ git shell-out (the SHA + env are injected).
 from __future__ import annotations
 
 import hashlib
+from random import Random
 
 import pytest
 
@@ -24,12 +25,18 @@ from cogworx.eval.corpus import (
 from cogworx.eval.lock import (
     MASTER_SEED,
     RESIDUAL_EPSILON_UNAUDITED,
+    CorpusLockError,
     ExecEnvIdentity,
     MeasurementFingerprint,
+    assert_arm_a_floor,
+    assert_no_contamination,
+    assert_spec_ceiling,
     build_fingerprint,
     content_hash,
     lock_corpus,
+    revalidate_bijection,
 )
+from cogworx.eval.youden import Cell, synth_cells
 from cogworx.verification.contracts import OracleFrame, Thesis
 
 _FRAME = OracleFrame(
@@ -314,3 +321,601 @@ def test_residual_epsilon_audited_flag_flips_when_filled() -> None:
 def test_master_seed_defaults_to_build_date_seed() -> None:
     assert _fp().master_seed == MASTER_SEED
     assert MASTER_SEED == 20260616
+
+
+# ---------------------------------------------------------------------------
+# PIECE D — contamination audit (INV-LOCK-4, §3.8): item_id disjointness + hash-log overlap
+# ---------------------------------------------------------------------------
+
+
+def _measurement(item_id: int, **overrides: object) -> CorpusItem:
+    """A measurement-split item carrying a real (locked) content_hash."""
+    base: dict[str, object] = {"item_id": item_id, "split": "measurement"}
+    base.update(overrides)
+    raw = _item(**base)
+    return raw.model_copy(update={"content_hash": content_hash(raw)})
+
+
+def _tuning(item_id: int, **overrides: object) -> CorpusItem:
+    base: dict[str, object] = {"item_id": item_id, "split": "tuning"}
+    base.update(overrides)
+    raw = _item(**base)
+    return raw.model_copy(update={"content_hash": content_hash(raw)})
+
+
+def test_contamination_clean_partition_passes() -> None:
+    """Disjoint item_ids + no measurement hash in the tuning log -> the lock precondition holds
+    (returns None, raises nothing)."""
+    items = [_tuning(1), _tuning(2), _measurement(10), _measurement(11)]
+    assert assert_no_contamination(items, tuning_run_hashes=["unrelated-hash"]) is None
+
+
+def test_contamination_refuses_item_id_in_both_splits() -> None:
+    """A planted item_id present in BOTH the tuning and measurement split refuses the lock — the
+    held-out partition is not disjoint."""
+    items = [_tuning(7), _measurement(7, stratum="clean", is_error=0)]
+    with pytest.raises(CorpusLockError, match="appear in BOTH"):
+        assert_no_contamination(items, tuning_run_hashes=[])
+
+
+def test_contamination_refuses_measurement_hash_in_tuning_log() -> None:
+    """A measurement item whose content_hash appears in the tuning-run log refuses the lock — the
+    tuning loop already saw this item."""
+    leaked = _measurement(10)
+    items = [_tuning(1), leaked]
+    with pytest.raises(CorpusLockError, match="tuning-run log"):
+        assert_no_contamination(items, tuning_run_hashes=[leaked.content_hash, "other"])
+
+
+def test_contamination_ignores_tuning_hash_overlap() -> None:
+    """Only MEASUREMENT content-hashes are audited against the tuning log: a tuning item's own hash
+    appearing in the tuning log is expected, not a violation (negative control — the check is
+    measurement-scoped, not corpus-wide)."""
+    t = _tuning(1)
+    items = [t, _measurement(10)]
+    # t.content_hash is in the log (a tuning item DID feed tuning) — must NOT refuse.
+    assert assert_no_contamination(items, tuning_run_hashes=[t.content_hash]) is None
+
+
+def test_contamination_refuses_never_locked_measurement_item() -> None:
+    """A measurement item with an empty content_hash (never locked) has no auditable identity ->
+    refuse (mirrors build_fingerprint's never-locked tripwire)."""
+    unlocked = _item(item_id=10, split="measurement")  # content_hash == ""
+    with pytest.raises(CorpusLockError, match="never-locked"):
+        assert_no_contamination([unlocked], tuning_run_hashes=[])
+
+
+def test_contamination_tuning_run_hashes_single_pass_iterator_ok() -> None:
+    """The tuning-run log is modeled as an Iterable[str] and consumed once — a single-pass
+    generator (the realistic downstream shape) is materialized safely, audits >1 item correctly."""
+    leaked = _measurement(10)
+    items = [leaked, _measurement(11)]
+    gen = (h for h in [leaked.content_hash])
+    with pytest.raises(CorpusLockError, match="tuning-run log"):
+        assert_no_contamination(items, tuning_run_hashes=gen)
+
+
+def test_contamination_mutation_audit_skipping_hash_check_is_caught() -> None:
+    """Mutation test (INV-LOCK-4): an audit that checks ONLY item_id disjointness and SKIPS the
+    content-hash log overlap would PASS a contaminated corpus (disjoint ids, but a measurement
+    item's content was already seen in tuning). The real audit refuses; the mutant does not — so the
+    hash-overlap check cannot be silently dropped."""
+    leaked = _measurement(10)
+    items = [_tuning(1), leaked]
+    log = {leaked.content_hash}
+
+    def mutant_audit_id_only(its: list[CorpusItem], *, tuning_run_hashes: set[str]) -> None:
+        tuning_ids = {i.item_id for i in its if i.split == "tuning"}
+        measurement_ids = {i.item_id for i in its if i.split == "measurement"}
+        if tuning_ids & measurement_ids:
+            raise CorpusLockError("disjointness")
+        # hash-overlap check DROPPED — the mutation.
+
+    # The mutant passes the contaminated corpus (ids are disjoint).
+    assert mutant_audit_id_only(items, tuning_run_hashes=log) is None
+    # The real audit refuses it.
+    with pytest.raises(CorpusLockError, match="tuning-run log"):
+        assert_no_contamination(items, tuning_run_hashes=log)
+
+
+# ---------------------------------------------------------------------------
+# PIECE E — matched-pair bijection re-validation (INV-LOCK-5 = INV-7, §5)
+# ---------------------------------------------------------------------------
+
+
+def _err(item_id: int, sibling: int | None) -> CorpusItem:
+    """An error-stratum (K) member of a matched pair."""
+    return _item(item_id=item_id, stratum="K", is_error=1, matched_sibling_id=sibling)
+
+
+def _clean(item_id: int, sibling: int | None) -> CorpusItem:
+    """A clean member of a matched pair (the corrected sibling)."""
+    return _item(
+        item_id=item_id,
+        stratum="clean",
+        is_error=0,
+        matched_sibling_id=sibling,
+        label_source="oracle",
+        label_provenance=_prov(),
+    )
+
+
+def test_bijection_both_survive_pair_intact() -> None:
+    """Both members survive the (empty) drop set -> the pair stays PAIRED, nothing demoted."""
+    p, q = _err(1, sibling=2), _clean(2, sibling=1)
+    result = revalidate_bijection([p, q], frozenset())
+    assert {it.item_id for it in result.paired} == {1, 2}
+    assert result.demoted_unpaired == ()
+    # The paired items keep their matched_sibling_id (NOT cleared).
+    assert all(it.matched_sibling_id is not None for it in result.paired)
+
+
+def test_bijection_one_dropped_pair_dissolved_survivor_demoted() -> None:
+    """Drop ONE member -> the pair DISSOLVES; the survivor is demoted to the unpaired pool, carrying
+    its REAL, UNCHANGED stratum with matched_sibling_id cleared to None."""
+    # Pair (1=K, 2=clean); item 2 was abstention-dropped -> only item 1 (K) survives in `items`.
+    survivor = _err(1, sibling=2)
+    result = revalidate_bijection([survivor], frozenset({2}))
+    assert result.paired == ()
+    assert len(result.demoted_unpaired) == 1
+    demoted = result.demoted_unpaired[0]
+    assert demoted.item_id == 1
+    assert demoted.matched_sibling_id is None  # link cleared
+    assert demoted.stratum == "K"  # real stratum unchanged
+    assert demoted.is_error == 1
+
+
+def test_bijection_demotion_preserves_real_clean_stratum() -> None:
+    """A surviving CLEAN orphan is demoted carrying its real `clean` stratum (the §5
+    marginal-preservation discipline: it contributes +1 to the marginal it truly belongs to)."""
+    survivor = _clean(2, sibling=1)
+    result = revalidate_bijection([survivor], frozenset({1}))
+    assert result.demoted_unpaired[0].stratum == "clean"
+    assert result.demoted_unpaired[0].matched_sibling_id is None
+
+
+def test_bijection_unpaired_item_stays_global_not_demoted() -> None:
+    """A never-paired item (matched_sibling_id is None) is neither retained-paired nor a dissolution
+    survivor — it is not in `demoted_unpaired` (which is ONLY one-survivor-pair orphans)."""
+    p, q = _err(1, sibling=2), _clean(2, sibling=1)
+    solo = _item(item_id=9, matched_sibling_id=None)
+    result = revalidate_bijection([p, q, solo], frozenset())
+    assert {it.item_id for it in result.paired} == {1, 2}
+    assert result.demoted_unpaired == ()  # solo is global, not a dissolution survivor
+
+
+def test_bijection_surviving_pairs_are_a_clean_mutual_bijection() -> None:
+    """The marginal-preservation property: after drops, every retained paired item's sibling is
+    present in the paired set AND the relation is mutual (a clean bijection). Two pairs, one
+    dissolved by a drop; the other re-validates intact."""
+    a1, a2 = _err(1, sibling=2), _clean(2, sibling=1)  # intact pair
+    b1 = _err(3, sibling=4)  # pair (3,4); 4 dropped -> dissolves
+    result = revalidate_bijection([a1, a2, b1], frozenset({4}))
+
+    paired_ids = {it.item_id for it in result.paired}
+    assert paired_ids == {1, 2}
+    by_id = {it.item_id: it for it in result.paired}
+    # Clean mutual bijection: each paired item's sibling is present and names it back.
+    for it in result.paired:
+        assert it.matched_sibling_id in by_id
+        assert by_id[it.matched_sibling_id].matched_sibling_id == it.item_id
+    # The dissolved survivor demoted with its real stratum + cleared link.
+    assert {it.item_id for it in result.demoted_unpaired} == {3}
+    assert result.demoted_unpaired[0].matched_sibling_id is None
+
+
+def test_bijection_refuses_present_yet_dropped_item() -> None:
+    """Caller contract: `items` is the PROMOTED survivor set, disjoint from dropped_ids. An id that
+    is both present and dropped is inconsistent -> refuse."""
+    p, q = _err(1, sibling=2), _clean(2, sibling=1)
+    with pytest.raises(CorpusLockError, match="inconsistent"):
+        revalidate_bijection([p, q], frozenset({1}))
+
+
+def test_bijection_refuses_dangling_sibling_reference() -> None:
+    """A matched_sibling_id naming an id that is NEITHER present NOR dropped is a dangling reference
+    (corpus defect) -> refuse."""
+    orphan = _err(1, sibling=99)  # 99 is neither present nor in dropped_ids
+    with pytest.raises(CorpusLockError, match="dangling"):
+        revalidate_bijection([orphan], frozenset())
+
+
+def test_bijection_mutation_uncleared_orphan_is_caught() -> None:
+    """Mutation test (INV-LOCK-5): a re-validation that LEAVES an orphaned paired item — both
+    members present but the link is asymmetric (one names a non-mutual sibling, the cleared-link
+    discipline skipped) — must be CAUGHT, not silently retained as paired.
+
+    Construct an asymmetric pair: item 1 names 2, but item 2 names 5 (a non-mutual link). The real
+    re-validation refuses it; a mutant that only checked presence (not mutuality) would wrongly
+    accept item 1 as paired."""
+    a = _err(1, sibling=2)
+    b = _clean(2, sibling=5)  # asymmetric: 2 does NOT name 1 back
+    # item 5 present so 2's link is not 'dangling' — the defect is pure asymmetry.
+    c = _err(5, sibling=2)
+
+    def mutant_presence_only(
+        items: list[CorpusItem], dropped: frozenset[int]
+    ) -> set[int]:
+        present = {i.item_id for i in items}
+        paired = set()
+        for i in items:
+            if i.matched_sibling_id is not None and i.matched_sibling_id in present:
+                paired.add(i.item_id)  # presence-only, NO mutuality check — the mutation.
+        return paired
+
+    # The mutant wrongly accepts item 1 (sibling 2 is present) despite the asymmetry.
+    assert 1 in mutant_presence_only([a, b, c], frozenset())
+    # The real re-validation refuses the asymmetric pair.
+    with pytest.raises(CorpusLockError, match="asymmetric"):
+        revalidate_bijection([a, b, c], frozenset())
+
+
+# ---------------------------------------------------------------------------
+# PIECE G1 -- clean-spec tripwire (INV-LOCK-6, §3.3): the PLANNED-n design ceiling
+#            + the variance floor. STRUCTURAL STUB -- runs on hand-built / synth Cells.
+# ---------------------------------------------------------------------------
+
+# A planning between-item spec variance for the floor (the gate is sized against this; the planned-n
+# ceiling is computed from R + n_clean_planned, never from the realized artifact).
+_SIGMA_SQ_B_SPEC = 0.028
+_R = 7
+_N_CLEAN_PLANNED = 80
+
+
+def _cell(item_id: int, stratum: str, arm: str, *, flagged: int, n_trials: int) -> list[Cell]:
+    """Emit ``n_trials`` Cells for one ``(item, stratum, arm)`` with a fixed ``flagged`` value."""
+    return [
+        Cell(
+            item_id=item_id,
+            stratum=stratum,
+            arm=arm,
+            trial=t,
+            seed=item_id * 1000 + t,
+            flagged=flagged,
+            route="flag" if flagged else "pass",
+        )
+        for t in range(n_trials)
+    ]
+
+
+def _clean_cells_with_spec(
+    arm: str, *, n_clean: int, n_flagged_items: int, R: int = _R, id_base: int = 5000
+) -> list[Cell]:
+    """A clean-stratum artifact for ``arm`` where ``n_flagged_items`` of ``n_clean`` items flag on
+    EVERY trial (a per-item flag rate of 1.0) and the rest never flag (rate 0.0). Spec over the pool
+    is ``1 - n_flagged_items/n_clean`` (a flag on a clean item is a false positive). The split into
+    all-flag / no-flag items gives the per-item flag-rate variance a non-trivial value, so it drives
+    the CEILING independently of the variance floor."""
+    cells: list[Cell] = []
+    for i in range(n_clean):
+        flagged = 1 if i < n_flagged_items else 0
+        cells.extend(_cell(id_base + i, "clean", arm, flagged=flagged, n_trials=R))
+    return cells
+
+
+def test_spec_ceiling_nontrivial_spec_passes() -> None:
+    """A clean pool with a genuinely non-trivial spec (well below the planned-n ceiling) AND ample
+    per-item flag-rate variance passes the tripwire (returns None, raises nothing)."""
+    # 8 of 80 clean items flag every trial -> spec = 0.90, var of {1.0x8, 0.0x72} ~ 0.0825 (>>
+    # 0.014 floor). Both parts satisfied.
+    cells = _clean_cells_with_spec("C", n_clean=_N_CLEAN_PLANNED, n_flagged_items=8)
+    assert (
+        assert_spec_ceiling(
+            cells,
+            n_clean_planned=_N_CLEAN_PLANNED,
+            R=_R,
+            sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
+        )
+        is None
+    )
+
+
+def test_spec_ceiling_refuses_hollow_spec_at_ceiling() -> None:
+    """A perfectly-trivial clean pool (NO clean item ever flags -> spec = 1.0, AT/above the
+    ceiling 1 - 2/(R*n_clean_planned)) refuses the lock -- the spec arm of J is hollow."""
+    cells = _clean_cells_with_spec("C", n_clean=_N_CLEAN_PLANNED, n_flagged_items=0)
+    with pytest.raises(CorpusLockError, match="AT OR ABOVE the planned-n ceiling"):
+        assert_spec_ceiling(
+            cells,
+            n_clean_planned=_N_CLEAN_PLANNED,
+            R=_R,
+            sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
+        )
+
+
+def test_spec_ceiling_refuses_collapsed_variance_with_nontrivial_mean() -> None:
+    """The spec_C'=0.96-but-hollow case the mean-based <0.98 tripwire could never see: a non-trivial
+    MEAN spec whose per-item flag-rate variance has collapsed to near-zero. Build EVERY clean item
+    with an identical fractional flag rate (3 of 7 trials flag -> rate 3/7 on every item): mean spec
+    = 1 - 3/7 ~ 0.571 (well below the ceiling, so part 1 passes) but pvariance(rates) = 0 (the floor
+    fires)."""
+    # Every clean item flags exactly 3 of its 7 trials -> identical 3/7 per-item rate -> mean
+    # = 1 - 3/7 ~ 0.571 (below the ceiling), but pvariance(rates) = 0 (the floor fires).
+    cells: list[Cell] = []
+    for i in range(_N_CLEAN_PLANNED):
+        for t in range(_R):
+            flagged = 1 if t < 3 else 0
+            cells.append(
+                Cell(
+                    item_id=6000 + i,
+                    stratum="clean",
+                    arm="C",
+                    trial=t,
+                    seed=(6000 + i) * 1000 + t,
+                    flagged=flagged,
+                    route="flag" if flagged else "pass",
+                )
+            )
+    with pytest.raises(CorpusLockError, match="below the planning-derived floor"):
+        assert_spec_ceiling(
+            cells,
+            n_clean_planned=_N_CLEAN_PLANNED,
+            R=_R,
+            sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
+        )
+
+
+def test_spec_ceiling_uses_planned_n_not_realized_backwards_tripwire() -> None:
+    """The §3.3 NEW-MED-2 backwards-tripwire pin: a SHRUNK realized n_clean must NOT relax the
+    ceiling. The construction uses a realized clean pool of 10 items (abstention shrank it from the
+    planned 80) whose arm-C spec = 0.98571 -- a value strictly BELOW the planned-n ceiling
+    (1 - 2/(7*80) = 0.99643, so it PASSES) but ABOVE the realized-n ceiling (1 - 2/(7*10) = 0.97143,
+    so a realized-n ceiling would REFUSE a still-hollow-ish pool inconsistently). The point: the
+    ceiling must be a TOTAL function of PLANNED n + R, never of the realized clean count.
+
+    Load-bearing inequality: planned n yields a HIGHER (tighter) ceiling than a shrunk realized n --
+    the backwards bug would LOWER it, loosening the tripwire when scrutiny should increase."""
+    ceiling_planned = 1.0 - 2.0 / (_R * _N_CLEAN_PLANNED)  # 0.996428
+    ceiling_realized = 1.0 - 2.0 / (_R * 10)  # 0.971428
+    assert ceiling_planned > ceiling_realized  # the anti-loosening law
+
+    # Behavioral pin: a perfectly-hollow shrunk pool (10 items, spec = 1.0) is refused by the
+    # planned-n ceiling -- abstention down to 10 items cannot relax it.
+    hollow = _clean_cells_with_spec("C", n_clean=10, n_flagged_items=0, id_base=7000)
+    with pytest.raises(CorpusLockError, match="AT OR ABOVE the planned-n ceiling"):
+        assert_spec_ceiling(
+            hollow,
+            n_clean_planned=_N_CLEAN_PLANNED,
+            R=_R,
+            sigma_sq_b_spec_planning=0.0,  # floor disabled -- isolate the ceiling.
+        )
+
+
+def test_spec_ceiling_refuses_no_clean_cells() -> None:
+    """An artifact with no clean-stratum cells cannot be cleared -- a hollow corpus refuses."""
+    cells = _cell(1, "K", "C", flagged=1, n_trials=_R)
+    with pytest.raises(CorpusLockError, match="no clean-stratum cells"):
+        assert_spec_ceiling(
+            cells,
+            n_clean_planned=_N_CLEAN_PLANNED,
+            R=_R,
+            sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
+        )
+
+
+def test_spec_ceiling_refuses_malformed_planning_constants() -> None:
+    cells = _clean_cells_with_spec("C", n_clean=_N_CLEAN_PLANNED, n_flagged_items=8)
+    with pytest.raises(CorpusLockError, match="must both be"):
+        assert_spec_ceiling(
+            cells, n_clean_planned=0, R=_R, sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC
+        )
+    with pytest.raises(CorpusLockError, match="must both be"):
+        assert_spec_ceiling(
+            cells, n_clean_planned=_N_CLEAN_PLANNED, R=0, sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC
+        )
+
+
+def test_spec_ceiling_mutation_realized_n_in_ceiling_is_caught() -> None:
+    """Mutation test (INV-LOCK-6 / NEW-MED-2): a ceiling that read the REALIZED clean count instead
+    of PLANNED n_clean would compute a LOOSER ceiling on a shrunk pool, passing a hollow-but-shrunk
+    spec the real (planned-n) check refuses.
+
+    The artifact: a 10-item clean pool (shrunk by abstention) with 1 false-positive cell -> arm-C
+    spec = 1 - 1/70 = 0.98571. This spec is strictly BELOW the planned-n ceiling 0.99643 (the real
+    check PASSES it on the ceiling axis) but ABOVE the realized-n ceiling 0.97143. A direct hollow
+    case (spec = 1.0) then pins the behavioral refusal under planned n that a realized-n mutant on a
+    tiny pool would loosen toward."""
+    n_realized = 10
+    ceiling_realized = 1.0 - 2.0 / (_R * n_realized)  # 0.971428
+    ceiling_planned = 1.0 - 2.0 / (_R * _N_CLEAN_PLANNED)  # 0.996428
+
+    realized_spec = 1.0 - 1.0 / (n_realized * _R)  # 0.985714
+    assert ceiling_realized < realized_spec < ceiling_planned  # the separating band exists
+
+    # Load-bearing law: planned n => the TIGHTER (higher) ceiling; a realized-n mutant on a shrunk
+    # pool computes a LOWER ceiling and so admits hollow specs the planned-n check refuses.
+    assert ceiling_planned > ceiling_realized
+
+    # Behavioral pin: an all-clean shrunk pool (spec=1.0) is refused by the real planned-n ceiling.
+    hollow = _clean_cells_with_spec("C", n_clean=n_realized, n_flagged_items=0, id_base=8500)
+    with pytest.raises(CorpusLockError, match="AT OR ABOVE the planned-n ceiling"):
+        assert_spec_ceiling(
+            hollow, n_clean_planned=_N_CLEAN_PLANNED, R=_R, sigma_sq_b_spec_planning=0.0
+        )
+
+
+def test_spec_ceiling_on_synth_cells_passes() -> None:
+    """Integration-ish smoke: a synth_cells artifact at a realistic non-trivial spec_C passes the
+    tripwire on arm 'C' (the gate's spec arm). synth_cells emits C/D on K + clean."""
+    cells = synth_cells(
+        Random(42),
+        m_K=40,
+        m_clean=_N_CLEAN_PLANNED,
+        R=_R,
+        sens_C=0.5,
+        dsens=0.2,
+        sb_sens=0.04,
+        spec_C=0.85,  # well below the ceiling, real item-to-item variance
+        dspec=0.05,
+        sb_spec=_SIGMA_SQ_B_SPEC,
+        rho_w=0.3,
+    )
+    assert (
+        assert_spec_ceiling(
+            cells,
+            n_clean_planned=_N_CLEAN_PLANNED,
+            R=_R,
+            sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
+        )
+        is None
+    )
+
+
+# ---------------------------------------------------------------------------
+# PIECE G2 -- INV-A0 / INV-A1 arm-A floor (§5). STRUCTURAL STUB -- hand-built arm-A Cells
+#            (synth_cells emits no arm A; A's floor is scored analytically there).
+# ---------------------------------------------------------------------------
+
+
+def _arm_a_artifact(
+    *,
+    k_flagged_items: int = 0,
+    n_k: int = 40,
+    clean_flagged_cells: int = 0,
+    n_clean: int = _N_CLEAN_PLANNED,
+    R: int = _R,
+) -> list[Cell]:
+    """Build a frozen artifact carrying arm 'A' (plus a token 'D' so the corpus is realistic) on K +
+    clean. ``k_flagged_items`` arm-A K items flag on every trial (INV-A0 violation when > 0);
+    ``clean_flagged_cells`` arm-A clean CELLS are false positives (drive spec_A, INV-A1's axis)."""
+    cells: list[Cell] = []
+    # K stratum, arm A: flag the first k_flagged_items items on every trial.
+    for i in range(n_k):
+        flagged = 1 if i < k_flagged_items else 0
+        cells.extend(_cell(100 + i, "K", "A", flagged=flagged, n_trials=R))
+        cells.extend(_cell(100 + i, "K", "D", flagged=1, n_trials=R))  # D flags (a real antithesis)
+    # clean stratum, arm A: distribute clean_flagged_cells false positives across cells.
+    fp_remaining = clean_flagged_cells
+    for i in range(n_clean):
+        for t in range(R):
+            f = 1 if fp_remaining > 0 else 0
+            if f:
+                fp_remaining -= 1
+            cells.append(
+                Cell(
+                    item_id=200 + i,
+                    stratum="clean",
+                    arm="A",
+                    trial=t,
+                    seed=(200 + i) * 1000 + t,
+                    flagged=f,
+                    route="flag" if f else "pass",
+                )
+            )
+        cells.extend(_cell(200 + i, "clean", "D", flagged=0, n_trials=R))
+    return cells
+
+
+def test_arm_a_floor_satisfied_passes() -> None:
+    """Arm A flags NOTHING on K (sens_A == 0) and false-positives on <=~2 clean cells (spec_A in
+    1 - tau_A) -> the floor holds (returns None)."""
+    # tau_A = 2/(7*80) = 0.003571 -> 1-tau_A = 0.996428. Over 80x7=560 clean cells, <=2 FPs keeps
+    # spec_A = 1 - 2/560 = 0.99643 >= floor. Use exactly 1 FP -> spec_A = 0.99821 (> floor).
+    cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=1)
+    assert (
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R) is None
+    )
+
+
+def test_arm_a_floor_zero_clean_fps_passes() -> None:
+    """A perfectly clean arm A (spec_A = 1.0) trivially clears INV-A1."""
+    cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=0)
+    assert assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R) is None
+
+
+def test_arm_a_floor_refuses_inv_a0_violation() -> None:
+    """INV-A0 negative control: arm A flags ANY K item -> sens_A > 0 -> the item is mis-stratified
+    (oracle-blind item the oracle actually reached) -> refuse lock."""
+    cells = _arm_a_artifact(k_flagged_items=1, clean_flagged_cells=0)
+    with pytest.raises(CorpusLockError, match=r"INV-A0.*sens_A"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)
+
+
+def test_arm_a_floor_refuses_inv_a1_violation() -> None:
+    """INV-A1 negative control: arm A false-positives on too many clean cells -> spec_A below
+    1 - tau_A -> A is not the floor the §5 centering assumes -> refuse lock.
+
+    tau_A = 2/(7*80) = 0.003571; 1-tau_A = 0.996428. To breach: spec_A < 0.996428 over 560 clean
+    means > 2 FPs. Use 10 FPs -> spec_A = 1 - 10/560 = 0.98214 < floor."""
+    cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=10)
+    with pytest.raises(CorpusLockError, match=r"INV-A1.*spec_A"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)
+
+
+def test_arm_a_floor_uses_planned_n_not_realized() -> None:
+    """NEW-MED-2 applied to tau_A: the clean-FP budget is fixed at PLANNED n_clean, so
+    abstention (a shrunk realized clean pool) cannot relax it.
+
+    Load-bearing law: PLANNED n => a SMALLER tau_A => a HIGHER (tighter) floor 1-tau_A; a realized-n
+    bug on a shrunk pool computes a LARGER tau_A and LOOSENS the floor."""
+    tau_planned = 2.0 / (_R * _N_CLEAN_PLANNED)  # 0.003571
+    tau_realized = 2.0 / (_R * 10)  # 0.028571
+    assert tau_planned < tau_realized
+
+    # Behavioral pin: a shrunk 10-item clean pool with 1 FP -> spec_A = 1 - 1/70 = 0.98571, which is
+    # below the planned floor 0.99643 (REFUSE, correct) but above the realized-n floor 0.97143 (a
+    # realized-n bug would PASS). The real check refuses it.
+    cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=1, n_clean=10)
+    with pytest.raises(CorpusLockError, match=r"INV-A1.*spec_A"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)
+
+
+def test_arm_a_floor_mutation_realized_n_in_tau_is_caught() -> None:
+    """Mutation test (INV-A1 / NEW-MED-2): a floor that computed tau_A from the REALIZED clean count
+    instead of PLANNED n_clean would LOOSEN the clean-FP budget on a shrunk pool, passing an arm A
+    that false-positives more than the planned ~2-cell budget.
+
+    The artifact: 10 clean items (shrunk), 1 FP -> spec_A = 0.98571. The real check uses PLANNED
+    n_clean=80 (floor 0.996428) and REFUSES. The mutant would use realized n=10 (floor 0.971428) and
+    PASS. We assert the real check refuses, and that the mutant's looser floor would have admitted
+    it."""
+    cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=1, n_clean=10)
+    realized_spec_a = 1.0 - 1.0 / (10 * _R)  # 0.98571
+    floor_planned = 1.0 - 2.0 / (_R * _N_CLEAN_PLANNED)  # 0.996428
+    floor_realized = 1.0 - 2.0 / (_R * 10)  # 0.971428
+    # The mutant (realized-n floor) WOULD have passed this artifact...
+    assert realized_spec_a >= floor_realized
+    # ...but the real (planned-n) floor refuses it.
+    assert realized_spec_a < floor_planned
+    with pytest.raises(CorpusLockError, match=r"INV-A1.*spec_A"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)
+
+
+def test_arm_a_floor_refuses_missing_arm_a_on_k() -> None:
+    """An artifact with no arm-A cells on K cannot have its floor asserted -> refuse (a missing arm
+    is not a silent pass)."""
+    # Only D on K, A only on clean.
+    cells: list[Cell] = []
+    for i in range(40):
+        cells.extend(_cell(100 + i, "K", "D", flagged=1, n_trials=_R))
+    for i in range(_N_CLEAN_PLANNED):
+        cells.extend(_cell(200 + i, "clean", "A", flagged=0, n_trials=_R))
+    with pytest.raises(CorpusLockError, match="arm 'A' is absent from the 'K'"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)
+
+
+def test_arm_a_floor_refuses_no_k_cells() -> None:
+    """No K error-stratum cells at all -> nothing to audit INV-A0 against -> refuse."""
+    cells: list[Cell] = []
+    for i in range(_N_CLEAN_PLANNED):
+        cells.extend(_cell(200 + i, "clean", "A", flagged=0, n_trials=_R))
+    with pytest.raises(CorpusLockError, match="no 'K' error-stratum cells"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)
+
+
+def test_arm_a_floor_refuses_no_clean_cells() -> None:
+    """No clean cells -> INV-A1 has nothing to audit -> refuse (INV-A0 on K passes first)."""
+    cells: list[Cell] = []
+    for i in range(40):
+        cells.extend(_cell(100 + i, "K", "A", flagged=0, n_trials=_R))
+        cells.extend(_cell(100 + i, "K", "D", flagged=1, n_trials=_R))
+    with pytest.raises(CorpusLockError, match="no clean-stratum cells"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)
+
+
+def test_arm_a_floor_refuses_malformed_planning_constants() -> None:
+    cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=0)
+    with pytest.raises(CorpusLockError, match="must both be"):
+        assert_arm_a_floor(cells, n_clean_planned=0, R=_R)
+    with pytest.raises(CorpusLockError, match="must both be"):
+        assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=0)
