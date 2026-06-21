@@ -45,6 +45,10 @@ Contract changelog (CANON §6.1):
     (it has no operators) and routes ``error_regime`` through the second-author regime audit (the K
     path's :class:`~cogworx.eval.corpus.RegimeAdjudication`), keeping the oracle label. The
     deterministic-O path and the K path are unchanged. No public-surface change.
+  - 2026-06-21 (Pod 4.4e-0, ADDITIVE): ``_build_corpus_item`` stamps ``CorpusItem.detk`` from
+    :func:`cogworx.eval.planting.is_detk` (the immutable planter stamp), so the GATE scorer reads
+    the detK collusion-probe marker off the locked truth table (option A). Every CorpusItem-building
+    path flows through this one helper, so all of clean / O / K carry it. No public-surface change.
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ from cogworx.eval.planting import (
     PlantedItem,
     PlantedPair,
     _derive_o_regime,
+    is_detk,
 )
 from cogworx.verification.contracts import Verdict
 
@@ -519,8 +524,10 @@ def _build_corpus_item(
     error_regime: str,
 ) -> CorpusItem:
     """Carry the planter's pre-label truth through into a labeled :class:`CorpusItem`, attaching the
-    binding ``stratum`` / ``oracle_reachable`` / label / provenance / ``error_regime``. The hash
-    stays ``""`` — 4.4c-5 locks it."""
+    binding ``stratum`` / ``oracle_reachable`` / label / provenance / ``error_regime``. The detK
+    collusion-probe marker is stamped off the immutable planter stamp (:func:`is_detk`, Pod 4.4e-0,
+    option A) so the GATE scorer reads it off the locked truth table. The hash stays ``""`` — 4.4c-5
+    locks it."""
     return CorpusItem(
         item_id=item.provisional_id,
         frame=item.frame,
@@ -536,6 +543,7 @@ def _build_corpus_item(
         matched_sibling_id=item.matched_sibling_id,
         split=item.split,
         planter=item.planter,
+        detk=is_detk(item),
         content_hash="",
     )
 

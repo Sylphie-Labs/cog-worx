@@ -32,6 +32,15 @@ Contract changelog (CANON §6.1):
     planting identity + adversary family + winning round). A converted item is O-by-execution but
     second-author-regime-audited (no operator cross-check). Additive union member only; the existing
     deterministic/LLM members and their discrimination are unchanged.
+  - 2026-06-21 (Pod 4.4e-0, ADDITIVE): ``CorpusItem.detk: bool = False`` (option A) — the locked
+    truth-table marker that an item is a deterministic detK collusion probe
+    (:func:`cogworx.eval.planting.is_detk`). It lets the GATE scorer
+    (:func:`cogworx.eval.scorer.score_gate`) read detK off the LOCKED corpus and exclude those rows
+    from the binding K pool, instead of re-deriving it from the pre-label
+    :class:`cogworx.eval.planting.PlantedItem`. ``promote_corpus`` stamps it
+    (``detk=is_detk(planted_item)``); not part of item identity, so it is EXCLUDED from
+    ``content_hash`` (the seven identity fields, ``lock.py:96``). Additive: the default ``False``
+    leaves every pre-existing item and the content hash byte-identical.
 """
 
 from __future__ import annotations
@@ -246,6 +255,12 @@ class CorpusItem(BaseModel):
     matched_sibling_id: int | None
     split: Literal["tuning", "measurement"]
     planter: PlanterStamp
+    detk: bool = False
+    """Locked-truth-table marker (Pod 4.4e-0, option A) that this is a deterministic detK collusion
+    probe (:func:`cogworx.eval.planting.is_detk`). ``promote_corpus`` stamps it; the GATE scorer
+    (:func:`cogworx.eval.scorer.score_gate`) reads it off the LOCKED corpus to keep detK rows OUT of
+    the binding K pool, never re-deriving from the pre-label ``PlantedItem``. NOT item identity, so
+    it is EXCLUDED from ``content_hash`` (the seven identity fields). Defaults ``False``."""
     content_hash: str = ""
     """Opaque contamination-lock hash (plan §3.8/§3.9). Carried OPAQUE here — 4.4c-2 does NOT
     compute or verify it; ``""`` means "not yet locked". Lock-time (4.4c-5) hashes over

@@ -118,6 +118,7 @@ def test_corpus_item_field_set_is_pinned() -> None:
         "matched_sibling_id",
         "split",
         "planter",
+        "detk",
         "content_hash",
     }
 
