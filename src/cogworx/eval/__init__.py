@@ -27,6 +27,10 @@ from cogworx.eval.corpus import (
     PlanterStamp,
     load_corpus,
 )
+from cogworx.eval.planting import (
+    PlantedItem,
+    PlantedPair,
+)
 from cogworx.eval.youden import (
     Cell,
     VarianceDiagnostic,
@@ -48,6 +52,8 @@ __all__ = [
     "LLMPlanterStamp",
     "LabelProvenance",
     "OracleLabelProvenance",
+    "PlantedItem",
+    "PlantedPair",
     "PlanterStamp",
     "VarianceDiagnostic",
     "load_corpus",
