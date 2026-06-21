@@ -126,7 +126,22 @@ class Timer(BaseModel):
 
 @runtime_checkable
 class Journal(Protocol):
-    """The durable, exactly-once journal seam over TimescaleDB."""
+    """The durable, exactly-once journal seam over TimescaleDB.
+
+    Contract changelog (CANON §6.1):
+      - 2026-06-12 (Pod 3.2 B1): added ``set_run_tainted`` — a NEW PROTOCOL MEMBER, C3-**breaking**
+        (every existing implementer silently stops conforming), handled via the §6 amendment path:
+        Jim-approved that session (durable lethal-trifecta taint, S10 + S6). Recorded
+        breaking-but-approved for audit.
+      - 2026-06-21 (Pod 4.4c-5a, C5): added ``append_design_look`` + ``read_design_lineage_budget``
+        — the §3.9-B design-lineage look-budget ledger (anti-overfitting / garden-of-forking-paths
+        bound). TWO NEW PROTOCOL MEMBERS, C3-**breaking** (every implementer must add both), handled
+        via the §6 amendment path: **Jim-approved 2026-06-21** (the precedent is the Jim-approved
+        ``set_run_tainted``). Append-only, monotone, exactly-once on the journal (S6). Landed as a
+        STRUCTURAL STUB (S12): the Protocol members + the in-memory double are complete; the
+        count/budget-ENFORCEMENT logic is the 4.4e scorer's spike (it reads+appends, it does not
+        harden enforcement here). Recorded breaking-but-approved for audit.
+    """
 
     async def start_run(
         self,
@@ -292,6 +307,52 @@ class Journal(Protocol):
         Used by downstream stages via ``ctx.read_human_input`` (the PULL model): a stage reads the
         journaled answer structurally — the engine never pushes ``ctx.human_input`` — so cold resume
         works correctly without the engine re-injecting the answer.
+        """
+        ...
+
+    async def append_design_look(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+        fingerprint: str,
+    ) -> None:
+        """Append-only, idempotent record of ONE design-lineage "look" into the look-budget ledger.
+
+        The §3.9-B anti-overfitting / garden-of-forking-paths bound (Pod 4.4c-5a). The ledger is
+        keyed by ``(planning_variance_config_hash, design_lineage_chain)`` — the lineage chain is
+        the append-only list of git-SHAs of every antithesis/arm/prompt/registry config measured
+        against any corpus in this design line. ``fingerprint`` identifies the single
+        config-vs-corpus look being recorded; the budget read counts DISTINCT fingerprints per key.
+
+        EXACTLY-ONCE / APPEND-ONLY / MONOTONE (S6, this seam's contract):
+          * Idempotent on ``(key, fingerprint)`` — appending the SAME fingerprint twice leaves the
+            distinct-fingerprint count unchanged (ON CONFLICT DO NOTHING shape).
+          * Append-only and monotone — a recorded look is NEVER removed; the count never decreases.
+          * NEVER reset by a corpus re-roll within a planning-variance config — the ledger is keyed
+            by the planning-variance config + design lineage, not by any corpus identity, so a
+            re-roll under the same config keeps accumulating looks against the same key.
+
+        STRUCTURAL STUB (S12): this records the look; the look/budget-ENFORCEMENT logic (the count
+        threshold, the spend decision) is the 4.4e scorer's spike, which reads this via
+        :meth:`read_design_lineage_budget` and appends via this method. Enforcement is not hardened.
+        """
+        ...
+
+    async def read_design_lineage_budget(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+    ) -> int:
+        """Return the DISTINCT-fingerprint look count for the ``(config_hash, lineage_chain)`` key.
+
+        ``look_count = |distinct fingerprints across the lineage|`` (S6, the §3.9-B bound). Zero for
+        a key that has never been appended to. Reads the same append-only ledger
+        :meth:`append_design_look` writes; the count is monotone and key-isolated (a different
+        ``planning_variance_config_hash`` or a different ``design_lineage_chain`` is a distinct
+        ledger with its own count). The 4.4e scorer reads this to apply the budget; the bound itself
+        is NOT enforced here (S12 structural stub).
         """
         ...
 

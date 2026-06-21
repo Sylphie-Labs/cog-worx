@@ -502,6 +502,40 @@ class TimescaleJournal:
             return None
         return _ARTIFACT_ADAPTER.validate_python(row[0])
 
+    async def append_design_look(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+        fingerprint: str,
+    ) -> None:
+        # STRUCTURAL STUB (S12, Pod 4.4c-5a). The Protocol member + the in-memory double are
+        # complete; the REAL DDL is deferred to the 4.4e scorer's spike. The append-only ledger
+        # table shape (the canonical, collision-free serialization of design_lineage_chain into a
+        # key column, its COLLATE discipline — the same cross-collation hazard the commit_xid cursor
+        # hit — the UNIQUE (config_hash, lineage_key, fingerprint) for ON CONFLICT DO NOTHING
+        # exactly-once append, and the COUNT(DISTINCT) read) is the scorer-spike's call, not guessed
+        # here where a wrong canonicalization would silently mis-bucket looks against §3.9-B.
+        raise NotImplementedError(
+            "TimescaleJournal.append_design_look: real DDL deferred to the 4.4e scorer spike "
+            "(Pod 4.4c-5a structural stub, S12). The Protocol member + InMemoryJournal are done; "
+            "the append-only ledger table + lineage-key canonicalization land with the scorer."
+        )
+
+    async def read_design_lineage_budget(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+    ) -> int:
+        # STRUCTURAL STUB (S12, Pod 4.4c-5a) — see append_design_look. The COUNT(DISTINCT
+        # fingerprint) read over the deferred ledger table lands with the 4.4e scorer spike.
+        raise NotImplementedError(
+            "TimescaleJournal.read_design_lineage_budget: real DDL deferred to the 4.4e scorer "
+            "spike (Pod 4.4c-5a structural stub, S12). Protocol member + InMemoryJournal are done; "
+            "the COUNT(DISTINCT fingerprint) read lands with the scorer."
+        )
+
     async def reset(self) -> None:
         # Test-only ephemeral isolation: DROP + recreate (not TRUNCATE) so the per-case schema is
         # always current — robust to schema evolution across phases. Never called in production.

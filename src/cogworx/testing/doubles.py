@@ -94,6 +94,13 @@ class InMemoryJournal:
         # read on quiescent data.
         self._commit_ordinals: dict[tuple[str, int], int] = {}
         self._next_ordinal = 1
+        # The §3.9-B design-lineage look-budget ledger (Pod 4.4c-5a): keyed
+        # (planning_variance_config_hash, design_lineage_chain) -> the SET of distinct fingerprints
+        # appended under that key. A set gives idempotent append (re-adding a fingerprint no-ops)
+        # + a monotone distinct-count (|set|), mirroring the adapter's append-only ON CONFLICT DO
+        # NOTHING + COUNT(DISTINCT fingerprint). Keyed by config+lineage, NOT by any corpus id, so a
+        # corpus re-roll within a config never resets it.
+        self._design_looks: dict[tuple[str, tuple[str, ...]], set[str]] = {}
 
     async def start_run(
         self,
@@ -248,6 +255,32 @@ class InMemoryJournal:
 
     async def read_human_input(self, run_id: str, step_index: int) -> Artifact | None:
         return self._human_inputs.get((run_id, step_index))
+
+    async def append_design_look(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+        fingerprint: str,
+    ) -> None:
+        # Append-only, idempotent, monotone (S6): set.add is a no-op for a duplicate fingerprint, so
+        # the distinct-count is unchanged on a repeat. setdefault is atomic under asyncio (no await
+        # between read and write) — mirrors the adapter's ON CONFLICT (key, fingerprint) DO NOTHING.
+        # The key folds the lineage chain into a tuple so different chains never bleed; it carries
+        # no corpus identity, so a corpus re-roll within a config can never reset the ledger.
+        key = (planning_variance_config_hash, tuple(design_lineage_chain))
+        self._design_looks.setdefault(key, set()).add(fingerprint)
+
+    async def read_design_lineage_budget(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+    ) -> int:
+        # look_count = |distinct fingerprints across the lineage| (mirrors COUNT(DISTINCT
+        # fingerprint) for the key). An unseen key is 0.
+        key = (planning_variance_config_hash, tuple(design_lineage_chain))
+        return len(self._design_looks.get(key, set()))
 
 
 class InMemoryGraphStore:
