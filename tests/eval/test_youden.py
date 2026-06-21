@@ -14,6 +14,7 @@ import pytest
 from cogworx.eval import youden
 from cogworx.eval.youden import (
     Cell,
+    is_converted_o,
     mc_proportion_lcb,
     nested_bootstrap_delta,
     power_lcb_from_studies,
@@ -104,7 +105,64 @@ def test_cell_schema_is_exactly_the_frozen_record() -> None:
         "flagged",
         "route",
         "regime",
+        "converted_o",
     }
+
+
+# ---------------------------------------------------------------------------
+# Converted-O provenance marker pins (4.4c-3.5): additive, bootstrap-blind
+# ---------------------------------------------------------------------------
+
+
+def _o_cell(converted_o: bool) -> Cell:
+    return Cell(
+        item_id=0,
+        stratum="K",
+        arm="D",
+        trial=0,
+        seed=0,
+        flagged=1,
+        route="flag",
+        converted_o=converted_o,
+    )
+
+
+def test_nc6_converted_o_defaults_false() -> None:
+    """NC-6: ``converted_o`` is a defaulted provenance field; a Cell built without it gets False."""
+    assert Cell.model_fields["converted_o"].default is False
+    built_without = Cell(item_id=1, stratum="K", arm="D", trial=0, seed=0, flagged=0, route="pass")
+    assert built_without.converted_o is False
+
+
+def test_nc7_bootstrap_is_blind_to_converted_o() -> None:
+    """NC-7 (key invariant): flipping ``converted_o`` on the O cells leaves the bootstrap delta
+    BYTE-IDENTICAL -- the scorer partitions on ``stratum`` and never reads this provenance field."""
+    base = _make_cells(Random(0), m_K=30, m_clean=30)
+    flagged_true = [c.model_copy(update={"converted_o": True}) for c in base]
+    plain = nested_bootstrap_delta(
+        base, arm_a="D", arm_b="C", error_strata=("K",), n_outer=300, seed=7
+    )
+    marked = nested_bootstrap_delta(
+        flagged_true, arm_a="D", arm_b="C", error_strata=("K",), n_outer=300, seed=7
+    )
+    assert plain == marked
+    assert plain[0] == marked[0]
+    assert plain[1] == marked[1]
+    assert plain[2] == marked[2]
+
+
+def test_nc8_is_converted_o_selects_and_filters_converted_cells() -> None:
+    """NC-8: ``is_converted_o`` selects exactly the converted cells and the 4.4d-style filter
+    removes them from the binding O population. Mutation-resistant: a default flipped to True would
+    empty the pool, so the filter must drop a tagged cell and keep an untagged one."""
+    converted = _o_cell(converted_o=True)
+    native = _o_cell(converted_o=False)
+    assert is_converted_o(converted) is True
+    assert is_converted_o(native) is False
+    cells = [native, converted]
+    binding = [c for c in cells if not is_converted_o(c)]
+    assert binding == [native]
+    assert converted not in binding
 
 
 # ---------------------------------------------------------------------------

@@ -14,8 +14,21 @@ reproduces the shipped 2.5/97.5 CI byte-for-byte -> an additive minor bump, no b
 
 from __future__ import annotations
 
+from cogworx.eval.conversion import (
+    K_ROUNDS,
+    AdversaryPanel,
+    ConversionAudit,
+    ConversionResult,
+    CounterExampleAdversary,
+    PanelConfig,
+    PanelFamilyCollision,
+    PanelHypothesis,
+    RoundArtifact,
+    convert_k_pool,
+)
 from cogworx.eval.corpus import (
     Adjudication,
+    ConvertedPlanterStamp,
     CorpusItem,
     CorpusLoadError,
     DeterministicPlanterStamp,
@@ -53,6 +66,7 @@ from cogworx.eval.planting import (
 from cogworx.eval.youden import (
     Cell,
     VarianceDiagnostic,
+    is_converted_o,
     mc_proportion_lcb,
     nested_bootstrap_delta,
     power_lcb_from_studies,
@@ -61,15 +75,21 @@ from cogworx.eval.youden import (
 )
 
 __all__ = [
+    "K_ROUNDS",
     "AbstentionDrop",
     "AdjudicateCallback",
     "Adjudication",
     "AdjudicationOutcome",
     "AdjudicationRequest",
+    "AdversaryPanel",
     "Cell",
     "CleanLabel",
+    "ConversionAudit",
+    "ConversionResult",
+    "ConvertedPlanterStamp",
     "CorpusItem",
     "CorpusLoadError",
+    "CounterExampleAdversary",
     "DeterministicPlanterStamp",
     "DifficultyMarker",
     "HumanLabelProvenance",
@@ -78,6 +98,9 @@ __all__ = [
     "ORegimeMismatchError",
     "OracleLabelProvenance",
     "OracleProbe",
+    "PanelConfig",
+    "PanelFamilyCollision",
+    "PanelHypothesis",
     "PlantedItem",
     "PlantedPair",
     "PlanterStamp",
@@ -85,11 +108,14 @@ __all__ = [
     "RegimeAdjudicateCallback",
     "RegimeAdjudication",
     "RegimeExistenceError",
+    "RoundArtifact",
     "StratumAssignment",
     "TieBreakCallback",
     "VarianceDiagnostic",
     "adjudicate_item",
     "assign_stratum",
+    "convert_k_pool",
+    "is_converted_o",
     "load_corpus",
     "mc_proportion_lcb",
     "nested_bootstrap_delta",

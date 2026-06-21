@@ -30,6 +30,11 @@ Contract changelog:
     tag; never read by nested_bootstrap_delta / _index_cells, which partition on stratum).  Additive
     per CANON S6.1: default "" leaves every pre-existing Cell byte-identical; the three schema-pin
     sites + the _sizing_fast columnar round-trip moved in lockstep.
+  - 2026-06-21 (Pod 4.4c-3.5): Cell gains ``converted_o: bool = False`` (provenance-only marker that
+    a K item was converted to O by the adversarial converter; never read by nested_bootstrap_delta /
+    _index_cells, which partition on stratum) plus the ``is_converted_o`` exclusion predicate (the
+    converted-O analogue of planting.is_detk).  Additive per CANON S6.1: default False leaves every
+    pre-existing Cell byte-identical; the three schema-pin sites moved in lockstep (LOW-1).
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ from cogworx.knowledge import beta
 __all__ = [
     "Cell",
     "VarianceDiagnostic",
+    "is_converted_o",
     "mc_proportion_lcb",
     "nested_bootstrap_delta",
     "power_lcb_from_studies",
@@ -66,9 +72,13 @@ class Cell(BaseModel):
     reads (1 = the arm raised a flag on this item); ``route`` is audit/diagnostic only.
     ``regime`` is the error-regime taxonomy tag (plan sec 2.A) -- reported-only corpus metadata,
     defaulting to ``""`` so the bootstrap, which partitions error-vs-clean purely from ``stratum``,
-    never reads it. This is the EXACT schema both :func:`synth_cells` emits and
-    :func:`nested_bootstrap_delta` consumes -- the shared-schema invariant the sizing simulation
-    depends on (plan sec 13.6).
+    never reads it. ``converted_o`` is a provenance-only marker (Pod 4.4c-3.5) that a K item was
+    converted to O by the adversarial converter; the bootstrap NEVER reads it (it partitions on
+    ``stratum``). It exists so 4.4d can route converted-O items to the reported-diagnostic stream
+    and OUT of the binding D>A/D>C' delta -- converted-O is a selection-biased-easier slice of K
+    (CF-4.4c-CONVERTER-SELECTION); :func:`is_converted_o` is the exclusion predicate. This is the
+    EXACT schema both :func:`synth_cells` emits and :func:`nested_bootstrap_delta` consumes -- the
+    shared-schema invariant the sizing simulation depends on (plan sec 13.6).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -81,6 +91,7 @@ class Cell(BaseModel):
     flagged: int
     route: str
     regime: str = ""
+    converted_o: bool = False
 
 
 class VarianceDiagnostic(BaseModel):
@@ -457,8 +468,19 @@ def synth_cells(
         "flagged",
         "route",
         "regime",
+        "converted_o",
     }
     return cells
+
+
+def is_converted_o(cell: Cell) -> bool:
+    """The converted-O exclusion predicate: True iff ``cell`` carries a K item the adversarial
+    converter promoted to O (Pod 4.4c-3.5). The converted-O analogue of
+    :func:`cogworx.eval.planting.is_detk`: 4.4d uses ``[c for c in cells if not is_converted_o(c)]``
+    to keep converted-O OUT of the binding D>A/D>C' delta -- it is a selection-biased-easier slice
+    of K (CF-4.4c-CONVERTER-SELECTION). Reads the provenance-only ``converted_o`` flag the bootstrap
+    never touches."""
+    return cell.converted_o
 
 
 def mc_proportion_lcb(

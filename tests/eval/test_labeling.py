@@ -21,6 +21,7 @@ import pytest
 from cogworx.claims.provenance import ProvenanceSource
 from cogworx.eval.corpus import (
     Adjudication,
+    ConvertedPlanterStamp,
     CorpusItem,
     DeterministicPlanterStamp,
     DifficultyMarker,
@@ -735,6 +736,130 @@ def test_detk_error_existence_split_tie_broken_to_clean_is_dropped() -> None:
     )
     assert detk_err.provisional_id in result.dropped_ids
     assert result.promoted == ()
+
+
+# ===========================================================================
+# Converted (K→O) items — O-by-execution, regime SECOND-AUTHOR-AUDITED, operator
+# cross-check SKIPPED by construction (Pod 4.4c-3.5).
+# ===========================================================================
+
+
+def _converted_stamp() -> ConvertedPlanterStamp:
+    return ConvertedPlanterStamp(
+        planter_model_family="deepseek",
+        planter_model_id="deepseek/chat",
+        adversary_family="claude",
+        winning_round=2,
+    )
+
+
+def _converted_o_error(**overrides: object) -> PlantedItem:
+    """A K→O converted error: an LLM-planted ERROR (candidate K) whose adversary-synthesized test
+    makes it oracle-reachable, carrying a ConvertedPlanterStamp (no operators). Its candidate regime
+    is a CANDIDATE — second-author-audited, never operator-derived."""
+    base: dict[str, object] = {
+        "provisional_id": 40,
+        "is_error": 1,
+        "candidate_stratum": "K",  # planted K; converter makes it O-by-execution
+        "planter": _converted_stamp(),
+        "error_regime": "spec-misread",  # CANDIDATE — audited, not operator-derived
+        "matched_sibling_id": None,
+    }
+    base.update(overrides)
+    return _planted(**base)
+
+
+def _promote_converted(regime_adjudicate: RegimeAdjudicateCallback) -> PromotionResult:
+    """Promote one converted O error with an O-catch verdict (executable ∧ valid ∧ ¬holds)."""
+    return promote_corpus(
+        [],
+        [_converted_o_error()],
+        probe=_const_probe(_verdict(holds=False, valid_check=True)),  # O catch
+        adjudicate=_adjudicators("error", "error"),
+        tie_break=_tie_break("error"),
+        regime_adjudicate=regime_adjudicate,
+    )
+
+
+def test_converted_o_item_is_oracle_labelled_O() -> None:
+    """A converted item caught by the adversary's synthesized test lands stratum 'O',
+    label_source='oracle', OracleLabelProvenance(test_provenance='frozen') — the oracle still
+    decided the catch."""
+    result = _promote_converted(_regime("confirm-regime"))
+    assert len(result.promoted) == 1
+    ci = result.promoted[0]
+    assert ci.stratum == "O"
+    assert ci.label_source == "oracle"
+    assert isinstance(ci.label_provenance, OracleLabelProvenance)
+    assert ci.label_provenance.test_provenance == "frozen"
+    assert isinstance(ci.planter, ConvertedPlanterStamp)
+
+
+def test_converted_o_regime_from_second_author_not_operators() -> None:
+    """The converted item's error_regime is the SECOND-AUTHOR audit verdict, NOT operator-derived.
+    A reassign-regime overrides the candidate, and the audit is recorded in regime_audit. Mutation
+    killed: an O path deriving regime off operators would raise (no operators) or yield a fixed
+    operator-table regime, never 'silent-degradation'."""
+    result = _promote_converted(_regime("reassign-regime", "silent-degradation"))
+    assert len(result.promoted) == 1
+    assert result.promoted[0].error_regime == "silent-degradation"
+    assert len(result.regime_audit) == 1
+    assert result.regime_audit[0].verdict == "reassign-regime"
+
+
+def test_converted_o_regime_confirm_keeps_candidate() -> None:
+    """confirm-regime keeps the converted item's candidate regime (second-author confirmed it)."""
+    result = _promote_converted(_regime("confirm-regime"))
+    assert result.promoted[0].error_regime == "spec-misread"
+
+
+def test_converted_o_regime_abstain_blanks_regime_keeps_item() -> None:
+    """A regime abstain blanks the regime ('') but KEEPS the converted item (opposite of an
+    existence abstain) — same semantics as the K path."""
+    result = _promote_converted(_regime("abstain"))
+    assert len(result.promoted) == 1
+    assert result.promoted[0].error_regime == ""
+
+
+def test_converted_o_operator_cross_check_is_skipped_not_raised() -> None:
+    """The §2.C operator cross-check is SKIPPED by construction for a converted O item — it does NOT
+    raise ORegimeMismatchError despite carrying NO mutation operators and an error_regime that does
+    not exist in the operator regime table. Mutation killed: routing a converted O item through
+    _o_operators would raise ORegimeMismatchError (non-deterministic stamp) and fail to promote."""
+    result = _promote_converted(_regime("confirm-regime"))  # no exception raised
+    assert len(result.promoted) == 1
+    assert result.promoted[0].stratum == "O"
+
+
+def test_converted_o_carries_honest_planting_provenance() -> None:
+    """The promoted converted item keeps its ORIGINAL LLM planting identity on the stamp (honest
+    planting provenance survives the conversion) plus the adversary family + winning round."""
+    ci = _promote_converted(_regime("confirm-regime")).promoted[0]
+    assert isinstance(ci.planter, ConvertedPlanterStamp)
+    assert ci.planter.planter_model_family == "deepseek"
+    assert ci.planter.adversary_family == "claude"
+    assert ci.planter.winning_round == 2
+
+
+def test_deterministic_o_path_unchanged_by_converted_branch() -> None:
+    """Regression guard: a deterministic O item still derives its regime off operators and still
+    HARD-FAILS on a §2.C mismatch — the converted branch did not weaken the operator cross-check."""
+    err = _planted(
+        provisional_id=10,
+        is_error=1,
+        candidate_stratum="O",
+        planter=DeterministicPlanterStamp(operators=("arithmetic-swap",)),
+        error_regime="off-by-semantics",  # WRONG — arithmetic-swap derives logic-wrong
+        matched_sibling_id=None,
+    )
+    with pytest.raises(ORegimeMismatchError, match=r"logic-wrong|fail-fast"):
+        promote_corpus(
+            [],
+            [err],
+            probe=_const_probe(_verdict(holds=False, valid_check=True)),
+            adjudicate=_adjudicators("error", "error"),
+            tie_break=_tie_break("error"),
+        )
 
 
 # ===========================================================================

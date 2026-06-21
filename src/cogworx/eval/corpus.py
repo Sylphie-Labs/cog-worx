@@ -27,6 +27,11 @@ Contract changelog (CANON §6.1):
   - 2026-06-20 (Pod 4.4c-2): initial — CorpusItem + LabelProvenance / PlanterStamp discriminated
     unions + DifficultyMarker + Adjudication. New module; no existing callers. ``content_hash`` is
     carried opaque (default ``""``, "not yet locked"); lock-time (4.4c-5) populates it.
+  - 2026-06-21 (Pod 4.4c-3.5, ADDITIVE): ``ConvertedPlanterStamp`` (``injector_kind="converted"``)
+    added to the :data:`PlanterStamp` union — the K→O converter's provenance member (honest LLM
+    planting identity + adversary family + winning round). A converted item is O-by-execution but
+    second-author-regime-audited (no operator cross-check). Additive union member only; the existing
+    deterministic/LLM members and their discrimination are unchanged.
 """
 
 from __future__ import annotations
@@ -160,8 +165,36 @@ class LLMPlanterStamp(BaseModel):
     model_id: str
 
 
+class ConvertedPlanterStamp(BaseModel):
+    """A K-to-O conversion planter (Pod 4.4c-3.5): an LLM-planted K ERROR whose O-ness — an
+    executable test that catches it — was SYNTHESIZED by the adversarial converter, not by a
+    mechanical mutation operator.
+
+    The ERROR provenance stays honest: :attr:`planter_model_family` / :attr:`planter_model_id` carry
+    the ORIGINAL :class:`LLMPlanterStamp` identity that planted the K error, so a converted item
+    keeps its real planting lineage. :attr:`adversary_family` is the converter family that authored
+    the winning test, and :attr:`winning_round` is the converter round at which that test first made
+    the error oracle-reachable.
+
+    LABELING CONSEQUENCE (load-bearing — read before touching the O-branch in
+    :mod:`cogworx.eval.labeling`): a converted item is O-by-execution (``label_source="oracle"``:
+    the adversary's synthesized test made it oracle-reachable and the oracle still decided), but it
+    has NO mutation operator — so its :attr:`CorpusItem.error_regime` is SECOND-AUTHOR-AUDITED (the
+    same :class:`RegimeAdjudication` path K items use), NOT operator-derived. The §2.C operator
+    cross-check (:func:`cogworx.eval.planting._derive_o_regime` over the planter operators) is
+    SKIPPED for a converted item BY CONSTRUCTION — there are no operators to derive a regime."""
+
+    model_config = ConfigDict(frozen=True)
+
+    injector_kind: Literal["converted"] = "converted"
+    planter_model_family: str
+    planter_model_id: str
+    adversary_family: str
+    winning_round: int
+
+
 PlanterStamp = Annotated[
-    DeterministicPlanterStamp | LLMPlanterStamp,
+    DeterministicPlanterStamp | LLMPlanterStamp | ConvertedPlanterStamp,
     Field(discriminator="injector_kind"),
 ]
 
@@ -395,6 +428,7 @@ def load_corpus(
 
 __all__ = [
     "Adjudication",
+    "ConvertedPlanterStamp",
     "CorpusItem",
     "CorpusLoadError",
     "DeterministicPlanterStamp",

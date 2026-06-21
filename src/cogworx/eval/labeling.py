@@ -40,6 +40,11 @@ Contract changelog (CANON §6.1):
   - 2026-06-20 (Pod 4.4c-4): initial — the corpus-labeling pipeline (assign_stratum / reverify_clean
     / adjudicate_item / promote_corpus + the frozen result/request types). New module; no existing
     callers. Additive new public surface only.
+  - 2026-06-21 (Pod 4.4c-3.5, ADDITIVE): ``_promote_error_item`` gains one O-branch case — a
+    :class:`~cogworx.eval.corpus.ConvertedPlanterStamp` O item SKIPS the §2.C operator cross-check
+    (it has no operators) and routes ``error_regime`` through the second-author regime audit (the K
+    path's :class:`~cogworx.eval.corpus.RegimeAdjudication`), keeping the oracle label. The
+    deterministic-O path and the K path are unchanged. No public-surface change.
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ from pydantic import BaseModel, ConfigDict
 from cogworx.eval._authoring import run_frozen_check
 from cogworx.eval.corpus import (
     Adjudication,
+    ConvertedPlanterStamp,
     CorpusItem,
     DeterministicPlanterStamp,
     HumanLabelProvenance,
@@ -536,7 +542,9 @@ def _build_corpus_item(
 
 def _o_operators(item: PlantedItem) -> tuple[str, ...]:
     """The deterministic planter operators behind an O item (for the §2.C regime cross-check). An O
-    item must come from a :class:`DeterministicPlanterStamp`; anything else is a corpus defect."""
+    item must come from a :class:`DeterministicPlanterStamp`; anything else is a corpus defect —
+    with ONE exception routed earlier: a :class:`ConvertedPlanterStamp` (the K→O converter) has no
+    operators and is regime-audited, never operator-derived (see :func:`_promote_error_item`)."""
     stamp = item.planter
     if not isinstance(stamp, DeterministicPlanterStamp):
         raise ORegimeMismatchError(
@@ -544,6 +552,42 @@ def _o_operators(item: PlantedItem) -> tuple[str, ...]:
             f"{type(stamp).__name__}; an O-stratum item must derive its regime from operators"
         )
     return stamp.operators
+
+
+def _regime_audit(
+    item: PlantedItem,
+    *,
+    adjudicate: AdjudicateCallback,
+    tie_break: TieBreakCallback,
+    regime_adjudicate: RegimeAdjudicateCallback,
+    regime_audit: list[RegimeAdjudication],
+) -> str:
+    """Run the second-author error-regime audit (§6.D) over ``item`` and return its binding
+    ``error_regime`` — the SOLE source (never the planter stamp). ``confirm-regime`` keeps the
+    planter candidate, ``reassign-regime`` takes the new regime, ``abstain`` blanks it. The
+    :class:`RegimeAdjudication` is recorded in ``regime_audit``."""
+    regime_request = AdjudicationRequest(
+        provisional_id=item.provisional_id,
+        purpose="regime",
+        problem_statement=item.frame.problem_statement,
+        proposed_solution=item.thesis.proposed_solution,
+        candidate_regime=item.error_regime,
+    )
+    regime_outcome = adjudicate_item(
+        regime_request,
+        adjudicate=adjudicate,
+        tie_break=tie_break,
+        regime_adjudicate=regime_adjudicate,
+    )
+    ra = regime_outcome.regime_adjudication
+    assert ra is not None
+    regime_audit.append(ra)
+    if ra.verdict == "confirm-regime":
+        return item.error_regime
+    if ra.verdict == "reassign-regime":
+        assert ra.reassigned_regime is not None  # enforced by the RegimeAdjudication validator
+        return ra.reassigned_regime
+    return ""  # abstain → error_regime = ""
 
 
 def _promote_error_item(
@@ -558,15 +602,48 @@ def _promote_error_item(
 ) -> CorpusItem | AbstentionDrop:
     """Promote one ERROR item (is_error==1) given its mechanical stratum assignment.
 
-    O-stratum: the regime derives MECHANICALLY off the planter operators (§2.C fail-fast) — the
-    author's ``error_regime`` is cross-checked and a mismatch HARD-FAILS that item. The label is the
-    oracle catch (``label_source="oracle"`` with the carried frozen verdict).
+    O-stratum (deterministic planter): the regime derives MECHANICALLY off the planter operators
+    (§2.C fail-fast) — the author's ``error_regime`` is cross-checked and a mismatch HARD-FAILS that
+    item. The label is the oracle catch (``label_source="oracle"`` with the carried frozen verdict).
+
+    O-stratum (:class:`ConvertedPlanterStamp` — the K→O converter, Pod 4.4c-3.5): a converted item
+    is O-by-execution (the adversary's synthesized test made it oracle-reachable; the oracle still
+    decided ⟹ ``label_source="oracle"``, ``OracleLabelProvenance(test_provenance="frozen")``), but
+    it has NO mutation operator, so the §2.C operator cross-check is SKIPPED by construction and its
+    ``error_regime`` routes through the SECOND-AUTHOR regime audit (the same
+    :class:`RegimeAdjudication` path K items use), never operator-derivation.
 
     K-stratum: ``label_source="human"`` with an explicit ``error`` existence :class:`Adjudication`
     (§6.C) — established FIRST. THEN the K-regime second-author audit
     (:class:`RegimeAdjudication`) sets ``error_regime`` (its SOLE source). detK probe items are
     carried through untouched (regime already derives off the real operator; no K-audit).
     """
+    if assignment.stratum == "O" and isinstance(item.planter, ConvertedPlanterStamp):
+        # K→O converter (Pod 4.4c-3.5): O-by-execution but operator-less. Skip the §2.C operator
+        # cross-check (no operators to derive from) and route the regime through the second-author
+        # audit, exactly as a K item. The oracle still decided the catch, so the label stays oracle.
+        error_regime = _regime_audit(
+            item,
+            adjudicate=adjudicate,
+            tie_break=tie_break,
+            regime_adjudicate=regime_adjudicate,
+            regime_audit=regime_audit,
+        )
+        return _build_corpus_item(
+            item,
+            stratum="O",
+            oracle_reachable=assignment.oracle_reachable,
+            label_source="oracle",
+            label_provenance=OracleLabelProvenance(
+                returncode=1,  # an O catch is a failing frozen test (holds is False)
+                test_provenance="frozen",
+                holds=assignment.verdict.holds,
+                valid_check=assignment.verdict.valid_check,
+                oracle_id="run_frozen_check",
+            ),
+            error_regime=error_regime,
+        )
+
     if assignment.stratum == "O":
         operators = _o_operators(item)
         derived = derive_o_regime(operators)

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from cogworx.eval.corpus import (
     Adjudication,
+    ConvertedPlanterStamp,
     CorpusItem,
     CorpusLoadError,
     DeterministicPlanterStamp,
@@ -165,6 +166,16 @@ def test_llm_planter_field_set_is_pinned() -> None:
     assert set(LLMPlanterStamp.model_fields) == {"injector_kind", "model_family", "model_id"}
 
 
+def test_converted_planter_field_set_is_pinned() -> None:
+    assert set(ConvertedPlanterStamp.model_fields) == {
+        "injector_kind",
+        "planter_model_family",
+        "planter_model_id",
+        "adversary_family",
+        "winning_round",
+    }
+
+
 # ---------------------------------------------------------------------------
 # 2. Discriminator routing pins
 # ---------------------------------------------------------------------------
@@ -206,6 +217,77 @@ def test_planter_rejects_unknown_injector_kind() -> None:
 def test_planter_rejects_missing_injector_kind() -> None:
     with pytest.raises(ValidationError):
         _item(planter={"operators": ("swap-op",)})
+
+
+def _converted_stamp(**overrides: object) -> ConvertedPlanterStamp:
+    base: dict[str, object] = {
+        "planter_model_family": "deepseek",
+        "planter_model_id": "deepseek/chat",
+        "adversary_family": "claude",
+        "winning_round": 2,
+    }
+    base.update(overrides)
+    return ConvertedPlanterStamp(**base)
+
+
+def test_converted_planter_valid_construction() -> None:
+    """A converted stamp carries the ORIGINAL LLM planting identity (honest provenance) plus the
+    adversary family + winning round."""
+    stamp = _converted_stamp()
+    assert stamp.injector_kind == "converted"
+    assert stamp.planter_model_family == "deepseek"
+    assert stamp.planter_model_id == "deepseek/chat"
+    assert stamp.adversary_family == "claude"
+    assert stamp.winning_round == 2
+
+
+def test_planter_discriminates_converted() -> None:
+    """The union routes injector_kind='converted' to ConvertedPlanterStamp, distinct from the
+    deterministic/LLM members. Mutation killed: a union missing the converted member would route
+    this to a deterministic/LLM stamp (or reject it)."""
+    item = _item(planter=_converted_stamp())
+    assert isinstance(item.planter, ConvertedPlanterStamp)
+    assert not isinstance(item.planter, (DeterministicPlanterStamp, LLMPlanterStamp))
+
+
+def test_converted_planter_round_trips_through_union() -> None:
+    """The discriminated union round-trips a converted stamp from a raw dict (the injector_kind tag
+    routes it), preserving every load-bearing field."""
+    item = _item(
+        planter={
+            "injector_kind": "converted",
+            "planter_model_family": "qwen",
+            "planter_model_id": "qwen/coder",
+            "adversary_family": "gpt",
+            "winning_round": 5,
+        }
+    )
+    assert isinstance(item.planter, ConvertedPlanterStamp)
+    assert item.planter.planter_model_family == "qwen"
+    assert item.planter.planter_model_id == "qwen/coder"
+    assert item.planter.adversary_family == "gpt"
+    assert item.planter.winning_round == 5
+
+
+def test_converted_planter_is_frozen() -> None:
+    stamp = _converted_stamp()
+    with pytest.raises(ValidationError):
+        stamp.winning_round = 9  # type: ignore[misc]
+
+
+def test_converted_planter_rejects_wrong_discriminator() -> None:
+    """The frozen discriminator is exactly 'converted'; a stray injector_kind on the same field-set
+    does not route to this member."""
+    with pytest.raises(ValidationError):
+        _item(
+            planter={
+                "injector_kind": "converter",  # typo — not the literal
+                "planter_model_family": "deepseek",
+                "planter_model_id": "deepseek/chat",
+                "adversary_family": "claude",
+                "winning_round": 2,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
