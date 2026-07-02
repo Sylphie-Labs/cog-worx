@@ -26,6 +26,7 @@ contradiction: INV-A0 is a stratification-consistency check, not a claim that ar
 from __future__ import annotations
 
 import ast
+import asyncio
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -766,6 +767,50 @@ async def test_run_and_stamp_does_not_read_the_budget() -> None:
         planning_variance_config_hash=_CONFIG, design_lineage_chain=_LINEAGE
     )
     assert budget == 2  # the pre-existing look + the run's look — it appended regardless
+
+
+def _asyncio_run_executor(arm_input: ArmInput, seed: int) -> ArmOutcome:
+    """A stand-in for the real model-backed arms (``make_d_executor`` et al., ``arms.py``): a
+    SYNCHRONOUS ``ArmExecutor`` that drives an async body via ``asyncio.run(...)`` internally. If
+    ``run_and_stamp`` ran ``run_arms`` on its own coroutine's event-loop thread, this inner
+    ``asyncio.run`` would raise ``RuntimeError: asyncio.run() cannot be called from a running event
+    loop``. The ``asyncio.to_thread`` offload gives it a fresh loop, so it succeeds."""
+
+    async def _body() -> ArmOutcome:
+        return ArmOutcome(flagged=1, route="flag")
+
+    return asyncio.run(_body())
+
+
+async def test_run_and_stamp_tolerates_asyncio_run_arms() -> None:
+    """REGRESSION (nested-``asyncio.run`` crash): ``run_and_stamp`` is a coroutine, but the real
+    model arms call ``asyncio.run`` inside their synchronous executor. Driving such an arm through
+    ``run_and_stamp`` must NOT raise ``RuntimeError`` — the fix offloads ``run_arms`` to a worker
+    thread so each executor's ``asyncio.run`` owns its own loop. The 4.4d tests used scripted
+    (non-async) arms, so this path was never exercised until the live driver. Pre-fix this call
+    raised; post-fix it completes and appends the single design-look."""
+    j = InMemoryJournal()
+    corpus = _locked_corpus()
+    cells, fp = await run_and_stamp(
+        corpus,
+        arm_executors={"A": _flag_none, "C": _flag_none, "D": _asyncio_run_executor},
+        journal=j,
+        planning_variance_config_hash=_CONFIG,
+        design_lineage_chain=_LINEAGE,
+        git_sha=_GIT_SHA,
+        master_seed=MASTER_SEED,
+        R=3,
+    )
+    # The async-bodied arm ran to completion: its cells carry flagged == 1 (proving asyncio.run
+    # inside the executor actually executed, not that the arm was skipped).
+    d_cells = [c for c in cells if c.arm == "D"]
+    assert d_cells and all(c.flagged == 1 for c in d_cells)
+    assert len(cells) == 3 * 3 * 3  # 3 items x 3 arms x 3 trials
+    budget = await j.read_design_lineage_budget(
+        planning_variance_config_hash=_CONFIG, design_lineage_chain=_LINEAGE
+    )
+    assert budget == 1  # the single design-look still appended exactly once (S6)
+    assert isinstance(fp.digest, str) and fp.digest
 
 
 # ===========================================================================

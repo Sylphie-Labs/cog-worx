@@ -61,6 +61,7 @@ Contract changelog (CANON §6.1):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Protocol
@@ -381,7 +382,14 @@ async def run_and_stamp(
         master_seed=master_seed,
         residual_epsilon=residual_epsilon,
     )
-    cells = run_arms(corpus, arm_executors=arm_executors, R=R, master_seed=master_seed)
+    # ``run_arms`` is a SYNCHRONOUS driver, but the model-backed arm executors call
+    # ``asyncio.run(...)`` internally (``arms.py`` — the ``Model`` seam is async). Running it
+    # directly on this coroutine's event-loop thread would nest ``asyncio.run`` inside a running
+    # loop -> ``RuntimeError``. Offload to a worker thread so each executor's ``asyncio.run`` owns a
+    # fresh loop. Scripted (non-async) arms are unaffected. (S6 append below is unchanged.)
+    cells = await asyncio.to_thread(
+        run_arms, corpus, arm_executors=arm_executors, R=R, master_seed=master_seed
+    )
     await journal.append_design_look(
         planning_variance_config_hash=planning_variance_config_hash,
         design_lineage_chain=design_lineage_chain,
