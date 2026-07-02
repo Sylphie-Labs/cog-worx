@@ -42,6 +42,19 @@ Contract changelog (CANON §6.1):
   - 2026-07-02 (Pod 4.4-live L0/L1): initial — DeepSeek V4 Pro list/promo ``PriceTable``\\ s,
     ``assert_priced``, and the TOML-loaded ``GateRunSettings`` (``load_gate_run_settings``). New
     module; no existing callers. Additive new public surface only.
+  - 2026-07-02 (Pod 4.4-live L2, roster preflight): ``GateRunSettings`` gains ``role_families``
+    (role name -> the TOML ``provider`` string for every FILLED singular role) and
+    ``converter_panel_families`` (parallel to ``converter_panel``, one entry per filled panel
+    slot). Both are ADDITIVE fields with no default drift for existing callers:
+    ``load_gate_run_settings`` already computes this ``provider`` string per role (it was being
+    folded into ``resolved_price_tables`` and discarded per-role) — this change only PRESERVES it.
+    Needed because
+    :mod:`cogworx.eval._live.roster`'s preflight must mirror
+    :class:`~cogworx.eval.planting.SameFamilyFallback` /
+    :class:`~cogworx.eval.conversion.PanelFamilyCollision`'s family-disjointness predicates, which
+    are role-specific (planter vs. arm family, panel/adversary vs. forbidden set) — ``
+    resolved_price_tables`` alone (keyed by provider, de-duplicated) cannot answer "which role has
+    which family." No existing test or caller touched (nothing previously read these attributes).
 """
 
 from __future__ import annotations
@@ -171,6 +184,16 @@ class GateRunSettings(BaseModel):
         configured).
     converter_panel:
         The deferred multi-model K->O converter panel (empty until configured).
+    role_families:
+        Singular-role name (``"arm_family"`` / ``"planter"`` / ``"converter_adversary"`` /
+        ``"arm_d_prime"``) -> the ``provider`` string named in that role's TOML table. Present ONLY
+        for FILLED roles (a deferred role has no entry). This is the per-role family identity
+        :mod:`cogworx.eval._live.roster` needs to mirror the planting/conversion family-disjointness
+        predicates; it is not a second source of truth (the same string is what resolved this role's
+        ``ProviderConfig.price_per_mtok`` via :func:`_price_table_for`).
+    converter_panel_families:
+        Parallel to ``converter_panel`` (same order, same length): the ``provider`` string for each
+        filled panel slot.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -185,6 +208,8 @@ class GateRunSettings(BaseModel):
     converter_panel: tuple[ProviderConfig, ...] = ()
     converter_adversary: ProviderConfig | None = None
     arm_d_prime: ProviderConfig | None = None
+    role_families: Mapping[str, str]
+    converter_panel_families: tuple[str, ...] = ()
 
 
 def _require_mode(raw: Mapping[str, object]) -> GateRunMode:
@@ -318,6 +343,7 @@ def load_gate_run_settings(path: str | Path) -> GateRunSettings:
         raise ValueError(f"GateRunSettings: 'roles' must be a table, got {got}")
 
     resolved_price_tables: dict[str, PriceTable] = {}
+    role_families: dict[str, str] = {}
 
     def _fill(role_name: str, table: dict[str, object]) -> ProviderConfig | None:
         loaded = _load_role(table, role=role_name, price_basis=price_basis)
@@ -325,6 +351,7 @@ def load_gate_run_settings(path: str | Path) -> GateRunSettings:
             return None
         config, provider = loaded
         resolved_price_tables[provider] = config.price_per_mtok
+        role_families[role_name] = provider
         return config
 
     arm_family_table = _role_table(roles_raw, "arm_family")
@@ -341,11 +368,18 @@ def load_gate_run_settings(path: str | Path) -> GateRunSettings:
         "converter_adversary", _role_table(roles_raw, "converter_adversary")
     )
     arm_d_prime = _fill("arm_d_prime", _role_table(roles_raw, "arm_d_prime"))
-    converter_panel = tuple(
-        config
-        for t in _role_table_list(roles_raw, "converter_panel")
-        if (config := _fill("converter_panel", t)) is not None
-    )
+
+    converter_panel_configs: list[ProviderConfig] = []
+    converter_panel_families: list[str] = []
+    for t in _role_table_list(roles_raw, "converter_panel"):
+        loaded = _load_role(t, role="converter_panel", price_basis=price_basis)
+        if loaded is None:
+            continue
+        config, provider = loaded
+        resolved_price_tables[provider] = config.price_per_mtok
+        converter_panel_configs.append(config)
+        converter_panel_families.append(provider)
+    converter_panel = tuple(converter_panel_configs)
 
     return GateRunSettings(
         mode=mode,
@@ -358,4 +392,6 @@ def load_gate_run_settings(path: str | Path) -> GateRunSettings:
         converter_panel=converter_panel,
         converter_adversary=converter_adversary,
         arm_d_prime=arm_d_prime,
+        role_families=role_families,
+        converter_panel_families=tuple(converter_panel_families),
     )

@@ -9,6 +9,9 @@ no semver surface.
 Contract changelog (CANON §6.1):
   - 2026-07-02 (L0/L1): initial — ``settings.py`` (price authoring + the S11 zero-price refusal,
     ``GateRunSettings`` TOML loader). No other module in this package yet.
+  - 2026-07-02 (L2): ``roster.py`` — the roster preflight guard (``RosterReport`` /
+    ``preflight_roster`` / ``RosterUnsound``), the last gate before ``GateRunSettings`` reaches any
+    network call.
 """
 
 from __future__ import annotations
