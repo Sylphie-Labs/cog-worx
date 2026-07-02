@@ -79,6 +79,12 @@ Contract changelog (CANON §6.1):
     4.4e-0, no external callers) and additive ``path`` (``"ceiling-v1"``) + ``caveat`` (the verbatim
     CF-4.4c-ADAPTIVE-LADDER scope string) carried on EVERY verdict (eval-stats S9-honesty). The
     journal READ is the ONLY I/O on the module; the verdict decision stays in the pure core (S1).
+  - 2026-07-02 (wiring fix): exported :data:`BINDING_BASELINE_ARM` (``"C"``) — the Cell-artifact arm
+    label the ``D>C'`` binding delta already read, now named instead of a bare re-typed string
+    literal at each call site. Purely additive: :data:`_BINDING_DELTAS` computes the IDENTICAL
+    mapping it always did (``BINDING_BASELINE_ARM == "C"``); no scored value changes. Lets
+    ``_live/driver.py`` key its arm map + CRN candidate pairs off this constant so the C/C' Cell-
+    label crossover cannot silently re-swap.
 """
 
 from __future__ import annotations
@@ -87,7 +93,7 @@ import hashlib
 import json
 from collections.abc import Callable, Sequence
 from random import Random
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -110,11 +116,22 @@ from cogworx.substrate.journal import Journal
 # baseline for D>A, but it is NOT a valid §5-shuffle cancellation partner (see _SHUFFLE_DELTAS).
 _FLOOR_ARM = "A"
 
+# The Cell-artifact arm label of the binding-baseline neutral reviewer (plan §5/§13.5): the
+# FULL-diet C' (:func:`~cogworx.eval.arms.make_c_prime_executor`) is stamped under THIS label in the
+# Cell artifact, NOT the diet-stripped C (:func:`~cogworx.eval.arms.make_c_executor`, reported-only,
+# never a binding arm) — see arms.py's C-vs-C' diet axis. Exported (CANON §6.1 2026-07-02 additive)
+# so a composition root (``_live/driver.py``) keys its arm map + CRN candidate pairs off this
+# constant rather than a bare re-typed ``"C"`` literal, closing the silent-swap footgun a
+# hardcoded-in-two-places string invites.
+BINDING_BASELINE_ARM: Final = "C"
+
 # The two binding deltas the Tier-4 PASS gate clears (plan §5/§13.5): D beats the deterministic-
-# oracle floor A, and D beats the neutral-second-look C' (labeled "C" in the Cell artifact — the
-# diet-stripped C is not a binding arm; the C' full-diet neutral reviewer is the gate's binding
-# baseline, lock.py:957). Binding PASS requires BOTH lower bounds clear the threshold.
-_BINDING_DELTAS: dict[str, tuple[str, str]] = {"D>A": ("D", _FLOOR_ARM), "D>C'": ("D", "C")}
+# oracle floor A, and D beats the neutral-second-look C' (labeled BINDING_BASELINE_ARM in the Cell
+# artifact). Binding PASS requires BOTH lower bounds clear the threshold.
+_BINDING_DELTAS: dict[str, tuple[str, str]] = {
+    "D>A": ("D", _FLOOR_ARM),
+    "D>C'": ("D", BINDING_BASELINE_ARM),
+}
 
 # The DEDICATED positive-control arm label (plan §13.4 #7). The live 5-arm run MUST emit a known-
 # flag-pattern stub (cogworx.eval.runner.scripted_executor) under this label — a non-model arm that
@@ -738,6 +755,7 @@ async def score_gate_live(
 
 
 __all__ = [
+    "BINDING_BASELINE_ARM",
     "ControlReport",
     "DeltaCI",
     "GateVerdict",

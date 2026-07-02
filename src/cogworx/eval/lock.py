@@ -46,6 +46,12 @@ Contract changelog (CANON §6.1):
     STUBS — pure decision-independent lock preconditions over the 4.4d ``Cell`` artifact, bound to
     ``youden._sens_spec``/``_index_cells``. Additive: two new public functions, no existing caller
     touched. They fire for real on 4.4d's Cells + the 4.4c-6 spike.
+  - 2026-07-02 (wiring fix): :func:`assert_no_verifiable_claim` — a new lock-time authoring assert
+    (the displaced ``arms.project_arm_input`` fidelity guard's corpus-wide counterpart; see that
+    function's docstring). Wired into :func:`lock_corpus` itself, first, before any item is stamped.
+    Additive new public function + one new call inside ``lock_corpus``; every existing corpus
+    fixture leaves ``thesis.verifiable_claim`` unset (the guard's own precondition), so this is a
+    behavior-preserving no-op for every landed caller/test.
 """
 
 from __future__ import annotations
@@ -275,15 +281,53 @@ class MeasurementFingerprint(BaseModel):
         return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
 
 
+def assert_no_verifiable_claim(items: Sequence[CorpusItem]) -> None:
+    """Lock-time authoring assert (CANON §6.1 2026-07-02): no corpus thesis carries a
+    ``verifiable_claim``. REFUSES corpus-lock (loud :exc:`CorpusLockError`, naming the first
+    offending ``item_id``) rather than silently locking a corpus the eval harness cannot honestly
+    score.
+
+    Why this lives here, not only in ``arms.py``: :func:`cogworx.eval.arms.project_arm_input` raises
+    the SAME check, but it only runs when a caller drives a ``make_*_executor`` factory through
+    THAT function — the ``CorpusItem`` path. A caller that instead drives a factory straight
+    through :func:`~cogworx.eval.runner.run_arms` (which builds its own generic ``ArmInput`` off
+    the item and never calls ``project_arm_input``) never reaches that guard. The live antithesis
+    ``task`` (``dialectic.py:482-490``) appends a THIRD ``verifiable_claim``/abstention section
+    that the eval arms' reproduction (``arms._dialectic_task``) does not reproduce; that
+    divergence is harmless ONLY while every corpus thesis leaves ``verifiable_claim`` unset. This
+    assert makes that
+    corpus-wide invariant a STRUCTURAL lock precondition — the same "authoring invariant, checked
+    once at lock time" pattern as the other ``assert_*`` functions in this module — so it holds no
+    matter which path an arm is driven through, not only the one path that happens to call
+    ``project_arm_input``.
+    """
+    for item in items:
+        if item.thesis.verifiable_claim is not None:
+            raise CorpusLockError(
+                f"assert_no_verifiable_claim: item_id {item.item_id} has "
+                f"thesis.verifiable_claim={item.thesis.verifiable_claim!r} set, but the model-arm "
+                "dialectic diet (arms._dialectic_task) drops the live antithesis's "
+                "verifiable_claim/abstention section (dialectic.py:482-490) -- a corpus thesis "
+                "with a verifiable_claim would silently diverge arm D from the live antithesis. "
+                "Refusing to lock rather than certifying a corpus the eval harness cannot "
+                "honestly score."
+            )
+
+
 def lock_corpus(items: Sequence[CorpusItem]) -> list[CorpusItem]:
     """Stamp every item with its computed ``content_hash`` (INV-LOCK-1), returning a new list of
     locked items. PURE — the input items are frozen, so each is reduced via ``model_copy`` with the
     computed hash; the originals are untouched.
 
+    Runs :func:`assert_no_verifiable_claim` FIRST (CANON §6.1 2026-07-02) — a corpus-wide authoring
+    invariant, refused loudly before any item is stamped, rather than only checked per-call by
+    :func:`cogworx.eval.arms.project_arm_input` on whichever path happens to call it.
+
     This is the only writer of :attr:`CorpusItem.content_hash` (4.4c-2 carried it opaque ``""``).
     After ``lock_corpus`` every item has ``content_hash != ""``, so a measurement-run
     :func:`~cogworx.eval.corpus.load_corpus` passes the never-locked tripwire (``corpus.py:397``).
     """
+    assert_no_verifiable_claim(items)
     return [item.model_copy(update={"content_hash": content_hash(item)}) for item in items]
 
 
@@ -1516,6 +1560,7 @@ __all__ = [
     "ShuffleNullResult",
     "assert_arm_a_floor",
     "assert_no_contamination",
+    "assert_no_verifiable_claim",
     "assert_regime_contribution",
     "assert_shuffle_null",
     "assert_spec_ceiling",

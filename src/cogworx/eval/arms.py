@@ -34,9 +34,13 @@ THE C-vs-D AXES (the two manipulations the GATE contrasts — kept ORTHOGONAL an
     injection-hardening, and the SAME ``confidence < 1.0`` clamp. C/C' are a REAL reviewer (they CAN
     return ``"broke"`` on a genuine error), never a yes-machine.
   - **diet** (C vs C'): the ``experiment_design`` axis. C' sees the FULL diet (includes
-    ``experiment_design``); C sees the STRIPPED diet (``experiment_design`` withheld). The strip is
-    performed by :func:`project_arm_input` via ``thesis.model_copy`` (a typed field hide, NOT string
-    munging) to a DISTINCT sentinel so "C actually stripped" is observable downstream.
+    ``experiment_design``); C sees the STRIPPED diet (``experiment_design`` withheld). The strip
+    logic lives in exactly ONE place, :func:`_project_diet` (a typed field hide via ``model_copy``,
+    NOT string munging, to a DISTINCT sentinel so "C actually stripped" is observable downstream) —
+    shared by :func:`project_arm_input` (the ``CorpusItem`` path) AND self-applied by every
+    ``make_*_executor`` factory (the ``ArmInput`` path, CANON §6.1 2026-07-02 weld) so the strip is
+    enforced structurally even when driven through :func:`~cogworx.eval.runner.run_arms` (which
+    hands ONE generic, un-projected ``ArmInput`` to every arm — see "THE DIET WELD" below).
 
   D and C share the SAME executor code path MODULO the instruction constant — pinned by a test (the
   red-team's "D>C' is rigged" defense: the only diff is :data:`_NEUTRAL_INSTRUCTIONS` vs
@@ -47,9 +51,24 @@ THE INFO-DIET / GROUND-TRUTH FIREWALL (S9):
   The model arms condition on the problem frame + proposed solution + (optionally) experiment design
   ONLY. ``test_code`` is DROPPED for ALL model arms — it NAMES the planted error
   (``planting.py:673-674``); only arm A (the deterministic oracle, landed) consumes ``test_code``.
-  :func:`project_arm_input` sets ``test_code=None`` unconditionally for the model-arm projection. No
-  ground-truth field (``stratum`` / ``is_error`` / ``error_regime``) is ever on an
-  :class:`~cogworx.eval.runner.ArmInput` (the landed runner firewall).
+  :func:`_project_diet` sets ``test_code=None`` unconditionally for the model-arm projection, and
+  EVERY ``make_*_executor`` factory self-applies it to whatever ``ArmInput`` arrives (CANON §6.1
+  2026-07-02) — so the drop holds structurally whether an arm is driven directly (a pre-projected
+  input) or through :func:`~cogworx.eval.runner.run_arms` (a generic, un-projected input carrying
+  the real ``test_code``). No ground-truth field (``stratum`` / ``is_error`` / ``error_regime``) is
+  ever on an :class:`~cogworx.eval.runner.ArmInput` (the landed runner firewall).
+
+THE DIET WELD (CANON §6.1 2026-07-02 — read before touching a factory):
+  :func:`~cogworx.eval.runner.run_arms` builds ONE generic ``ArmInput`` per item
+  (``runner._arm_input``, carrying the real ``test_code`` and the un-stripped ``experiment_design``)
+  and hands the SAME object to every arm executor — it has no per-arm projection hook. Before this
+  weld, only a caller that pre-projected via :func:`project_arm_input` (every existing test; the
+  driver's now-deleted ``_diet_wrap`` adapter) got the diet firewall; a caller that drove a
+  ``make_*_executor`` straight through ``run_arms`` got the RAW, un-projected input — the strip and
+  the ``test_code`` drop silently never happened. Every factory now calls :func:`_project_diet` on
+  its ``arm_input`` FIRST, inside its executor closure, so the diet is enforced no matter how the
+  executor is reached. The transform is IDEMPOTENT (see :func:`_project_diet`), so this weld is
+  invisible to every existing pre-projecting caller/test — applying it twice is a no-op.
 
 SEED -> SAMPLING STREAM (the CRN byte-repro contract):
   ``ArmExecutor.__call__(arm_input, seed)`` receives the arm-independent CRN seed
@@ -74,6 +93,23 @@ Contract changelog (CANON §6.1):
     copied from oracles/judge). New module; no existing callers. Additive new public surface only.
     Drives the DI'd Model directly, journal-free (NO Stage instantiation, NO StageContext). The
     companion additive ``ArmInput.experiment_design`` field landed in runner.py the same pod.
+  - 2026-07-02 (wiring fix): welded the diet transform INTO every ``make_*_executor`` factory
+    (previously only :func:`project_arm_input` applied it, so a caller driving a factory straight
+    through :func:`~cogworx.eval.runner.run_arms` — which hands one generic, un-projected
+    ``ArmInput`` to every arm — silently got the RAW ``test_code``/``experiment_design``, bypassing
+    the S9 firewall). Extracted the transform into a new private, IDEMPOTENT :func:`_project_diet`
+    (``ArmInput -> ArmInput``) shared by :func:`project_arm_input` and every factory — the strip
+    logic exists in exactly one place. ``make_c_executor`` is NO LONGER a bare alias of
+    :func:`make_c_prime_executor`: it now welds ``strip=True`` in its own executor closure (same
+    :data:`_NEUTRAL_INSTRUCTIONS` / ``_run_dialectic_arm`` code path as C', differing only in the
+    diet it self-applies). BEHAVIOR-PRESERVING for every existing caller: every landed call site
+    pre-projects via :func:`project_arm_input` before invoking a factory, and the transform is a
+    no-op on an already-projected input, so no existing test's captured messages change. The
+    displaced ``verifiable_claim`` fidelity guard (still enforced in :func:`project_arm_input`,
+    which alone has the ``CorpusItem``) is now ALSO a lock-time authoring assert,
+    :func:`cogworx.eval.lock.assert_no_verifiable_claim`, so the ``run_arms``-driven path (which
+    never calls :func:`project_arm_input`) is covered too. Additive + one behavior change (the
+    factories now self-project); no signature changed.
 """
 
 from __future__ import annotations
@@ -234,21 +270,50 @@ class _JudgeAnswer(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _project_diet(arm_input: ArmInput, *, strip: bool) -> ArmInput:
+    """The model-arm info-diet transform over an already-built :class:`ArmInput` — the ONE place the
+    strip / ``test_code``-drop logic lives (CANON §6.1 2026-07-02). Two callers share it:
+
+      - :func:`project_arm_input` (the ``CorpusItem`` path) builds the full, un-stripped input off
+        the item, then delegates the field transform here.
+      - every ``make_*_executor`` factory self-applies this to WHATEVER ``ArmInput`` arrives, so the
+        diet is enforced structurally even when driven through
+        :func:`~cogworx.eval.runner.run_arms` (see the module docstring's "THE DIET WELD").
+
+    IDEMPOTENT: each field is checked before writing, and a call that changes nothing returns the
+    SAME object (no ``model_copy``) rather than a byte-identical new one — so re-applying this to an
+    already-projected input, or applying it to a factory's own pre-projected fixture, is a true
+    no-op.
+
+      - ``test_code`` is unconditionally dropped (set ``None``): it NAMES the planted error
+        (``planting.py:673-674``); no model arm may ever see it.
+      - ``experiment_design`` is hidden behind the distinct :data:`_WITHHELD_EXPERIMENT_DESIGN`
+        sentinel iff ``strip`` (the C-vs-C' diet axis) — never confused with an empty field."""
+    updates: dict[str, Any] = {}
+    if arm_input.test_code is not None:
+        updates["test_code"] = None
+    if strip and arm_input.experiment_design != _WITHHELD_EXPERIMENT_DESIGN:
+        updates["experiment_design"] = _WITHHELD_EXPERIMENT_DESIGN
+    if not updates:
+        return arm_input
+    return arm_input.model_copy(update=updates)
+
+
 def project_arm_input(item: CorpusItem, *, strip: bool) -> ArmInput:
     """Project a :class:`~cogworx.eval.corpus.CorpusItem` to the model-arm
     :class:`~cogworx.eval.runner.ArmInput` (the info-diet projection — DIVERGES from the landed
-    ``runner._arm_input``):
+    ``runner._arm_input``): builds the FULL, un-stripped input off the item, then delegates the
+    strip / ``test_code``-drop transform to :func:`_project_diet` — the SAME transform every
+    ``make_*_executor`` factory self-applies, so that logic exists in exactly one place.
 
-      - ``strip=True`` (the **C** diet): HIDE ``thesis.experiment_design`` via
-        ``thesis.model_copy(update={"experiment_design": <withheld sentinel>})`` (a typed field
-        hide, NOT string munging) BEFORE building the input — the projected ``experiment_design`` is
-        the DISTINCT :data:`_WITHHELD_EXPERIMENT_DESIGN` sentinel (so "C actually stripped" is
-        observable, never confused with an empty field).
-      - ``strip=False`` (the **C'** / **D** / **D'** / **B** diet): pass ``experiment_design``
+      - ``strip=True`` (the **C** diet): :func:`_project_diet` hides ``experiment_design`` behind
+        the DISTINCT :data:`_WITHHELD_EXPERIMENT_DESIGN` sentinel (a typed field hide via
+        ``model_copy``, NOT string munging) — so "C actually stripped" is observable, never confused
+        with an empty field.
+      - ``strip=False`` (the **C'** / **D** / **D'** / **B** diet): ``experiment_design`` passes
         through unchanged.
-      - ``test_code`` is DROPPED for ALL model arms (set to ``None``): it NAMES the planted error
-        (``planting.py:673-674``); only arm A (the oracle, landed) consumes it. The model arms'
-        input MUST NOT carry it.
+      - ``test_code`` is DROPPED for ALL model arms: it NAMES the planted error
+        (``planting.py:673-674``); only arm A (the oracle, landed) consumes it.
 
     No ground-truth field (``stratum`` / ``is_error`` / ``error_regime`` / ``label_source``) is ever
     projected — the landed :class:`ArmInput` is structurally unable to carry one (S9).
@@ -258,8 +323,12 @@ def project_arm_input(item: CorpusItem, *, strip: bool) -> ArmInput:
     :func:`_dialectic_task` does NOT reproduce. That divergence is harmless ONLY while the corpus
     leaves ``verifiable_claim`` unset (every corpus thesis does today). If a future corpus author
     ever populates it, arm D would silently diverge from the live antithesis diet. This guard makes
-    that assumption LOUD: a ``verifiable_claim``-bearing thesis raises here, not silently
-    dropped."""
+    that assumption LOUD: a ``verifiable_claim``-bearing thesis raises here, not silently dropped.
+    It needs the ``CorpusItem`` (the ``ArmInput`` path this function hands to :func:`_project_diet`
+    cannot see ``thesis.verifiable_claim``), so it can only run HERE — a caller that drives a
+    ``make_*_executor`` straight through :func:`~cogworx.eval.runner.run_arms` never reaches this
+    function. :func:`cogworx.eval.lock.assert_no_verifiable_claim` carries the SAME invariant as a
+    lock-time authoring assert over the whole corpus (CANON §6.1 2026-07-02), closing that gap."""
     thesis = item.thesis
     if thesis.verifiable_claim is not None:
         raise ValueError(
@@ -269,19 +338,16 @@ def project_arm_input(item: CorpusItem, *, strip: bool) -> ArmInput:
             "antithesis. Either extend _dialectic_task to reproduce that section (and re-pin the "
             "drift sentinel) or keep corpus theses' verifiable_claim None."
         )
-    if strip:
-        thesis = thesis.model_copy(
-            update={"experiment_design": _WITHHELD_EXPERIMENT_DESIGN}
-        )
-    return ArmInput(
+    raw = ArmInput(
         item_id=item.item_id,
         problem_statement=item.frame.problem_statement,
         completion_criterion=item.frame.completion_criterion,
         problem_type=item.frame.problem_type,
         proposed_solution=thesis.proposed_solution,
         experiment_design=thesis.experiment_design,
-        test_code=None,
+        test_code=item.test_code,
     )
+    return _project_diet(raw, strip=strip)
 
 
 # ---------------------------------------------------------------------------
@@ -365,14 +431,19 @@ def make_d_executor(model: Model) -> ArmExecutor:
     """Arm **D** — adversarial dialectic, FULL diet, thesis-family ``model`` (plan §5). Drives the
     antithesis exchange with :data:`_ADVERSARIAL_INSTRUCTIONS`; ``flagged = 1`` iff the reviewer
     broke the thesis. EXACTLY ONE model call per ``(item, trial)``; the CRN seed threads into the
-    sampling stream."""
+    sampling stream.
+
+    Self-applies :func:`_project_diet` (``strip=False``, CANON §6.1 2026-07-02) to whatever
+    ``arm_input`` arrives — welds the ``test_code`` drop structurally even when driven through
+    :func:`~cogworx.eval.runner.run_arms`'s generic, un-projected input. A no-op on an
+    already-projected input (idempotent)."""
 
     def _executor(arm_input: ArmInput, seed: int) -> ArmOutcome:
         return asyncio.run(
             _run_dialectic_arm(
                 model=model,
                 instructions=_ADVERSARIAL_INSTRUCTIONS,
-                arm_input=arm_input,
+                arm_input=_project_diet(arm_input, strip=False),
                 seed=seed,
             )
         )
@@ -391,14 +462,18 @@ def make_c_prime_executor(model: Model) -> ArmExecutor:
     """Arm **C'** — NEUTRAL framing + FULL diet (plan §5). IDENTICAL code path to D MODULO the
     instruction constant (:data:`_NEUTRAL_INSTRUCTIONS` not :data:`_ADVERSARIAL_INSTRUCTIONS`) — a
     neutral second-look reviewer that CAN still return ``"broke"`` (``flagged = 1``) on a genuine
-    error. EXACTLY ONE model call per ``(item, trial)``."""
+    error. EXACTLY ONE model call per ``(item, trial)``.
+
+    Self-applies :func:`_project_diet` (``strip=False``, CANON §6.1 2026-07-02) — see
+    :func:`make_d_executor`'s docstring for the weld rationale; ``strip=False`` here means only the
+    ``test_code`` drop bites (``experiment_design`` is the FULL diet, unchanged)."""
 
     def _executor(arm_input: ArmInput, seed: int) -> ArmOutcome:
         return asyncio.run(
             _run_dialectic_arm(
                 model=model,
                 instructions=_NEUTRAL_INSTRUCTIONS,
-                arm_input=arm_input,
+                arm_input=_project_diet(arm_input, strip=False),
                 seed=seed,
             )
         )
@@ -407,12 +482,30 @@ def make_c_prime_executor(model: Model) -> ArmExecutor:
 
 
 def make_c_executor(model: Model) -> ArmExecutor:
-    """Arm **C** — IDENTICAL to :func:`make_c_prime_executor` (NEUTRAL framing) but STRIPPED diet
-    (plan §5). The diet strip lives in :func:`project_arm_input` (``strip=True`` hides
-    ``experiment_design``), so C and C' share THIS executor; the only C-vs-C' difference is the
-    upstream diet projection on the ``ArmInput`` they receive. C and D share the executor MODULO the
-    instruction constant."""
-    return make_c_prime_executor(model)
+    """Arm **C** — NEUTRAL framing (the SAME :data:`_NEUTRAL_INSTRUCTIONS` / ``_run_dialectic_arm``
+    code path as :func:`make_c_prime_executor`) with the STRIPPED diet WELDED in (plan §5; CANON
+    §6.1 2026-07-02).
+
+    NO LONGER a bare alias of :func:`make_c_prime_executor`: this factory self-applies
+    :func:`_project_diet` with ``strip=True`` in its own executor closure, so the
+    ``experiment_design`` strip is enforced structurally on whatever ``ArmInput`` arrives —
+    including one driven straight through :func:`~cogworx.eval.runner.run_arms` (which never calls
+    :func:`project_arm_input`). C and C' still share the identical instruction constant and the
+    identical ``_run_dialectic_arm`` code path; the ONLY difference is the diet each self-applies
+    (``strip=True`` here, ``strip=False`` there) — exactly the C-vs-C' axis the module docstring
+    names. C and D share the executor MODULO the instruction constant."""
+
+    def _executor(arm_input: ArmInput, seed: int) -> ArmOutcome:
+        return asyncio.run(
+            _run_dialectic_arm(
+                model=model,
+                instructions=_NEUTRAL_INSTRUCTIONS,
+                arm_input=_project_diet(arm_input, strip=True),
+                seed=seed,
+            )
+        )
+
+    return _executor
 
 
 def make_b_executor(model: Model) -> ArmExecutor:
@@ -423,10 +516,17 @@ def make_b_executor(model: Model) -> ArmExecutor:
     reachability pin).
     Uses the structured-output path when the provider declares it (S4 graceful degrade). ``flagged =
     1`` iff the judge predicts the solution does NOT hold; a malformed answer -> ``flagged = 0``
-    (the judge could not determine a failure). EXACTLY ONE model call per ``(item, trial)``."""
+    (the judge could not determine a failure). EXACTLY ONE model call per ``(item, trial)``.
+
+    Self-applies :func:`_project_diet` (``strip=False``, CANON §6.1 2026-07-02) — see
+    :func:`make_d_executor`'s docstring for the weld rationale; B never conditions on
+    ``experiment_design`` being stripped (it is not a C-vs-C' axis arm), only the ``test_code`` drop
+    applies here."""
 
     def _executor(arm_input: ArmInput, seed: int) -> ArmOutcome:
-        return asyncio.run(_run_judge_arm(model=model, arm_input=arm_input, seed=seed))
+        return asyncio.run(
+            _run_judge_arm(model=model, arm_input=_project_diet(arm_input, strip=False), seed=seed)
+        )
 
     return _executor
 

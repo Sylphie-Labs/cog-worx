@@ -7,8 +7,8 @@ itself runs the REAL frozen-oracle kernel (a local ``pytest`` subprocess per ite
 wall-clock cost across this file's several full end-to-end runs.
 
 Covers:
-  1. a full ``run_bring_up`` emits Cells for every arm in the bring-up map ({A, PC, B, C, C', D})
-     and the verdict is ``INSTRUMENT_INVALID``.
+  1. a full ``run_bring_up`` emits Cells for every arm in the bring-up map
+     ({A, PC, B, C, C_stripped, D}) and the verdict is ``INSTRUMENT_INVALID``.
   2. the written manifest contains the roster blocked-reasons banner, the verdict, and the
      fingerprint digest.
   3. the CRN diagnostic reports the D-D' pair "not measured" (no crash on the absent arm).
@@ -135,7 +135,7 @@ async def test_run_bring_up_emits_every_arm_and_is_instrument_invalid(tmp_path: 
     manifest, _model, _journal = await _run(tmp_path)
 
     arms_present = {t.arm for t in manifest.arm_telemetry}
-    assert arms_present == {"A", "PC", "B", "C", "C'", "D"}
+    assert arms_present == {"A", "PC", "B", "C", "C_stripped", "D"}
     assert manifest.cell_count > 0
     assert manifest.verdict.verdict_status == "INSTRUMENT_INVALID"
     assert manifest.verdict.passed is False

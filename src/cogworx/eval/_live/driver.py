@@ -26,38 +26,33 @@ THE CELL-ARTIFACT ARM-LABEL CROSSOVER (read before touching the arm map)
 --------------------------------------------------------------------------
 :mod:`cogworx.eval.arms` names its two neutral-framing factories by DIET:
 :func:`~cogworx.eval.arms.make_c_prime_executor` (full diet) and
-:func:`~cogworx.eval.arms.make_c_executor` (diet-STRIPPED, shares the same executor body via
-``make_c_prime_executor`` modulo the upstream projection). :mod:`cogworx.eval.scorer` instead names
-its arms by CELL-ARTIFACT ROLE: its hardcoded ``D>C'`` binding delta reads ``Cell.arm == "C"`` for
-"the neutral-second-look reviewer that is the gate's binding baseline" (``scorer.py`` module
-docstring: "labeled 'C' in the Cell artifact -- the diet-stripped C is not a binding arm; the C'
-full-diet neutral reviewer is the gate's binding baseline"). The two conventions therefore CROSS:
-this driver stamps ``Cell.arm == "C"`` from :func:`~cogworx.eval.arms.make_c_prime_executor` (full
-diet -- the scorer's binding baseline) and ``Cell.arm == "C'"`` from
-:func:`~cogworx.eval.arms.make_c_executor` (diet-stripped -- reported-only, never a binding arm).
-This is a DELIBERATE, evidence-grounded mapping (not a guess) -- see :data:`_MODEL_ARM_FACTORIES` --
-made explicit here because the crossover is genuinely confusing on a first read of either module.
+:func:`~cogworx.eval.arms.make_c_executor` (diet-STRIPPED; shares the SAME instruction constant and
+``_run_dialectic_arm`` code path, differing only in the diet it self-applies).
+:mod:`cogworx.eval.scorer` instead names its arms by CELL-ARTIFACT ROLE: its ``D>C'`` binding delta
+reads ``Cell.arm == cogworx.eval.scorer.BINDING_BASELINE_ARM`` (``"C"``) for "the neutral-second-
+look reviewer that is the gate's binding baseline". This driver stamps
+``Cell.arm == BINDING_BASELINE_ARM`` (``"C"``) from :func:`~cogworx.eval.arms.make_c_prime_executor`
+(full diet -- the scorer's binding baseline) and ``Cell.arm == "C_stripped"`` from
+:func:`~cogworx.eval.arms.make_c_executor` (diet-stripped -- reported-only, never a binding arm; a
+NON-primed label, deliberately distinct from the scorer's ``"D>C'"`` delta-label string so the two
+can never be confused with each other or silently swapped). :data:`_MODEL_ARM_FACTORIES` keys off
+the imported :data:`~cogworx.eval.scorer.BINDING_BASELINE_ARM` constant rather than a bare re-typed
+``"C"`` literal, so the crossover cannot silently re-swap (CANON §6.1 2026-07-02).
 
-THE DIET-PROJECTION SEAM GAP (a composition-root responsibility, not a frozen-seam change)
----------------------------------------------------------------------------------------------
+THE DIET WELD (CANON §6.1 2026-07-02 -- superseded ``_diet_wrap``)
+-----------------------------------------------------------------------
 :func:`~cogworx.eval.runner.run_arms` builds ONE generic :class:`~cogworx.eval.runner.ArmInput` per
 item (``runner._arm_input``, carrying the real ``test_code`` and the un-stripped
 ``experiment_design``) and hands the SAME object to every arm executor -- ``ArmExecutor`` is
 arm-agnostic by contract (:mod:`cogworx.eval.runner` docstring), so ``run_arms`` has no per-arm
-projection hook. The C-vs-C' diet distinction (:func:`~cogworx.eval.arms.project_arm_input`) is
-therefore never applied by ``run_arms`` itself -- every existing test drives it by calling a
-``make_*_executor`` factory's returned callable DIRECTLY with a pre-projected input
-(``tests/eval/test_arms.py``), never through ``run_arms``. Driving these arms through the REAL
-5-arm runner (this pod's whole point) needs an adapter at the composition layer:
-:func:`_diet_wrap` substitutes the ``arms``-owned per-item projection (keyed by
-``arm_input.item_id``, the only field of ``run_arms``'s generic input this adapter reads) before
-calling the underlying model executor. This is NOT a frozen-seam change -- ``runner.py``/
-``arms.py`` are untouched -- it is exactly the kind of glue a composition root is for. (In
-practice this makes no observable difference for the model
-arms' PROMPT content here: none of ``_run_dialectic_arm``/``_run_judge_arm`` ever reads
-``ArmInput.test_code``, so the "leak" is inert either way -- but the C-vs-C' experiment_design
-STRIP does not happen at all without this adapter, so it is applied uniformly to every model arm for
-contract fidelity, including the ``verifiable_claim`` guard.)
+projection hook. This driver previously closed that gap with a local ``_diet_wrap`` adapter (a
+composition-root-only "glue" seam). The diet transform now lives INSIDE every
+``make_*_executor`` factory itself (each self-applies the shared, idempotent
+``arms._project_diet`` to whatever ``ArmInput`` it receives -- see ``arms.py``'s module docstring,
+"THE DIET WELD"), so ``_diet_wrap`` is no longer needed here: :func:`_build_arm_executors` wires the
+raw factories directly over the budgeted model, and the diet firewall (the C-vs-C' strip, the
+``test_code`` drop for every model arm) is enforced structurally by ``arms.py``, not by this
+composition root.
 
 S1/S2/S4 POSTURE: the only I/O this module performs is the L3 JSONL idempotency cache, the S6
 journal touches inside ``run_and_stamp``/``score_gate_live`` (both already-landed seams), and the
@@ -69,6 +64,17 @@ unit-testable with a stub model + :class:`~cogworx.testing.doubles.InMemoryJourn
 Contract changelog (CANON §6.1):
   - 2026-07-02 (Pod 4.4-live L6): initial -- ``run_bring_up`` / ``BringUpManifest`` / the CLI
     ``main``. New module; no existing callers. Additive new public surface only.
+  - 2026-07-02 (wiring fix): DELETED ``_diet_wrap`` -- the ``arms.py`` factories now self-apply the
+    diet weld (see ``arms.py``'s "THE DIET WELD"), so this composition root no longer needs its own
+    adapter. ``_MODEL_ARM_FACTORIES`` narrowed from ``Mapping[str, tuple[factory, strip: bool]]``
+    to ``Mapping[str, factory]`` (the strip flag moved into each factory). The reported-only
+    stripped-C Cell arm is RENAMED ``"C'"`` -> ``"C_stripped"`` (a non-primed label, never read by
+    the scorer -- verified by grep -- so this only touches this driver's arm map, its L3 cache
+    filename, and its manifest telemetry); the binding-baseline Cell arm ``"C"`` is now keyed off
+    the imported
+    :data:`~cogworx.eval.scorer.BINDING_BASELINE_ARM` constant rather than a bare literal. Breaking
+    for any out-of-tree reader of ``manifest.json``'s ``arm_telemetry`` that matched on the literal
+    ``"C'"`` label; no other caller of this module exists yet (L7 is Jim-gated, unbuilt).
 """
 
 from __future__ import annotations
@@ -97,7 +103,6 @@ from cogworx.eval.arms import (
     make_c_executor,
     make_c_prime_executor,
     make_d_executor,
-    project_arm_input,
 )
 from cogworx.eval.corpus import CorpusItem
 from cogworx.eval.lock import (
@@ -109,15 +114,13 @@ from cogworx.eval.lock import (
 from cogworx.eval.runner import (
     MASTER_SEED,
     ArmExecutor,
-    ArmInput,
-    ArmOutcome,
     CrnResizeDiagnostic,
     arm_a_executor,
     crn_resize_diagnostic,
     run_and_stamp,
     scripted_executor,
 )
-from cogworx.eval.scorer import GateVerdict, score_gate_live
+from cogworx.eval.scorer import BINDING_BASELINE_ARM, GateVerdict, score_gate_live
 from cogworx.eval.youden import Cell
 from cogworx.model.base import Model
 from cogworx.substrate.journal import Journal
@@ -134,24 +137,28 @@ _SIGMA_SQ_B_SPEC_PLANNING = 0.028
 
 _ModelArmFactory = Callable[[Model], ArmExecutor]
 
-#: Cell-artifact arm label -> (the ``arms.py`` factory to drive it, whether to strip
-#: ``experiment_design`` via :func:`~cogworx.eval.arms.project_arm_input`). See the module
-#: docstring's "CELL-ARTIFACT ARM-LABEL CROSSOVER" section for why "C" maps to
-#: ``make_c_prime_executor`` (full diet -- the scorer's binding baseline) and "C'" maps to
-#: ``make_c_executor`` (diet-stripped -- reported-only).
-_MODEL_ARM_FACTORIES: Mapping[str, tuple[_ModelArmFactory, bool]] = {
-    "D": (make_d_executor, False),
-    "C": (make_c_prime_executor, False),
-    "C'": (make_c_executor, True),
-    "B": (make_b_executor, False),
+#: Cell-artifact arm label -> the ``arms.py`` factory to drive it. Each factory now self-applies its
+#: own diet weld (CANON §6.1 2026-07-02 -- see the module docstring's "THE DIET WELD"), so this map
+#: carries no separate strip flag. See "CELL-ARTIFACT ARM-LABEL CROSSOVER" for why
+#: :data:`~cogworx.eval.scorer.BINDING_BASELINE_ARM` (``"C"``) maps to ``make_c_prime_executor``
+#: (full diet -- the scorer's binding baseline) and ``"C_stripped"`` maps to ``make_c_executor``
+#: (diet-stripped -- reported-only, never a binding arm).
+_MODEL_ARM_FACTORIES: Mapping[str, _ModelArmFactory] = {
+    "D": make_d_executor,
+    BINDING_BASELINE_ARM: make_c_prime_executor,
+    "C_stripped": make_c_executor,
+    "B": make_b_executor,
 }
 
 #: The candidate CRN re-size pairs (label, arm_a, arm_b) -- mirrors the scorer's binding deltas plus
 #: the deferred D-D' cross-family pair. D' is never wired in a 1-key bring-up (no second family), so
-#: this pair is ALWAYS reported "not measured", never crashed on.
+#: this pair is ALWAYS reported "not measured", never crashed on. The label string ``"D>C'"``
+#: mirrors :mod:`cogworx.eval.scorer`'s own ``_BINDING_DELTAS`` key verbatim (an opaque diagnostic
+#: name); its ``arm_b`` is :data:`~cogworx.eval.scorer.BINDING_BASELINE_ARM`, the SAME constant the
+#: scorer binds against -- never the reported-only ``"C_stripped"`` arm.
 _CRN_CANDIDATE_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("D>A", "D", "A"),
-    ("D>C'", "D", "C"),
+    ("D>C'", "D", BINDING_BASELINE_ARM),
     ("D>D'", "D", "D'"),
 )
 
@@ -203,21 +210,6 @@ class BringUpManifest(BaseModel):
     generated_at: datetime
 
 
-def _diet_wrap(
-    inner: ArmExecutor, corpus: Sequence[CorpusItem], *, strip: bool
-) -> ArmExecutor:
-    """Substitute the ``arms``-owned per-item diet projection for whatever generic
-    :class:`~cogworx.eval.runner.ArmInput` ``run_arms`` built (see the module docstring's "THE
-    DIET-PROJECTION SEAM GAP"). Reads only ``arm_input.item_id`` off the input ``run_arms`` passes
-    in -- never its content -- and looks up the pre-projected input for that item."""
-    projected = {item.item_id: project_arm_input(item, strip=strip) for item in corpus}
-
-    def _executor(arm_input: ArmInput, seed: int) -> ArmOutcome:
-        return inner(projected[arm_input.item_id], seed)
-
-    return _executor
-
-
 def _safe_filename(label: str) -> str:
     return label.replace("'", "prime")
 
@@ -232,9 +224,10 @@ def _build_arm_executors(
     out_dir: Path,
 ) -> dict[str, ArmExecutor]:
     """Wire the bring-up arm map: A (deterministic oracle) + PC (scripted positive control) are
-    non-model and uncached; B/C/C'/D are the ``arms.py`` model factories over a budgeted model,
-    each cache-wrapped (L3) under its own Cell-artifact arm label. NO D' (deferred -- needs a second
-    model family)."""
+    non-model and uncached; B/C/C_stripped/D are the ``arms.py`` model factories over a budgeted
+    model, each cache-wrapped (L3) under its own Cell-artifact arm label. Each factory self-applies
+    its own diet weld (CANON §6.1 2026-07-02), so no separate diet-projection wrap is needed here.
+    NO D' (deferred -- needs a second model family)."""
     budgeted = build_budgeted_model(
         model,
         guard=guard,
@@ -247,10 +240,9 @@ def _build_arm_executors(
         "A": arm_a_executor,
         "PC": scripted_executor(positive_control_ids),
     }
-    for label, (factory, strip) in _MODEL_ARM_FACTORIES.items():
-        projected_executor = _diet_wrap(factory(budgeted), corpus, strip=strip)
+    for label, factory in _MODEL_ARM_FACTORIES.items():
         executors[label] = cached_executor(
-            projected_executor,
+            factory(budgeted),
             arm=label,
             fingerprint_digest=fingerprint_digest,
             cache_path=out_dir / f"cache_{_safe_filename(label)}.jsonl",
