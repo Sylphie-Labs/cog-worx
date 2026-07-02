@@ -18,6 +18,11 @@ Contract changelog (CANON §6.1):
   - 2026-07-02 (L4): ``budget.py`` — ``make_cost_estimator`` / ``build_budgeted_model``, the
     ``PriceTable``-backed pre-call USD projection that makes ``BudgetGuard(max_usd=...)`` actually
     bite (closes the ``BudgetGuardedModel`` estimator gap noted at ``model/guarded.py`` ~L70).
+  - 2026-07-02 (L5): ``corpus.py`` — ``build_bring_up_corpus``, the deterministic credential-free
+    bring-up corpus (``OInjector`` deterministic-O + ``build_detk_pair`` detK pairs only, zero
+    ``Model`` calls) that gives the 1-key driver a real, locked, fingerprinted corpus to exercise
+    the whole GATE pipeline against while the binding K pool is provably empty (honest
+    ``INSTRUMENT_INVALID`` downstream, never a laundered verdict).
 """
 
 from __future__ import annotations
