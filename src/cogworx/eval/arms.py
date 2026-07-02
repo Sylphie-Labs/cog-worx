@@ -288,11 +288,27 @@ def _project_diet(arm_input: ArmInput, *, strip: bool) -> ArmInput:
       - ``test_code`` is unconditionally dropped (set ``None``): it NAMES the planted error
         (``planting.py:673-674``); no model arm may ever see it.
       - ``experiment_design`` is hidden behind the distinct :data:`_WITHHELD_EXPERIMENT_DESIGN`
-        sentinel iff ``strip`` (the C-vs-C' diet axis) — never confused with an empty field."""
+        sentinel iff ``strip`` AND there is something to withhold (``experiment_design`` is
+        non-empty) — never confused with an empty field.
+
+    THE ORDERING INVARIANT (CANON §6.1 2026-07-02 wiring fix, red-team finding): the full-diet arm
+    MUST always see AT LEAST as much text as the stripped arm sees. A blanket
+    ``strip -> substitute the sentinel`` would VIOLATE this on an empty ``experiment_design``: the
+    sentinel string is non-empty, so a stripped arm would see MORE text (the sentinel) than the
+    full-diet arm sees (``""``) — inverting the diet ordering the C-vs-C' contrast depends on. The
+    guard above makes the strip a NO-OP when there is nothing to withhold (``experiment_design ==
+    ""``), so an empty design stays ``""`` under both diets rather than growing under the stripped
+    one. (Every corpus thesis populates ``experiment_design`` today — :class:`~cogworx.verification.
+    contracts.Thesis` carries no non-empty invariant on the field, so this is not asserted as an
+    authoring precondition; the guard makes the transform correct regardless.)"""
     updates: dict[str, Any] = {}
     if arm_input.test_code is not None:
         updates["test_code"] = None
-    if strip and arm_input.experiment_design != _WITHHELD_EXPERIMENT_DESIGN:
+    if (
+        strip
+        and arm_input.experiment_design
+        and arm_input.experiment_design != _WITHHELD_EXPERIMENT_DESIGN
+    ):
         updates["experiment_design"] = _WITHHELD_EXPERIMENT_DESIGN
     if not updates:
         return arm_input

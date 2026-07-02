@@ -22,6 +22,18 @@ a message-CAPTURING stub :class:`~cogworx.model.base.Model`, drives each arm thr
 :func:`~cogworx.eval.runner.run_arms`, and inspects the captured prompts per arm — MUTATION-
 RESISTANT: reverting either weld, or swapping the two Cell-arm-label map entries, flips one of the
 assertions below.
+
+HONESTY NOTE on assertion (c) (red-team finding, 2026-07-02): NO model-arm prompt builder
+(``arms._dialectic_task`` / the judge's ``_JUDGE_USER_TEMPLATE``) ever reads ``ArmInput.test_code``
+— the field simply never enters any rendered prompt, with or without :func:`~cogworx.eval.arms.
+_project_diet`'s drop. So assertion (c) below is VACUOUS as a leak-closure proof: it would pass
+identically even if the ``test_code=None`` drop were disabled, because nothing downstream of the
+drop ever looks at the field. It is kept as a forward-guard (documents + pins the CURRENT diet
+shape; would catch a FUTURE prompt builder that starts reading ``test_code``), not as evidence that
+disabling the drop is caught here.
+:func:`test_project_diet_structurally_drops_test_code_via_run_arms` below is the genuinely
+non-vacuous version — it inspects the PROJECTED ``ArmInput`` object itself (not prompt text), so it
+DOES fail if the drop is disabled.
 """
 
 from __future__ import annotations
@@ -32,6 +44,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+import cogworx.eval.arms as arms_module
 from cogworx.cost.budget import BudgetGuard
 from cogworx.eval._live.driver import _build_arm_executors
 from cogworx.eval._live.settings import GateRunSettings
@@ -42,7 +57,7 @@ from cogworx.eval.corpus import (
     LLMPlanterStamp,
     OracleLabelProvenance,
 )
-from cogworx.eval.runner import run_arms
+from cogworx.eval.runner import ArmInput, run_arms
 from cogworx.eval.scorer import BINDING_BASELINE_ARM
 from cogworx.model.base import ChatMessage, ModelCapabilities, ModelResponse, ModelTier, ToolSpec
 from cogworx.model.providers.config import PriceTable, ProviderConfig
@@ -177,6 +192,55 @@ def test_run_arms_through_driver_wiring_enforces_diet_firewall(tmp_path: Path) -
     assert _EXPERIMENT_DESIGN not in stripped_prompt
     assert _TEST_MARKER not in stripped_prompt
 
-    # (c) test_code never reaches any model arm, D and B included.
+    # (c) test_code never reaches any model arm's RENDERED PROMPT, D and B included. NOTE (see the
+    # module-docstring honesty note): this is a FORWARD-GUARD, not proof the test_code=None drop is
+    # active — no current prompt builder reads ArmInput.test_code, so this assertion passes whether
+    # or not _project_diet's drop runs. test_project_diet_structurally_drops_test_code_via_run_arms
+    # below is the assertion that actually bites on that drop.
     assert _TEST_MARKER not in _prompt_for("D")
     assert _TEST_MARKER not in _prompt_for("B")
+
+
+def test_project_diet_structurally_drops_test_code_via_run_arms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FINDING 2 (red-team, 2026-07-02) — the NON-VACUOUS version of assertion (c) above: instead of
+    checking rendered prompt text (which never carries ``test_code`` regardless of the drop, per the
+    module-docstring honesty note), this inspects the PROJECTED :class:`~cogworx.eval.runner.
+    ArmInput` object every ``make_*_executor`` factory hands to its inner runner
+    (``arms._run_dialectic_arm`` / ``arms._run_judge_arm``) via ``arms._project_diet``.
+
+    Spies on the module-level ``cogworx.eval.arms._project_diet`` (every factory closure looks it up
+    as a global at call time, so the monkeypatch is live for calls made through the REAL driver arm
+    map + :func:`~cogworx.eval.runner.run_arms`) and asserts every captured projection carries
+    ``test_code is None``. MUTATION-RESISTANT: disabling the ``test_code`` drop inside
+    ``_project_diet`` (e.g. deleting its ``if arm_input.test_code is not None: updates["test_code"]
+    = None`` branch) makes a projected input carry the real ``test_code`` again, and this assertion
+    fails — unlike assertion (c), which would not notice."""
+    corpus = [_item()]
+    model = _CapturingModel()
+    guard = BudgetGuard(max_usd=10.0)
+    executors = _build_arm_executors(
+        corpus,
+        model=model,
+        settings=_settings(),
+        guard=guard,
+        fingerprint_digest="test-fingerprint",
+        out_dir=tmp_path,
+    )
+
+    captured: list[ArmInput] = []
+    original_project_diet = arms_module._project_diet
+
+    def _spy(arm_input: ArmInput, *, strip: bool) -> ArmInput:
+        projected = original_project_diet(arm_input, strip=strip)
+        captured.append(projected)
+        return projected
+
+    monkeypatch.setattr(arms_module, "_project_diet", _spy)
+
+    for arm in (BINDING_BASELINE_ARM, "C_stripped", "D", "B"):
+        run_arms(corpus, arm_executors={arm: executors[arm]}, R=1)
+
+    assert len(captured) == 4  # sanity: the spy was actually invoked, once per arm
+    assert all(projected.test_code is None for projected in captured)

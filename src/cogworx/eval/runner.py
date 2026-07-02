@@ -477,8 +477,11 @@ def crn_resize_diagnostic(
 
     :param cells: the frozen Cell artifact (the runner's output).
     :param pairs: the binding ``(label, arm_a, arm_b)`` pairs to diagnose (e.g.
-        ``("D>A", "D", "A")``, ``("D>C'", "D", "C'")``, ``("D>D'", "D", "D'")``). The label is
-        opaque and carried verbatim onto :class:`ArmPairRho`.
+        ``("D>A", "D", "A")``, ``("D>C'", "D", "C")``, ``("D>D'", "D", "D'")`` — ``"D>C'"``'s
+        ``arm_b`` is the Cell-artifact label ``"C"``
+        (:data:`~cogworx.eval.scorer.BINDING_BASELINE_ARM`, the full-diet neutral reviewer), never
+        the arms.py factory name ``"C'"``). The label is opaque and carried verbatim onto
+        :class:`ArmPairRho`.
     :param error_strata: the error population for sens (default ``("K",)``).
     :param n_outer: outer bootstrap resamples (passed through to ``realized_variance_diagnostic``).
     :param seed: the bootstrap seed (passed through; determinism).

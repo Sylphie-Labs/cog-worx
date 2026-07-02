@@ -41,6 +41,13 @@ Contract changelog (CANON §6.1):
     (``detk=is_detk(planted_item)``); not part of item identity, so it is EXCLUDED from
     ``content_hash`` (the seven identity fields, ``lock.py:96``). Additive: the default ``False``
     leaves every pre-existing item and the content hash byte-identical.
+  - 2026-07-02 (wiring fix, load-boundary tripwire): ``load_corpus`` gains guard **G5** — no
+    ``thesis.verifiable_claim`` — mirroring :func:`cogworx.eval.lock.assert_no_verifiable_claim`,
+    which enforces the same invariant only at LOCK time. A corpus locked under pre-fix code (or any
+    lock artifact reused/deserialized straight into this loader without re-running
+    ``lock_corpus``) would bypass that lock-time-only guard; G5 refuses it at the LOAD boundary
+    too. Additive: every existing corpus fixture leaves ``thesis.verifiable_claim`` unset, so this
+    is a behavior-preserving no-op for every landed caller/test.
 """
 
 from __future__ import annotations
@@ -325,6 +332,14 @@ def load_corpus(
         ``item_id`` present in the loaded set, (b) be symmetric (A names B => B names A), and (c) be
         opposite-label (one member error-stratum ``{"O","K"}``, the other ``clean``); ``test_code``
         is set iff the item is code-domain (``frame.problem_type=="code"``).
+      - **G5 — no ``thesis.verifiable_claim`` (wiring fix, 2026-07-02).** A load-boundary mirror of
+        :func:`cogworx.eval.lock.assert_no_verifiable_claim`, which enforces the same invariant only
+        at LOCK time. Refuses an item whose thesis carries a ``verifiable_claim`` — the model-arm
+        dialectic diet (``cogworx.eval.arms._dialectic_task``) drops the live antithesis's
+        verifiable_claim/abstention section, so such an item would silently diverge arm D from the
+        live antithesis. Closes the gap where a corpus locked under pre-fix code (or a lock artifact
+        reused/deserialized without re-running ``lock_corpus``) would bypass the lock-time-only
+        guard.
 
     Optional belt-and-suspenders: under ``measurement_run=True`` the loader asserts
     ``content_hash != ""`` as a never-locked tripwire — it does NOT recompute or verify the hash
@@ -346,7 +361,7 @@ def load_corpus(
     Zero model calls, zero oracle invocations, recomputes no stratum, recomputes no hash, reads no
     journal.
 
-    :raises CorpusLoadError: on any G1/G2/G4 violation, naming the offending ``item_id`` + guard.
+    :raises CorpusLoadError: on any G1/G2/G4/G5 violation, naming the offending ``item_id`` + guard.
     """
     # G3 — split firewall. Filter FIRST: every later guard (uniqueness, sibling references) is
     # evaluated over the loaded subset only, never the filtered-out half.
@@ -413,6 +428,24 @@ def load_corpus(
             raise CorpusLoadError(
                 f"G4: measurement item_id {item.item_id} has an empty content_hash "
                 f"(never-locked artifact in a measurement run)"
+            )
+
+        # G5 — no thesis.verifiable_claim (S9 dialectic-diet fidelity, load-boundary tripwire).
+        # Mirrors cogworx.eval.lock.assert_no_verifiable_claim, which enforces the SAME invariant
+        # at LOCK time only. A corpus locked under pre-fix code (or a stale/reused lock artifact
+        # deserialized straight into this loader, bypassing lock_corpus entirely) would sail past
+        # that lock-time-only guard; this loader-side copy refuses it at the LOAD boundary too, so
+        # a verifiable_claim-bearing thesis cannot silently reach the eval harness (arm D's
+        # model-arm dialectic diet, cogworx.eval.arms._dialectic_task, drops the live antithesis's
+        # verifiable_claim/abstention section — a corpus thesis with one set would silently
+        # diverge arm D from the live antithesis it is meant to mirror).
+        if item.thesis.verifiable_claim is not None:
+            raise CorpusLoadError(
+                f"G5: item_id {item.item_id} has thesis.verifiable_claim="
+                f"{item.thesis.verifiable_claim!r} set, but the model-arm dialectic diet "
+                f"(cogworx.eval.arms._dialectic_task) drops the live antithesis's "
+                f"verifiable_claim/abstention section — refusing to load rather than silently "
+                f"handing the eval harness a corpus it cannot honestly score"
             )
 
     # G4(b)+(c) — matched-sibling reference integrity: present, symmetric, opposite-label.

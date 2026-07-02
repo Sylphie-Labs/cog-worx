@@ -791,3 +791,30 @@ def test_content_hash_tripwire_silent_on_default_tuning_load() -> None:
     # Tuning items are never lock-checked — empty content_hash is fine off the measurement path.
     item = _error_item(100, split="tuning", content_hash="")
     assert load_corpus([item])[0].content_hash == ""
+
+
+# ---------------------------------------------------------------------------
+# G5 — no thesis.verifiable_claim (wiring fix, 2026-07-02): the load-boundary mirror of
+# cogworx.eval.lock.assert_no_verifiable_claim, which enforces the same invariant only at LOCK
+# time. A corpus locked under pre-fix code (or a lock artifact deserialized straight into this
+# loader without re-running lock_corpus) would bypass that lock-time-only guard; G5 refuses it
+# here too.
+# ---------------------------------------------------------------------------
+
+
+def test_g5_verifiable_claim_bearing_thesis_raises_even_when_locked() -> None:
+    """A thesis carrying a verifiable_claim is refused at LOAD, even on an item that already carries
+    a (simulated pre-fix / stale) non-empty content_hash — i.e. a "locked under pre-commit code"
+    corpus does not sail past this guard."""
+    bearing_thesis = _THESIS.model_copy(update={"verifiable_claim": "x is prime"})
+    item = _error_item(100, thesis=bearing_thesis, content_hash="locked-under-pre-fix-code")
+    with pytest.raises(CorpusLoadError, match=r"G5.*100.*verifiable_claim"):
+        load_corpus([item])
+
+
+def test_g5_verifiable_claim_none_loads() -> None:
+    """The negative control: the normal verifiable_claim=None path (every corpus thesis today)
+    loads clean — G5 adds no friction to the live corpus shape."""
+    item = _error_item(100)
+    assert item.thesis.verifiable_claim is None
+    assert load_corpus([item])[0].item_id == 100

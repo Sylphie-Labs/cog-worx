@@ -315,6 +315,25 @@ def test_full_diet_includes_experiment_design() -> None:
     assert _EXPERIMENT_DESIGN in _joined(model.calls[0])
 
 
+def test_project_diet_empty_experiment_design_stays_empty_under_strip() -> None:
+    """FINDING 3 (wiring fix, red-team): an empty ``experiment_design`` must NOT grow under the
+    strip. Before the fix, ``strip=True`` substituted the non-empty
+    :data:`_WITHHELD_EXPERIMENT_DESIGN` sentinel even when the real design was ``""``, so the
+    stripped arm would see MORE text than the full-diet arm -- inverting the "full diet always sees
+    >= what the stripped diet sees" ordering the C-vs-C' contrast depends on. MUTATION: dropping the
+    ``arm_input.experiment_design`` truthiness guard in ``_project_diet`` makes this raise/fail
+    (the sentinel reappears)."""
+    ai = project_arm_input(_item(experiment_design=""), strip=True)
+    assert ai.experiment_design == ""
+
+
+def test_project_diet_nonempty_experiment_design_still_stripped_under_strip() -> None:
+    """The negative control: a NON-empty ``experiment_design`` is still hidden behind the sentinel
+    under ``strip=True`` -- the empty-string special case does not disarm the strip in general."""
+    ai = project_arm_input(_item(), strip=True)
+    assert ai.experiment_design == _WITHHELD_EXPERIMENT_DESIGN
+
+
 def test_project_arm_input_drops_test_code_for_all_model_arms() -> None:
     """project_arm_input sets test_code=None for BOTH strip modes — it names the planted error and
     must never reach a model arm (only arm A consumes test_code)."""
