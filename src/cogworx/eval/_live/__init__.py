@@ -15,6 +15,9 @@ Contract changelog (CANON §6.1):
   - 2026-07-02 (L3): ``cache.py`` — ``cached_executor``, the append-only JSONL idempotency cache
     that adapts any ``ArmExecutor`` into a crash-resumable one keyed on
     ``(item_id, arm, seed, fingerprint_digest)``.
+  - 2026-07-02 (L4): ``budget.py`` — ``make_cost_estimator`` / ``build_budgeted_model``, the
+    ``PriceTable``-backed pre-call USD projection that makes ``BudgetGuard(max_usd=...)`` actually
+    bite (closes the ``BudgetGuardedModel`` estimator gap noted at ``model/guarded.py`` ~L70).
 """
 
 from __future__ import annotations
