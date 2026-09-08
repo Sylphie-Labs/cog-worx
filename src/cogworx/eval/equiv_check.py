@@ -104,9 +104,7 @@ _EXACT_TIE = 1e-12
 _TRUE_NULL_NAME = "true-null"
 
 
-def _spread_ok(
-    cfg_name: str, functional: str, sd_std: float, sd_fast: float, s_pairs: int
-) -> bool:
+def _spread_ok(cfg_name: str, functional: str, sd_std: float, sd_fast: float, s_pairs: int) -> bool:
     """The run-spread log-SD-ratio test, with the documented true-null *mean* carve-out (item 4).
 
     ``spread_ok iff |log(SD_fast / SD_std)| <= _K_SPREAD / sqrt(S - 1)``. Degenerate SDs (a zero on
@@ -300,19 +298,33 @@ def evaluate_config(
     # Analytic cross-check on the mean's per-run SE: sqrt(Var(delta_paired) / n_outer) on a single
     # stdlib draw (the realized within-run delta variance). Compared ~20% against method C below.
     diag = realized_variance_diagnostic(
-        artifact, arm_a="D", arm_b="C", error_strata=("K",),
-        n_outer=n_outer, seed=seed_pairs[0][0],
+        artifact,
+        arm_a="D",
+        arm_b="C",
+        error_strata=("K",),
+        n_outer=n_outer,
+        seed=seed_pairs[0][0],
     )
     analytic_mean_se = math.sqrt(diag.var_delta_paired / n_outer)
 
     for s_seed, f_seed in seed_pairs[:s_pairs]:
         s_mean, s_lo, s_hi = stdlib_kernel(
-            artifact, arm_a="D", arm_b="C", error_strata=("K",),
-            n_outer=n_outer, seed=s_seed, quantile=0.0025,
+            artifact,
+            arm_a="D",
+            arm_b="C",
+            error_strata=("K",),
+            n_outer=n_outer,
+            seed=s_seed,
+            quantile=0.0025,
         )
         f_mean, f_lo, f_hi = fast_kernel(
-            artifact, arm_a="D", arm_b="C", error_strata=("K",),
-            n_outer=n_outer, seed=f_seed, quantile=0.0025,
+            artifact,
+            arm_a="D",
+            arm_b="C",
+            error_strata=("K",),
+            n_outer=n_outer,
+            seed=f_seed,
+            quantile=0.0025,
         )
         for fn, sv, fv in (("mean", s_mean, f_mean), ("lo", s_lo, f_lo), ("hi", s_hi, f_hi)):
             stdlib_runs[fn].append(sv)
@@ -337,14 +349,25 @@ def evaluate_config(
             se_bound_flag = True
         functionals.append(
             FunctionalResult(
-                functional=fn, dbar=dbar, se_dbar=se_dbar, k=k, bound=bound, passed=passed,
-                sd_stdlib=sd_std, sd_fast=sd_fast, spread_ok=spread_ok,
-                se_perrun=se_perrun, analytic_mean_se=analytic,
+                functional=fn,
+                dbar=dbar,
+                se_dbar=se_dbar,
+                k=k,
+                bound=bound,
+                passed=passed,
+                sd_stdlib=sd_std,
+                sd_fast=sd_fast,
+                spread_ok=spread_ok,
+                se_perrun=se_perrun,
+                analytic_mean_se=analytic,
             )
         )
     return ConfigResult(
-        name=cfg.name, n_outer=n_outer, s_pairs=s_pairs,
-        functionals=functionals, se_bound_flag=se_bound_flag,
+        name=cfg.name,
+        n_outer=n_outer,
+        s_pairs=s_pairs,
+        functionals=functionals,
+        se_bound_flag=se_bound_flag,
     )
 
 
@@ -358,17 +381,37 @@ def _cross_n_study_seeds(n_studies: int, *, offset: int = 0) -> list[int]:
 
 
 def _study_lo(
-    kernel: BootstrapFn, *, n: int, study_seed: int, n_outer: int, sb_sens: float, sb_spec: float,
-    dsens: float = 0.15, dspec: float = 0.15,
+    kernel: BootstrapFn,
+    *,
+    n: int,
+    study_seed: int,
+    n_outer: int,
+    sb_sens: float,
+    sb_spec: float,
+    dsens: float = 0.15,
+    dspec: float = 0.15,
 ) -> float:
     cells = synth_cells(
-        Random(study_seed), n, n, _R,
-        sens_C=_SENS_C, dsens=dsens, sb_sens=sb_sens,
-        spec_C=_SPEC_C, dspec=dspec, sb_spec=sb_spec, rho_w=_RHO_W,
+        Random(study_seed),
+        n,
+        n,
+        _R,
+        sens_C=_SENS_C,
+        dsens=dsens,
+        sb_sens=sb_sens,
+        spec_C=_SPEC_C,
+        dspec=dspec,
+        sb_spec=sb_spec,
+        rho_w=_RHO_W,
     )
     _, lo, _ = kernel(
-        cells, arm_a="D", arm_b="C", error_strata=("K",),
-        n_outer=n_outer, seed=study_seed ^ _BOOTSTRAP_SEED_MIX, quantile=0.0025,
+        cells,
+        arm_a="D",
+        arm_b="C",
+        error_strata=("K",),
+        n_outer=n_outer,
+        seed=study_seed ^ _BOOTSTRAP_SEED_MIX,
+        quantile=0.0025,
     )
     return lo
 
@@ -390,14 +433,28 @@ def evaluate_boundary(
     lo_fast: list[float] = []
     for sd in seeds:
         lo_std.append(
-            _study_lo(stdlib_kernel, n=cfg.n, study_seed=sd, n_outer=n_outer,
-                      sb_sens=cfg.sb_sens, sb_spec=cfg.sb_spec,
-                      dsens=cfg.dsens, dspec=cfg.dspec)
+            _study_lo(
+                stdlib_kernel,
+                n=cfg.n,
+                study_seed=sd,
+                n_outer=n_outer,
+                sb_sens=cfg.sb_sens,
+                sb_spec=cfg.sb_spec,
+                dsens=cfg.dsens,
+                dspec=cfg.dspec,
+            )
         )
         lo_fast.append(
-            _study_lo(fast_kernel, n=cfg.n, study_seed=sd, n_outer=n_outer,
-                      sb_sens=cfg.sb_sens, sb_spec=cfg.sb_spec,
-                      dsens=cfg.dsens, dspec=cfg.dspec)
+            _study_lo(
+                fast_kernel,
+                n=cfg.n,
+                study_seed=sd,
+                n_outer=n_outer,
+                sb_sens=cfg.sb_sens,
+                sb_spec=cfg.sb_spec,
+                dsens=cfg.dsens,
+                dspec=cfg.dspec,
+            )
         )
     se_lo = _se_method_c(lo_std)
     tau = 2.0 * se_lo
@@ -417,8 +474,13 @@ def evaluate_boundary(
     clears_ok = abs(clears_std - clears_fast) <= 3.0 * math.sqrt(max(n_boundary, 1))
 
     return BoundaryResult(
-        n_boundary=n_boundary, n_flip=n_flip, clears_stdlib=clears_std, clears_fast=clears_fast,
-        exact_ties=exact_ties, flip_ok=flip_ok, clears_ok=clears_ok,
+        n_boundary=n_boundary,
+        n_flip=n_flip,
+        clears_stdlib=clears_std,
+        clears_fast=clears_fast,
+        exact_ties=exact_ties,
+        flip_ok=flip_ok,
+        clears_ok=clears_ok,
     )
 
 
@@ -470,21 +532,29 @@ def run_equivalence(
 
     config_results = [
         evaluate_config(
-            cfg, n_outer=n_outer, s_pairs=s_pairs,
-            artifact_seed=artifact_seeds.randrange(2**31), seed_pairs=seed_pairs,
+            cfg,
+            n_outer=n_outer,
+            s_pairs=s_pairs,
+            artifact_seed=artifact_seeds.randrange(2**31),
+            seed_pairs=seed_pairs,
         )
         for cfg in configs
     ]
 
     boundary = evaluate_boundary(
-        s_cross=boundary_s_cross, n_outer=boundary_n_outer,
-        cfg=EquivConfig("boundary", boundary_dsens, boundary_dspec,
-                        boundary_sb_sens, boundary_sb_spec, 56),
+        s_cross=boundary_s_cross,
+        n_outer=boundary_n_outer,
+        cfg=EquivConfig(
+            "boundary", boundary_dsens, boundary_dspec, boundary_sb_sens, boundary_sb_spec, 56
+        ),
     )
 
     return EquivReport(
-        master_seed=master_seed, n_outer=n_outer, s_pairs=s_pairs,
-        configs=config_results, boundary=boundary,
+        master_seed=master_seed,
+        n_outer=n_outer,
+        s_pairs=s_pairs,
+        configs=config_results,
+        boundary=boundary,
         true_null_mean_bias_threshold=_true_null_bias_threshold(config_results),
     )
 
@@ -520,16 +590,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pod 4.4c-0 fast-kernel equivalence harness.")
     parser.add_argument("--n-outer", type=int, default=50_000)
     parser.add_argument("--s-pairs", type=int, default=40)
-    parser.add_argument(
-        "--s-cross", type=int, default=200, help="boundary-gate study-panel size."
-    )
+    parser.add_argument("--s-cross", type=int, default=200, help="boundary-gate study-panel size.")
     parser.add_argument("--boundary-n-outer", type=int, default=20_000)
     parser.add_argument("--boundary-sb-sens", type=float, default=0.045)
     parser.add_argument("--boundary-sb-spec", type=float, default=0.028)
     parser.add_argument("--boundary-dsens", type=float, default=0.068)
     parser.add_argument("--boundary-dspec", type=float, default=0.068)
     parser.add_argument(
-        "--no-cross-n", action="store_true",
+        "--no-cross-n",
+        action="store_true",
         help="accepted for back-compat; the retracted cross-n legs no longer run. The boundary "
         "gate always runs and always gates (eval-stats corrected-scope).",
     )
@@ -537,10 +606,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     report = run_equivalence(
-        n_outer=args.n_outer, s_pairs=args.s_pairs,
-        boundary_s_cross=args.s_cross, boundary_n_outer=args.boundary_n_outer,
-        boundary_sb_sens=args.boundary_sb_sens, boundary_sb_spec=args.boundary_sb_spec,
-        boundary_dsens=args.boundary_dsens, boundary_dspec=args.boundary_dspec,
+        n_outer=args.n_outer,
+        s_pairs=args.s_pairs,
+        boundary_s_cross=args.s_cross,
+        boundary_n_outer=args.boundary_n_outer,
+        boundary_sb_sens=args.boundary_sb_sens,
+        boundary_sb_spec=args.boundary_sb_spec,
+        boundary_dsens=args.boundary_dsens,
+        boundary_dspec=args.boundary_dspec,
     )
     if args.json:
         print(report.to_json())

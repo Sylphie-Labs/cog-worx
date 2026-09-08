@@ -304,9 +304,7 @@ def _is_clean(item: CorpusItem) -> bool:
     return item.stratum == "clean" or item.is_error == 0
 
 
-def load_corpus(
-    items: Sequence[CorpusItem], *, measurement_run: bool = False
-) -> list[CorpusItem]:
+def load_corpus(items: Sequence[CorpusItem], *, measurement_run: bool = False) -> list[CorpusItem]:
     """Structural-only corpus loader (Pod 4.4c-2; plan §3.2/§3.3/§3.9/§5).
 
     A PURE structural validator over already-constructed frozen :class:`CorpusItem`s. It enforces
@@ -365,9 +363,7 @@ def load_corpus(
     """
     # G3 — split firewall. Filter FIRST: every later guard (uniqueness, sibling references) is
     # evaluated over the loaded subset only, never the filtered-out half.
-    wanted_split: Literal["tuning", "measurement"] = (
-        "measurement" if measurement_run else "tuning"
-    )
+    wanted_split: Literal["tuning", "measurement"] = "measurement" if measurement_run else "tuning"
     loaded = [item for item in items if item.split == wanted_split]
 
     loaded_ids = {item.item_id for item in loaded}
@@ -414,9 +410,7 @@ def load_corpus(
         # G4(d) — test_code present iff code-domain item.
         is_code = item.frame.problem_type == "code"
         if is_code and item.test_code is None:
-            raise CorpusLoadError(
-                f"G4: code-domain item_id {item.item_id} is missing test_code"
-            )
+            raise CorpusLoadError(f"G4: code-domain item_id {item.item_id} is missing test_code")
         if not is_code and item.test_code is not None:
             raise CorpusLoadError(
                 f"G4: non-code item_id {item.item_id} carries test_code "

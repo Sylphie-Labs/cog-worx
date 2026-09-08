@@ -207,18 +207,14 @@ def test_run_arms_round_trip_cached_matches_uncached(tmp_path: Path) -> None:
 
     cache_path = tmp_path / "cache.jsonl"
     cached_inner: ArmExecutor = _CountingExecutor(flag_item_ids=frozenset({1}))
-    cached = cached_executor(
-        cached_inner, arm="D", fingerprint_digest=_FP_A, cache_path=cache_path
-    )
+    cached = cached_executor(cached_inner, arm="D", fingerprint_digest=_FP_A, cache_path=cache_path)
     cached_cells = run_arms(corpus, arm_executors={"D": cached}, R=3)
 
     assert cached_cells == uncached_cells
 
     # A SECOND pass over the same cache file must be served entirely from cache.
     replay_inner = _CountingExecutor(flag_item_ids=frozenset())  # would disagree if called live
-    replay = cached_executor(
-        replay_inner, arm="D", fingerprint_digest=_FP_A, cache_path=cache_path
-    )
+    replay = cached_executor(replay_inner, arm="D", fingerprint_digest=_FP_A, cache_path=cache_path)
     replay_cells = run_arms(corpus, arm_executors={"D": replay}, R=3)
 
     assert replay_inner.calls == []

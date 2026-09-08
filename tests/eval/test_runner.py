@@ -164,9 +164,7 @@ def test_crn_seed_is_arm_independent_by_construction() -> None:
 
 def test_crn_seed_varies_by_item_and_trial() -> None:
     """Different (item, trial) -> different seed (a constant seed would defeat trial resampling)."""
-    seeds = {
-        crn_seed(MASTER_SEED, item, trial) for item in (1, 2, 3) for trial in range(7)
-    }
+    seeds = {crn_seed(MASTER_SEED, item, trial) for item in (1, 2, 3) for trial in range(7)}
     assert len(seeds) == 21  # all distinct
 
 
@@ -308,9 +306,7 @@ def test_arm_a_cells_satisfy_floor() -> None:
     NOTHING on K (INV-A0 sens_A==0) and zero clean FPs (INV-A1 spec_A==1). A token 'D' arm is
     emitted so the artifact is realistic (the floor reads arm 'A' only)."""
     corpus = _arm_a_floor_corpus()
-    cells = run_arms(
-        corpus, arm_executors={"A": _oracle_floor_arm, "D": _flag_all}, R=_R
-    )
+    cells = run_arms(corpus, arm_executors={"A": _oracle_floor_arm, "D": _flag_all}, R=_R)
     # Direct INV-A0 check on the emitted cells: arm A flags nothing on K.
     k_a = [c for c in cells if c.arm == "A" and c.stratum == "K"]
     assert sum(c.flagged for c in k_a) == 0
@@ -437,6 +433,7 @@ def test_scripted_executor_is_deterministic() -> None:
 def test_round_trip_through_nested_bootstrap_delta() -> None:
     """Emitted Cells (stub C/D arms over K + clean) run through ``nested_bootstrap_delta`` cleanly —
     the emission schema IS the bootstrap input schema. D flags errors more than C, so delta > 0."""
+
     # D flags K errors; C flags less. Both leave clean alone (spec ~ 1).
     def _arm_d(arm_input: ArmInput, seed: int) -> ArmOutcome:
         _ = seed
@@ -593,9 +590,7 @@ def test_runner_emission_path_is_journal_free() -> None:
 
     # EXACTLY ONE append_design_look call, and it lives inside run_and_stamp (S6 one-look).
     all_appends = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Attribute) and n.attr == "append_design_look"
+        n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "append_design_look"
     ]
     assert len(all_appends) == 1, "the runner must record EXACTLY ONE design look (S6)"
     stamp_appends = [

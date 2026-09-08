@@ -223,8 +223,12 @@ def test_gate_clean_also_fails_not_converted() -> None:
         return _verdict(holds=False, valid_check=True)  # BOTH solutions fail
 
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=probe,
+        config=_config(),
     )
     assert result.pairs == ()
     assert len(result.residual_pairs) == 1
@@ -240,8 +244,12 @@ def test_gate_error_also_passes_not_converted() -> None:
         return _verdict(holds=True, valid_check=True)  # BOTH pass — no catch
 
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=probe,
+        config=_config(),
     )
     assert result.pairs == ()
     assert len(result.residual_pairs) == 1
@@ -257,8 +265,12 @@ def test_gate_noise_verdict_not_converted() -> None:
         return _verdict(holds=True, valid_check=True)
 
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=probe,
+        config=_config(),
     )
     assert result.pairs == ()
 
@@ -273,8 +285,12 @@ def test_gate_non_executable_verdict_not_converted() -> None:
         return _verdict(holds=True, valid_check=True)
 
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=probe,
+        config=_config(),
     )
     assert result.pairs == ()
 
@@ -305,8 +321,12 @@ def test_determinism_recheck_rejects_flaky_candidate() -> None:
             return _verdict(holds=True, valid_check=True)  # clean always passes
 
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_FlakyProbe(), config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_FlakyProbe(),
+        config=_config(),
     )
     # Flaky candidate is rejected every round → item stays residual K, no conversion.
     assert result.pairs == ()
@@ -333,8 +353,12 @@ def test_determinism_recheck_clean_side_flake_rejected() -> None:
             return _verdict(holds=self.clean_calls <= 1, valid_check=True)
 
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_CleanFlakyProbe(), config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_CleanFlakyProbe(),
+        config=_config(),
     )
     assert result.pairs == ()
 
@@ -392,8 +416,12 @@ def test_early_success_exit_on_round_three() -> None:
 
     panel, adversary = _StubPanel(), _CountingAdversary()
     result = convert_k_pool(
-        [_k_pair()], [], panel=panel, adversary=adversary,
-        probe=_ThirdRoundProbe(), config=_config()
+        [_k_pair()],
+        [],
+        panel=panel,
+        adversary=adversary,
+        probe=_ThirdRoundProbe(),
+        config=_config(),
     )
     assert len(result.pairs) == 1
     err = result.pairs[0].error_item
@@ -456,8 +484,12 @@ def test_per_item_same_family_skipped_to_residual() -> None:
         forbidden_families=frozenset({"deepseek", "gpt"}),
     )
     result = convert_k_pool(
-        [pair], [], panel=_NoCallPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=config
+        [pair],
+        [],
+        panel=_NoCallPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=config,
     )
     assert result.pairs == ()
     assert len(result.residual_pairs) == 1
@@ -481,8 +513,12 @@ def test_degrade_abstain_pool_converts_nothing() -> None:
     drifted = _config()  # panel=('claude',), adversary='claude' → valid at build
     object.__setattr__(drifted, "forbidden_families", frozenset({"claude"}))
     result = convert_k_pool(
-        [_k_pair()], [], panel=_NoCallPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=drifted
+        [_k_pair()],
+        [],
+        panel=_NoCallPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=drifted,
     )
     assert result.degraded is True
     assert result.pairs == ()
@@ -497,8 +533,12 @@ def test_degrade_raise_raises() -> None:
     object.__setattr__(drifted, "forbidden_families", frozenset({"claude"}))
     with pytest.raises(PanelFamilyCollision, match="disjoint"):
         convert_k_pool(
-            [_k_pair()], [], panel=_NoCallPanel(), adversary=_CountingAdversary(),
-            probe=_gate_pass_probe, config=drifted
+            [_k_pair()],
+            [],
+            panel=_NoCallPanel(),
+            adversary=_CountingAdversary(),
+            probe=_gate_pass_probe,
+            config=drifted,
         )
 
 
@@ -528,8 +568,12 @@ def test_detk_excluded_passed_through_untouched() -> None:
     collusion probes."""
     pair = _detk_pair()
     result = convert_k_pool(
-        [pair], [], panel=_NoCallPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [pair],
+        [],
+        panel=_NoCallPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     assert result.pairs == ()
     assert len(result.residual_pairs) == 1
@@ -575,8 +619,12 @@ def test_conversion_rates_exclude_detk_from_llmk_denominator() -> None:
         return _verdict(holds=True, valid_check=True)  # pair B never catches
 
     result = convert_k_pool(
-        [pair_a, pair_b, detk], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=probe, config=_config()
+        [pair_a, pair_b, detk],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=probe,
+        config=_config(),
     )
     audit = result.conversion_audit
     assert audit.conv_rate_llmK == pytest.approx(0.5)  # 1 of 2 LLM-K, detK excluded
@@ -589,8 +637,12 @@ def test_conversion_rates_exclude_detk_from_llmk_denominator() -> None:
 def test_conversion_rates_empty_pool_is_zero() -> None:
     """Empty denominators → 0.0 rates, no division error."""
     result = convert_k_pool(
-        [], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     audit = result.conversion_audit
     assert audit.conv_rate_llmK == 0.0
@@ -694,8 +746,12 @@ def test_convert_k_pool_is_deterministic() -> None:
 
     def run() -> ConversionResult:
         return convert_k_pool(
-            [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-            probe=_gate_pass_probe, config=_config()
+            [_k_pair()],
+            [],
+            panel=_StubPanel(),
+            adversary=_CountingAdversary(),
+            probe=_gate_pass_probe,
+            config=_config(),
         )
 
     r1, r2 = run(), run()
@@ -739,8 +795,12 @@ def test_k_rounds_is_eight() -> None:
 def test_converted_audit_records_winning_round_artifact() -> None:
     """The converted item's audit carries a converted=True RoundArtifact at the winning round."""
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     arts = result.conversion_audit.rounds[1]
     assert arts[-1].converted is True
@@ -752,8 +812,12 @@ def test_singleton_passes_through_untouched() -> None:
     two-sided gate needs a clean sibling) → passed through to residual_singletons untouched."""
     singleton = _k_err(provisional_id=99, matched_sibling_id=None)
     result = convert_k_pool(
-        [], [singleton], panel=_NoCallPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [],
+        [singleton],
+        panel=_NoCallPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     assert result.singletons == ()
     assert len(result.residual_singletons) == 1
@@ -799,14 +863,18 @@ def test_nc1_wrong_intent_candidate_rejected_by_author_anchor() -> None:
     # Predicate-level pin (the unit the converter calls).
     from cogworx.eval.conversion import _author_anchor
 
-    a_err_passes = _verdict(holds=True, valid_check=True)   # author test does NOT fail the error
+    a_err_passes = _verdict(holds=True, valid_check=True)  # author test does NOT fail the error
     a_clean_passes = _verdict(holds=True, valid_check=True)  # author test passes the clean sibling
     assert _author_anchor(a_err_passes, a_clean_passes) is False
 
     # End-to-end: the wrong-intent candidate is rejected; nothing converts.
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_wrong_intent_probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_wrong_intent_probe,
+        config=_config(),
     )
     assert result.pairs == ()
     assert len(result.residual_pairs) == 1
@@ -823,8 +891,12 @@ def test_nc2_honest_conversion_still_converts() -> None:
     # _gate_pass_probe keys on solution_code only, so the author-anchor probe (probe(err, author))
     # ALSO returns error-fails / clean-passes — the author test agrees with the planter. Honest.
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     assert len(result.pairs) == 1
     err = result.pairs[0].error_item
@@ -843,8 +915,12 @@ def test_nc3_none_test_code_not_convertible_excluded_from_denominator() -> None:
     no_test_clean = pair.clean_item.model_copy(update={"test_code": None})
     no_test_pair = PlantedPair(error_item=no_test_err, clean_item=no_test_clean)
     result = convert_k_pool(
-        [no_test_pair], [], panel=_NoCallPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [no_test_pair],
+        [],
+        panel=_NoCallPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     assert result.pairs == ()
     assert len(result.residual_pairs) == 1
@@ -866,16 +942,24 @@ def test_nc3_mutation_only_the_none_clause_keeps_it_residual() -> None:
         clean_item=base.clean_item.model_copy(update={"test_code": None}),
     )
     none_result = convert_k_pool(
-        [none_pair], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [none_pair],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     assert none_result.pairs == ()
     assert len(none_result.residual_pairs) == 1
 
     # (b) Same pair, real author test → CONVERTS. The ONLY change is test_code None → _AUTHOR_TEST.
     converting_result = convert_k_pool(
-        [base], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_gate_pass_probe, config=_config()
+        [base],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_gate_pass_probe,
+        config=_config(),
     )
     assert len(converting_result.pairs) == 1
     assert isinstance(converting_result.pairs[0].error_item.planter, ConvertedPlanterStamp)
@@ -890,9 +974,7 @@ def test_nc4_deleting_author_anchor_conjunct_would_convert_wrong_intent() -> Non
     import cogworx.eval.conversion as conv_mod
     from cogworx.eval.conversion import _is_clean_pass, _is_o_catch
 
-    def _two_sided_only(
-        v_err: Verdict, v_clean: Verdict, a_err: Verdict, a_clean: Verdict
-    ) -> bool:
+    def _two_sided_only(v_err: Verdict, v_clean: Verdict, a_err: Verdict, a_clean: Verdict) -> bool:
         # The OLD gate: candidate O-catch + clean-pass, NO author-anchor.
         return _is_o_catch(v_err) and _is_clean_pass(v_clean)
 
@@ -900,8 +982,12 @@ def test_nc4_deleting_author_anchor_conjunct_would_convert_wrong_intent() -> Non
     conv_mod._gate = _two_sided_only  # type: ignore[assignment]
     try:
         result = convert_k_pool(
-            [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-            probe=_wrong_intent_probe, config=_config()
+            [_k_pair()],
+            [],
+            panel=_StubPanel(),
+            adversary=_CountingAdversary(),
+            probe=_wrong_intent_probe,
+            config=_config(),
         )
     finally:
         conv_mod._gate = orig  # type: ignore[assignment]
@@ -924,8 +1010,12 @@ def test_nc5_author_anchor_reads_original_test_not_candidate() -> None:
         return _gate_pass_probe(solution_code, test_code)
 
     result = convert_k_pool(
-        [_k_pair()], [], panel=_StubPanel(), adversary=_CountingAdversary(),
-        probe=_recording_probe, config=_config()
+        [_k_pair()],
+        [],
+        panel=_StubPanel(),
+        adversary=_CountingAdversary(),
+        probe=_recording_probe,
+        config=_config(),
     )
     assert len(result.pairs) == 1  # honest conversion (sanity)
     # The author-frozen test was probed against BOTH the error and the clean solution.
@@ -967,8 +1057,6 @@ def test_nc9_converted_item_emits_converted_o_cell() -> None:
     converted_cell = Cell(
         item_id=1, stratum="O", arm="D", trial=0, seed=0, flagged=1, route="x", converted_o=True
     )
-    plain_cell = Cell(
-        item_id=2, stratum="O", arm="D", trial=0, seed=0, flagged=1, route="x"
-    )
+    plain_cell = Cell(item_id=2, stratum="O", arm="D", trial=0, seed=0, flagged=1, route="x")
     assert is_converted_o(converted_cell) is True
     assert is_converted_o(plain_cell) is False

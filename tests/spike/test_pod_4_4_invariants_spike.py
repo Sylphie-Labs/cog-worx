@@ -531,7 +531,10 @@ async def test_inv2_judge_only_pass_never_reaches_verified_or_confirmed() -> Non
     # Build the exact laundering path the gate is meant to block: a judge verdict with
     # source mis-typed as "tool" would mint is_executable=True → confirmed Claim.
     laundered = Verdict(
-        holds=True, valid_check=True, reasoning="laundered", source="tool"  # MUTATION
+        holds=True,
+        valid_check=True,
+        reasoning="laundered",
+        source="tool",  # MUTATION
     )
     assert laundered.is_executable, (
         "INV-2 negative-control: a tool-source verdict must be executable "
@@ -630,9 +633,7 @@ async def test_inv3a_confirmed_claim_requires_frozen_test_provenance() -> None:
 
     # --- (a) Frozen-test path: mints confirmed, test_provenance=="frozen" ---
     claim_a, art_a, _rid_a, _jnl_a = await _run_with_provenance("frozen")
-    assert claim_a is not None, (
-        "INV-3a(a): a frozen-test executable oracle must mint a Claim node"
-    )
+    assert claim_a is not None, "INV-3a(a): a frozen-test executable oracle must mint a Claim node"
     assert claim_a.epistemic_type == "confirmed", (
         f"INV-3a(a): frozen oracle must produce confirmed Claim; got {claim_a.epistemic_type!r}"
     )
@@ -788,8 +789,7 @@ async def test_inv3b_no_inference_source_mints_confirmed_claim() -> None:
     for claim in all_claims:
         allowed_sources = ("tool", "system")
         confirmed_from_wrong_source = (
-            claim.epistemic_type == "confirmed"
-            and claim.provenance.source not in allowed_sources
+            claim.epistemic_type == "confirmed" and claim.provenance.source not in allowed_sources
         )
         if confirmed_from_wrong_source:
             violations.append(
@@ -802,8 +802,7 @@ async def test_inv3b_no_inference_source_mints_confirmed_claim() -> None:
             )
 
     assert not violations, (
-        "INV-3b FAILED: the following Claim nodes violate the invariant:\n"
-        + "\n".join(violations)
+        "INV-3b FAILED: the following Claim nodes violate the invariant:\n" + "\n".join(violations)
     )
 
     # --- NEGATIVE CONTROL: inject a laundered Claim directly into the KG and prove gate fires ---

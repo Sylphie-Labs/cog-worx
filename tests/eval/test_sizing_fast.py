@@ -80,9 +80,17 @@ _SPREAD_S = 40
 
 def _make_cells(seed: int, cfg: EquivConfig = _PESSIMISTIC) -> list[Cell]:
     return synth_cells(
-        Random(seed), cfg.n, cfg.n, _R,
-        sens_C=0.60, dsens=cfg.dsens, sb_sens=cfg.sb_sens,
-        spec_C=0.85, dspec=cfg.dspec, sb_spec=cfg.sb_spec, rho_w=0.30,
+        Random(seed),
+        cfg.n,
+        cfg.n,
+        _R,
+        sens_C=0.60,
+        dsens=cfg.dsens,
+        sb_sens=cfg.sb_sens,
+        spec_C=0.85,
+        dspec=cfg.dspec,
+        sb_spec=cfg.sb_spec,
+        rho_w=0.30,
     )
 
 
@@ -129,18 +137,29 @@ def _yes_machine_cells(m_K: int, m_clean: int) -> list[Cell]:
         for i in range(m):
             for trial in range(_R):
                 for arm in ("C", "D"):
-                    cells.append(Cell(
-                        item_id=base + i, stratum=stratum, arm=arm, trial=trial,
-                        seed=(base + i) << 8 ^ trial, flagged=1, route="flag",
-                    ))
+                    cells.append(
+                        Cell(
+                            item_id=base + i,
+                            stratum=stratum,
+                            arm=arm,
+                            trial=trial,
+                            seed=(base + i) << 8 ^ trial,
+                            flagged=1,
+                            route="flag",
+                        )
+                    )
     return cells
 
 
 def test_fast_yes_machine_mean_is_exactly_zero() -> None:
     """Flag-everything -> sens=1, spec=0 on both arms -> J=0 each -> delta exactly 0 every draw."""
     mean, lo, hi = nested_bootstrap_delta_fast(
-        _yes_machine_cells(30, 30), arm_a="D", arm_b="C", error_strata=("K",),
-        n_outer=300, seed=5,
+        _yes_machine_cells(30, 30),
+        arm_a="D",
+        arm_b="C",
+        error_strata=("K",),
+        n_outer=300,
+        seed=5,
     )
     assert mean == 0.0
     assert lo == 0.0 == hi
@@ -154,10 +173,17 @@ def _coin_judge_cells(m_K: int, m_clean: int) -> list[Cell]:
                 seed = (base + i) << 8 ^ trial
                 flagged = 1 if Random(seed).random() < 0.5 else 0
                 for arm in ("C", "D"):
-                    cells.append(Cell(
-                        item_id=base + i, stratum=stratum, arm=arm, trial=trial,
-                        seed=seed, flagged=flagged, route="flag" if flagged else "pass",
-                    ))
+                    cells.append(
+                        Cell(
+                            item_id=base + i,
+                            stratum=stratum,
+                            arm=arm,
+                            trial=trial,
+                            seed=seed,
+                            flagged=flagged,
+                            route="flag" if flagged else "pass",
+                        )
+                    )
     return cells
 
 
@@ -167,8 +193,12 @@ def test_fast_coin_judge_delta_ci_contains_zero() -> None:
     would still be 0 here (identical arms) -- but the wider M1 catch lives in the equivalence gate;
     this pins the fast kernel reproduces the stdlib's straddle."""
     _, lo, hi = nested_bootstrap_delta_fast(
-        _coin_judge_cells(80, 80), arm_a="D", arm_b="C", error_strata=("K",),
-        n_outer=500, seed=11,
+        _coin_judge_cells(80, 80),
+        arm_a="D",
+        arm_b="C",
+        error_strata=("K",),
+        n_outer=500,
+        seed=11,
     )
     assert lo <= 0.0 <= hi, f"fast coin-judge CI [{lo:.4f}, {hi:.4f}] should contain 0"
 
@@ -178,23 +208,54 @@ def _flake_cells(catch_K: int, catch_total: int, m_K: int, m_clean: int) -> list
     for i in range(m_K):
         for trial in range(catch_total):
             d_flag = 1 if trial < catch_K else 0
-            cells.append(Cell(item_id=i, stratum="K", arm="D", trial=trial, seed=i << 8 ^ trial,
-                              flagged=d_flag, route="flag" if d_flag else "pass"))
-            cells.append(Cell(item_id=i, stratum="K", arm="C", trial=trial, seed=i << 8 ^ trial,
-                              flagged=1, route="flag"))
+            cells.append(
+                Cell(
+                    item_id=i,
+                    stratum="K",
+                    arm="D",
+                    trial=trial,
+                    seed=i << 8 ^ trial,
+                    flagged=d_flag,
+                    route="flag" if d_flag else "pass",
+                )
+            )
+            cells.append(
+                Cell(
+                    item_id=i,
+                    stratum="K",
+                    arm="C",
+                    trial=trial,
+                    seed=i << 8 ^ trial,
+                    flagged=1,
+                    route="flag",
+                )
+            )
     for i in range(m_clean):
         for trial in range(catch_total):
             for arm in ("C", "D"):
-                cells.append(Cell(item_id=10_000 + i, stratum="clean", arm=arm, trial=trial,
-                                  seed=(10_000 + i) << 8 ^ trial, flagged=0, route="pass"))
+                cells.append(
+                    Cell(
+                        item_id=10_000 + i,
+                        stratum="clean",
+                        arm=arm,
+                        trial=trial,
+                        seed=(10_000 + i) << 8 ^ trial,
+                        flagged=0,
+                        route="pass",
+                    )
+                )
     return cells
 
 
 def test_fast_flake_delta_ci_does_not_clear_planning_effect() -> None:
     """A 3/7-vs-7/7 flake -> the CI lower bound does not clear the 0.15 planning effect (fast)."""
     _, lo, _ = nested_bootstrap_delta_fast(
-        _flake_cells(3, 7, 80, 80), arm_a="D", arm_b="C", error_strata=("K",),
-        n_outer=500, seed=13,
+        _flake_cells(3, 7, 80, 80),
+        arm_a="D",
+        arm_b="C",
+        error_strata=("K",),
+        n_outer=500,
+        seed=13,
     )
     assert lo < 0.15, f"fast flake CI lo={lo:.4f} unexpectedly cleared 0.15"
 
@@ -203,17 +264,33 @@ def test_fast_quantile_monotonicity_R5() -> None:
     """R5: lo(q=0.0025) <= lo(q=0.025) and hi(q=0.0025) >= hi(q=0.025) on one fixed artifact."""
     cells = _make_cells(1)
     _, lo_n, hi_n = nested_bootstrap_delta_fast(
-        cells, arm_a="D", arm_b="C", error_strata=("K",), n_outer=4000, seed=7, quantile=0.025,
+        cells,
+        arm_a="D",
+        arm_b="C",
+        error_strata=("K",),
+        n_outer=4000,
+        seed=7,
+        quantile=0.025,
     )
     _, lo_c, hi_c = nested_bootstrap_delta_fast(
-        cells, arm_a="D", arm_b="C", error_strata=("K",), n_outer=4000, seed=7, quantile=0.0025,
+        cells,
+        arm_a="D",
+        arm_b="C",
+        error_strata=("K",),
+        n_outer=4000,
+        seed=7,
+        quantile=0.0025,
     )
     assert lo_c <= lo_n
     assert hi_c >= hi_n
 
 
 def _spy_integers_sizes(
-    monkeypatch: pytest.MonkeyPatch, cells: list[Cell], *, n_outer: int, seed: int,
+    monkeypatch: pytest.MonkeyPatch,
+    cells: list[Cell],
+    *,
+    n_outer: int,
+    seed: int,
     kernel: equiv_check.BootstrapFn = nested_bootstrap_delta_fast,
 ) -> list[object]:
     """Record every numpy ``integers`` draw size while ``kernel`` runs, so a test can pin the urn
@@ -256,8 +333,11 @@ def test_equivalence_smoke_true_kernel_passes_functionals() -> None:
     artifact_seeds = Random(equiv_check.EQUIV_MASTER_SEED ^ 0xA17FAC)
     for cfg in DEFAULT_CONFIGS:
         result = evaluate_config(
-            cfg, n_outer=_SMOKE_N_OUTER, s_pairs=_SMOKE_S,
-            artifact_seed=artifact_seeds.randrange(2**31), seed_pairs=seed_pairs,
+            cfg,
+            n_outer=_SMOKE_N_OUTER,
+            s_pairs=_SMOKE_S,
+            artifact_seed=artifact_seeds.randrange(2**31),
+            seed_pairs=seed_pairs,
         )
         for f in result.functionals:
             assert f.passed, (
@@ -271,8 +351,11 @@ def test_analytic_mean_se_agrees_with_method_c() -> None:
     SD within ~20% on the planting-effect config (a sampler-correctness anchor)."""
     seed_pairs = _seed_pairs(equiv_check.EQUIV_MASTER_SEED, _SMOKE_S)
     result = evaluate_config(
-        DEFAULT_CONFIGS[0], n_outer=_SMOKE_N_OUTER, s_pairs=_SMOKE_S,
-        artifact_seed=12345, seed_pairs=seed_pairs,
+        DEFAULT_CONFIGS[0],
+        n_outer=_SMOKE_N_OUTER,
+        s_pairs=_SMOKE_S,
+        artifact_seed=12345,
+        seed_pairs=seed_pairs,
     )
     mean_fn = next(f for f in result.functionals if f.functional == "mean")
     assert mean_fn.analytic_mean_se is not None
@@ -287,8 +370,12 @@ def test_analytic_mean_se_agrees_with_method_c() -> None:
 
 
 def _mutant_kernel(
-    *, drop_inner: bool = False, break_crn_arms: bool = False,
-    off_by_one: bool = False, clean_per_arm: bool = False, m6_boundary: bool = False,
+    *,
+    drop_inner: bool = False,
+    break_crn_arms: bool = False,
+    off_by_one: bool = False,
+    clean_per_arm: bool = False,
+    m6_boundary: bool = False,
 ) -> equiv_check.BootstrapFn:
     """A deliberately-broken fast kernel selecting ONE mutation, CHUNK-FAITHFUL to the real kernel.
 
@@ -306,11 +393,19 @@ def _mutant_kernel(
     artifact and only surfaces where a verdict flip is plausible."""
 
     def kern(
-        cells: Sequence[Cell] | ColumnarArtifact, *, arm_a: str, arm_b: str,
-        error_strata: Sequence[str], n_outer: int, seed: int, quantile: float = 0.025,
+        cells: Sequence[Cell] | ColumnarArtifact,
+        *,
+        arm_a: str,
+        arm_b: str,
+        error_strata: Sequence[str],
+        n_outer: int,
+        seed: int,
+        quantile: float = 0.025,
     ) -> tuple[float, float, float]:
-        col = cells if isinstance(cells, ColumnarArtifact) else cells_to_columnar(
-            cells, arm_a=arm_a, arm_b=arm_b
+        col = (
+            cells
+            if isinstance(cells, ColumnarArtifact)
+            else cells_to_columnar(cells, arm_a=arm_a, arm_b=arm_b)
         )
         # Construct via the module's Generator attr so the draw-schedule spy can patch it; PCG64 /
         # SeedSequence come straight from numpy.random (the mutant pins the same bit generator).
@@ -383,21 +478,29 @@ def _mutant_kernel(
             if abs(float(deltas[lo_idx])) < tau_m6:
                 off = 1
         lo = float(deltas[lo_idx + off])
-        hi = float(deltas[min(int((1.0 - quantile) * n_outer) + (1 if off_by_one else 0),
-                              n_outer - 1)])
+        hi = float(
+            deltas[min(int((1.0 - quantile) * n_outer) + (1 if off_by_one else 0), n_outer - 1)]
+        )
         return float(deltas.mean()), lo, hi
 
     return kern
 
 
 def _config_against_mutant(
-    mutant: equiv_check.BootstrapFn, *, s_pairs: int = _SMOKE_S,
-    cfg: EquivConfig = _PESSIMISTIC, artifact_seed: int = 99,
+    mutant: equiv_check.BootstrapFn,
+    *,
+    s_pairs: int = _SMOKE_S,
+    cfg: EquivConfig = _PESSIMISTIC,
+    artifact_seed: int = 99,
 ) -> equiv_check.ConfigResult:
     seed_pairs = _seed_pairs(equiv_check.EQUIV_MASTER_SEED, s_pairs)
     return evaluate_config(
-        cfg, n_outer=_SMOKE_N_OUTER, s_pairs=s_pairs, artifact_seed=artifact_seed,
-        seed_pairs=seed_pairs, fast_kernel=mutant,
+        cfg,
+        n_outer=_SMOKE_N_OUTER,
+        s_pairs=s_pairs,
+        artifact_seed=artifact_seed,
+        seed_pairs=seed_pairs,
+        fast_kernel=mutant,
     )
 
 
@@ -457,12 +560,22 @@ def test_M4_off_by_one_fails_endpoint_index_pin() -> None:
     differed = False
     for seed in range(6):
         true = nested_bootstrap_delta_fast(
-            cells, arm_a="D", arm_b="C", error_strata=("K",),
-            n_outer=4000, seed=seed, quantile=0.0025,
+            cells,
+            arm_a="D",
+            arm_b="C",
+            error_strata=("K",),
+            n_outer=4000,
+            seed=seed,
+            quantile=0.0025,
         )
         mut = mutant(
-            cells, arm_a="D", arm_b="C", error_strata=("K",),
-            n_outer=4000, seed=seed, quantile=0.0025,
+            cells,
+            arm_a="D",
+            arm_b="C",
+            error_strata=("K",),
+            n_outer=4000,
+            seed=seed,
+            quantile=0.0025,
         )
         assert mut[1] >= true[1], "off-by-one lo must shift to the next-higher order statistic"
         assert mut[2] >= true[2]
@@ -504,8 +617,6 @@ def test_M5_clean_negative_control_passes_all_gates(monkeypatch: pytest.MonkeyPa
     assert [s for s in sizes if isinstance(s, tuple) and len(s) == 3] == [(1, 40, _R)]
 
 
-
-
 # ---------------------------------------------------------------------------
 # §5 M6 boundary-localized lo-shift mutation -- RETRACTED from the kill-set (Jim-approved scope
 #    call, mirroring the cross-n M3 retraction above). M6 shifts the lo index +1 ONLY when the lo
@@ -539,7 +650,9 @@ def test_M6_clean_negative_control_passes_boundary() -> None:
     what protects the gate from the substrate clears noise it must tolerate. (M6's own catch test is
     retracted -- see the §5 header: M6 is anti-resolved and adds no coverage beyond M4.)"""
     boundary = evaluate_boundary(
-        s_cross=_M6_BOUNDARY_S_CROSS, n_outer=_M6_BOUNDARY_N_OUTER, cfg=_M6_KNEE,
+        s_cross=_M6_BOUNDARY_S_CROSS,
+        n_outer=_M6_BOUNDARY_N_OUTER,
+        cfg=_M6_KNEE,
     )
     assert boundary.passed, (
         f"true kernel tripped the boundary gate: n_boundary={boundary.n_boundary} "

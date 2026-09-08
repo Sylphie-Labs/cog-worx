@@ -38,12 +38,26 @@ def test_study_seed_sequence_is_shared_across_n_arms() -> None:
     one seed list to two n and confirming both consume it without divergence in length."""
     seeds = sizing._study_seeds(MASTER_SEED, 8)
     r56 = run_study_loop(
-        n=56, sb_sens=0.020, sb_spec=0.010, dsens=0.15, dspec=0.15,
-        quantile=0.0025, n_studies=8, n_outer=120, study_seeds=seeds,
+        n=56,
+        sb_sens=0.020,
+        sb_spec=0.010,
+        dsens=0.15,
+        dspec=0.15,
+        quantile=0.0025,
+        n_studies=8,
+        n_outer=120,
+        study_seeds=seeds,
     )
     r80 = run_study_loop(
-        n=80, sb_sens=0.020, sb_spec=0.010, dsens=0.15, dspec=0.15,
-        quantile=0.0025, n_studies=8, n_outer=120, study_seeds=seeds,
+        n=80,
+        sb_sens=0.020,
+        sb_spec=0.010,
+        dsens=0.15,
+        dspec=0.15,
+        quantile=0.0025,
+        n_studies=8,
+        n_outer=120,
+        study_seeds=seeds,
     )
     assert r56.n_studies == r80.n_studies == 8
     assert sizing._study_seeds(MASTER_SEED, 8) == seeds, "study-seed sequence is not reproducible"
@@ -54,8 +68,15 @@ def test_true_null_companion_does_not_certify() -> None:
     bootstrap CI must straddle zero often enough that power_lcb stays low (the test can fail)."""
     seeds = sizing._study_seeds(MASTER_SEED, 12)
     null = run_study_loop(
-        n=80, sb_sens=0.020, sb_spec=0.010, dsens=0.0, dspec=0.0,
-        quantile=0.0025, n_studies=12, n_outer=200, study_seeds=seeds,
+        n=80,
+        sb_sens=0.020,
+        sb_spec=0.010,
+        dsens=0.0,
+        dspec=0.0,
+        quantile=0.0025,
+        n_studies=12,
+        n_outer=200,
+        study_seeds=seeds,
     )
     assert null.power_lcb < 0.80, f"true-null power_lcb={null.power_lcb:.3f} above bar"
 
@@ -66,8 +87,16 @@ def test_decide_aborts_when_no_n_clears() -> None:
     from cogworx.eval.sizing import StudyLoopResult, _decide
 
     grid = [
-        StudyLoopResult(n=n, sb_sens=0.045, sb_spec=0.028, quantile=0.0025,
-                        n_studies=500, n_outer=20000, clears=10, power_lcb=0.05)
+        StudyLoopResult(
+            n=n,
+            sb_sens=0.045,
+            sb_spec=0.028,
+            quantile=0.0025,
+            n_studies=500,
+            n_outer=20000,
+            clears=10,
+            power_lcb=0.05,
+        )
         for n in (56, 80, 100, 120, 150, 200)
     ]
     assert _decide(grid) == "ABORT"
@@ -77,8 +106,16 @@ def test_decide_picks_e1_when_both_clear() -> None:
     from cogworx.eval.sizing import StudyLoopResult, _decide
 
     grid = [
-        StudyLoopResult(n=n, sb_sens=0.045, sb_spec=0.028, quantile=0.0025,
-                        n_studies=500, n_outer=20000, clears=460, power_lcb=0.90)
+        StudyLoopResult(
+            n=n,
+            sb_sens=0.045,
+            sb_spec=0.028,
+            quantile=0.0025,
+            n_studies=500,
+            n_outer=20000,
+            clears=460,
+            power_lcb=0.90,
+        )
         for n in (56, 80)
     ]
     assert _decide(grid) == "E1"

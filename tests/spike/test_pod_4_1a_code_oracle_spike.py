@@ -131,7 +131,7 @@ async def test_frozen_source_stamps_test_provenance_frozen_and_uses_frozen_test(
         frame=_frame(), thesis=_thesis(_GOOD_SOLUTION, _FAILING_TEST), ctx=await _ctx()
     )
     assert verdict.test_provenance == "frozen"
-    assert verdict.holds is True   # frozen test passed
+    assert verdict.holds is True  # frozen test passed
     assert verdict.valid_check is True
     assert verdict.source == "tool"
     assert verdict.is_executable  # test_provenance is audit-only; is_executable still source-only

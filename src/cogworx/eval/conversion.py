@@ -322,11 +322,7 @@ def _gate(v_err: Verdict, v_clean: Verdict, a_err: Verdict, a_clean: Verdict) ->
     O-test: the error FAILS it AND the clean sibling PASSES it) AND the author-anchor holds (the
     item's ORIGINAL author-frozen test independently AGREES with the planter's ``is_error`` claim).
     The author-anchor is a CO-EQUAL requirement that kills wrong-intent conversions (HOLE#1)."""
-    return (
-        _is_o_catch(v_err)
-        and _is_clean_pass(v_clean)
-        and _author_anchor(a_err, a_clean)
-    )
+    return _is_o_catch(v_err) and _is_clean_pass(v_clean) and _author_anchor(a_err, a_clean)
 
 
 # ===========================================================================
@@ -518,9 +514,7 @@ def convert_k_pool(
     """
     # --- degrade gate: need (N panel + 1 adversary) DISTINCT families, all disjoint from forbidden.
     used = (*config.panel_families, config.adversary_family)
-    enough_disjoint = (
-        len(set(used)) == len(used) and not (set(used) & config.forbidden_families)
-    )
+    enough_disjoint = len(set(used)) == len(used) and not (set(used) & config.forbidden_families)
     if not enough_disjoint:
         if config.degrade == "raise":
             raise PanelFamilyCollision(

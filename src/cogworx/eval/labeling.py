@@ -801,9 +801,7 @@ def promote_corpus(
 
         if item.is_error == 0:
             # Clean item → C1 (oracle) or C2 (human) by oracle_reachable.
-            result = reverify_clean(
-                item, assignment, adjudicate=adjudicate, tie_break=tie_break
-            )
+            result = reverify_clean(item, assignment, adjudicate=adjudicate, tie_break=tie_break)
             if isinstance(result, AbstentionDrop):
                 dropped.add(result.provisional_id)
                 continue

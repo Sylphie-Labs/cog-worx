@@ -489,8 +489,13 @@ def _trivial_clean_cells(
         for t in range(R):
             cells.append(
                 Cell(
-                    item_id=5000 + i, stratum="clean", arm=arm, trial=t,
-                    seed=(5000 + i) * 1000 + t, flagged=0, route="pass",
+                    item_id=5000 + i,
+                    stratum="clean",
+                    arm=arm,
+                    trial=t,
+                    seed=(5000 + i) * 1000 + t,
+                    flagged=0,
+                    route="pass",
                 )
             )
     return cells
@@ -504,17 +509,53 @@ def _assoc_cells(n_k: int = 12, n_clean: int = 12, R: int = 6) -> list[Cell]:
     cells: list[Cell] = []
     for i in range(n_k):
         for t in range(R):
-            cells.append(Cell(item_id=i, stratum="K", arm="D", trial=t, seed=i * 100 + t,
-                              flagged=1 if t < R - 1 else 0, route="x"))
-            cells.append(Cell(item_id=i, stratum="K", arm="C", trial=t, seed=i * 100 + t,
-                              flagged=1 if t < R // 2 else 0, route="x"))
+            cells.append(
+                Cell(
+                    item_id=i,
+                    stratum="K",
+                    arm="D",
+                    trial=t,
+                    seed=i * 100 + t,
+                    flagged=1 if t < R - 1 else 0,
+                    route="x",
+                )
+            )
+            cells.append(
+                Cell(
+                    item_id=i,
+                    stratum="K",
+                    arm="C",
+                    trial=t,
+                    seed=i * 100 + t,
+                    flagged=1 if t < R // 2 else 0,
+                    route="x",
+                )
+            )
     for j in range(n_clean):
         item = 1000 + j
         for t in range(R):
-            cells.append(Cell(item_id=item, stratum="clean", arm="D", trial=t, seed=item * 100 + t,
-                              flagged=1 if t == 0 else 0, route="x"))
-            cells.append(Cell(item_id=item, stratum="clean", arm="C", trial=t, seed=item * 100 + t,
-                              flagged=1 if t < R // 2 else 0, route="x"))
+            cells.append(
+                Cell(
+                    item_id=item,
+                    stratum="clean",
+                    arm="D",
+                    trial=t,
+                    seed=item * 100 + t,
+                    flagged=1 if t == 0 else 0,
+                    route="x",
+                )
+            )
+            cells.append(
+                Cell(
+                    item_id=item,
+                    stratum="clean",
+                    arm="C",
+                    trial=t,
+                    seed=item * 100 + t,
+                    flagged=1 if t < R // 2 else 0,
+                    route="x",
+                )
+            )
     return cells
 
 
@@ -574,7 +615,8 @@ def test_strata_oracle_assigned_and_o_regimes_operator_derived() -> None:
 
     _, locked, _ = run_pipeline()
     det_o = [
-        it for it in locked
+        it
+        for it in locked
         if it.stratum == "O" and isinstance(it.planter, DeterministicPlanterStamp)
     ]
     assert det_o, "no deterministic-O items — the O path did not compose"
@@ -609,8 +651,13 @@ def test_o_regime_mismatch_raises_oregimemismatcherror() -> None:
     probe = _o_aware_probe(_o_solution_strings())
     with pytest.raises(ORegimeMismatchError):
         promote_corpus(
-            [bad_pair], [], probe=probe, adjudicate=_adjudicate, tie_break=_tie_break,
-            regime_adjudicate=_regime_adjudicate, derive_o_regime=_derive_o_regime,
+            [bad_pair],
+            [],
+            probe=probe,
+            adjudicate=_adjudicate,
+            tie_break=_tie_break,
+            regime_adjudicate=_regime_adjudicate,
+            derive_o_regime=_derive_o_regime,
         )
 
 
@@ -726,17 +773,55 @@ def _regime_artifact(
     for regime, n in counts.items():
         for _ in range(n):
             for t in range(R):
-                cells.append(Cell(item_id=iid, stratum="K", arm="D", trial=t, seed=iid * 10 + t,
-                                  flagged=1 if t < d_flags_k else 0, route="x", regime=regime))
-                cells.append(Cell(item_id=iid, stratum="K", arm="A", trial=t, seed=iid * 10 + t,
-                                  flagged=0, route="x", regime=regime))
+                cells.append(
+                    Cell(
+                        item_id=iid,
+                        stratum="K",
+                        arm="D",
+                        trial=t,
+                        seed=iid * 10 + t,
+                        flagged=1 if t < d_flags_k else 0,
+                        route="x",
+                        regime=regime,
+                    )
+                )
+                cells.append(
+                    Cell(
+                        item_id=iid,
+                        stratum="K",
+                        arm="A",
+                        trial=t,
+                        seed=iid * 10 + t,
+                        flagged=0,
+                        route="x",
+                        regime=regime,
+                    )
+                )
             iid += 1
     for _ in range(n_clean):
         for t in range(R):
-            cells.append(Cell(item_id=iid, stratum="clean", arm="D", trial=t, seed=iid * 10 + t,
-                              flagged=0, route="x"))
-            cells.append(Cell(item_id=iid, stratum="clean", arm="A", trial=t, seed=iid * 10 + t,
-                              flagged=0, route="x"))
+            cells.append(
+                Cell(
+                    item_id=iid,
+                    stratum="clean",
+                    arm="D",
+                    trial=t,
+                    seed=iid * 10 + t,
+                    flagged=0,
+                    route="x",
+                )
+            )
+            cells.append(
+                Cell(
+                    item_id=iid,
+                    stratum="clean",
+                    arm="A",
+                    trial=t,
+                    seed=iid * 10 + t,
+                    flagged=0,
+                    route="x",
+                )
+            )
         iid += 1
     return cells
 
@@ -830,9 +915,17 @@ def test_spec_variance_floor_fires_on_collapsed_variance() -> None:
     for i in range(_N_CLEAN_PLANNED):
         for t in range(_R):
             flagged = 1 if t < 3 else 0
-            cells.append(Cell(item_id=6000 + i, stratum="clean", arm="C", trial=t,
-                              seed=(6000 + i) * 1000 + t, flagged=flagged,
-                              route="flag" if flagged else "pass"))
+            cells.append(
+                Cell(
+                    item_id=6000 + i,
+                    stratum="clean",
+                    arm="C",
+                    trial=t,
+                    seed=(6000 + i) * 1000 + t,
+                    flagged=flagged,
+                    route="flag" if flagged else "pass",
+                )
+            )
     with pytest.raises(CorpusLockError, match="below the planning-derived floor"):
         assert_spec_ceiling(
             cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R, sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC
@@ -889,8 +982,13 @@ def test_shuffle_null_honest_passes_centering_and_coverage() -> None:
     global-coverage ucb95 <= 0.08, paired-coverage report-only -> returns a ShuffleNullReport."""
     cells = _assoc_cells()
     result = shuffle_null_centering(
-        cells, paired_ids=[], unpaired_ids=_UNPAIRED, deltas=_DELTAS,
-        n_shuffles=_N_SHUFFLES, seed=7, n_outer=_N_OUTER,
+        cells,
+        paired_ids=[],
+        unpaired_ids=_UNPAIRED,
+        deltas=_DELTAS,
+        n_shuffles=_N_SHUFFLES,
+        seed=7,
+        n_outer=_N_OUTER,
     )
     report = assert_shuffle_null(result)
     assert isinstance(report, ShuffleNullReport)
@@ -947,8 +1045,17 @@ def test_shuffle_null_bijection_revalidates_on_post_abstention_fixture() -> None
         f = rng.randint(1, 5)
         for arm in ("D", "C"):
             for t in range(6):
-                cells.append(Cell(item_id=item, stratum=stratum, arm=arm, trial=t,
-                                  seed=item * 100 + t, flagged=1 if t < f else 0, route="x"))
+                cells.append(
+                    Cell(
+                        item_id=item,
+                        stratum=stratum,
+                        arm=arm,
+                        trial=t,
+                        seed=item * 100 + t,
+                        flagged=1 if t < f else 0,
+                        route="x",
+                    )
+                )
 
     for i in range(12):
         emit(i, "K")
@@ -958,7 +1065,12 @@ def test_shuffle_null_bijection_revalidates_on_post_abstention_fixture() -> None
     # Build matched (K, clean) CorpusItems, drop one pair member, re-validate the bijection.
     pairs = [(i, 1000 + i) for i in range(12)]
     result = shuffle_null_centering(
-        cells, paired_ids=pairs, unpaired_ids=[], deltas=_DELTAS,
-        n_shuffles=_N_SHUFFLES, seed=13, n_outer=_N_OUTER,
+        cells,
+        paired_ids=pairs,
+        unpaired_ids=[],
+        deltas=_DELTAS,
+        n_shuffles=_N_SHUFFLES,
+        seed=13,
+        n_outer=_N_OUTER,
     )
     assert isinstance(assert_shuffle_null(result), ShuffleNullReport)

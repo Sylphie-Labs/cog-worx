@@ -73,6 +73,7 @@ def _resolve_bootstrap(kernel: Kernel) -> _BootstrapFn:
 
     return nested_bootstrap_delta_fast
 
+
 MASTER_SEED = 20260616
 """The pinned master seed (the plan date as a decimal literal) -- recorded in the artifact so the
 sizing run is reproducible and re-auditable."""
@@ -231,9 +232,7 @@ def _decide(grid_corrected: list[StudyLoopResult]) -> str:
     NOT silently ship the largest-n-that-looked-close).
     """
     corner = {
-        r.n: r.power_lcb
-        for r in grid_corrected
-        if (r.sb_sens, r.sb_spec) == _PESSIMISTIC_CORNER
+        r.n: r.power_lcb for r in grid_corrected if (r.sb_sens, r.sb_spec) == _PESSIMISTIC_CORNER
     }
     p56 = corner.get(_N_SPLIT)
     p80 = corner.get(80)
@@ -291,30 +290,58 @@ def run_sizing(
         for sb_sens, sb_spec in grid:
             grid_corrected.append(
                 run_study_loop(
-                    n=n, sb_sens=sb_sens, sb_spec=sb_spec, dsens=_DSENS, dspec=_DSPEC,
-                    quantile=_Q_CORRECTED, n_studies=n_studies, n_outer=n_outer, study_seeds=seeds,
+                    n=n,
+                    sb_sens=sb_sens,
+                    sb_spec=sb_spec,
+                    dsens=_DSENS,
+                    dspec=_DSPEC,
+                    quantile=_Q_CORRECTED,
+                    n_studies=n_studies,
+                    n_outer=n_outer,
+                    study_seeds=seeds,
                     kernel=kernel,
                 )
             )
             grid_nominal.append(
                 run_study_loop(
-                    n=n, sb_sens=sb_sens, sb_spec=sb_spec, dsens=_DSENS, dspec=_DSPEC,
-                    quantile=_Q_NOMINAL, n_studies=n_studies, n_outer=n_outer, study_seeds=seeds,
+                    n=n,
+                    sb_sens=sb_sens,
+                    sb_spec=sb_spec,
+                    dsens=_DSENS,
+                    dspec=_DSPEC,
+                    quantile=_Q_NOMINAL,
+                    n_studies=n_studies,
+                    n_outer=n_outer,
+                    study_seeds=seeds,
                     kernel=kernel,
                 )
             )
 
     # TRUE-NULL companion: dsens=dspec=0 at the planning variances -> require power_lcb <= 0.10.
     true_null = run_study_loop(
-        n=80, sb_sens=_SB_SENS_PLANNING, sb_spec=_SB_SPEC_PLANNING, dsens=0.0, dspec=0.0,
-        quantile=_Q_CORRECTED, n_studies=n_studies, n_outer=n_outer, study_seeds=seeds,
+        n=80,
+        sb_sens=_SB_SENS_PLANNING,
+        sb_spec=_SB_SPEC_PLANNING,
+        dsens=0.0,
+        dspec=0.0,
+        quantile=_Q_CORRECTED,
+        n_studies=n_studies,
+        n_outer=n_outer,
+        study_seeds=seeds,
         kernel=kernel,
     )
 
     # UNDER-POWER tripwire: power_lcb(30) < 0.80 <= power_lcb(80) at the planning variances.
     tripwire_30 = _find(grid_corrected, 30, _SB_SENS_PLANNING, _SB_SPEC_PLANNING) or run_study_loop(
-        n=30, sb_sens=_SB_SENS_PLANNING, sb_spec=_SB_SPEC_PLANNING, dsens=_DSENS, dspec=_DSPEC,
-        quantile=_Q_CORRECTED, n_studies=n_studies, n_outer=n_outer, study_seeds=seeds,
+        n=30,
+        sb_sens=_SB_SENS_PLANNING,
+        sb_spec=_SB_SPEC_PLANNING,
+        dsens=_DSENS,
+        dspec=_DSPEC,
+        quantile=_Q_CORRECTED,
+        n_studies=n_studies,
+        n_outer=n_outer,
+        study_seeds=seeds,
         kernel=kernel,
     )
     tripwire_80 = _find(grid_corrected, 80, _SB_SENS_PLANNING, _SB_SPEC_PLANNING)

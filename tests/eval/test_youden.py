@@ -337,19 +337,40 @@ def _flake_cells(catch_K: int, catch_total: int, m_K: int, m_clean: int) -> list
         for trial in range(catch_total):
             d_flag = 1 if trial < catch_K else 0
             cells.append(
-                Cell(item_id=i, stratum="K", arm="D", trial=trial, seed=i << 8 ^ trial,
-                     flagged=d_flag, route="flag" if d_flag else "pass")
+                Cell(
+                    item_id=i,
+                    stratum="K",
+                    arm="D",
+                    trial=trial,
+                    seed=i << 8 ^ trial,
+                    flagged=d_flag,
+                    route="flag" if d_flag else "pass",
+                )
             )
             cells.append(
-                Cell(item_id=i, stratum="K", arm="C", trial=trial, seed=i << 8 ^ trial,
-                     flagged=1, route="flag")
+                Cell(
+                    item_id=i,
+                    stratum="K",
+                    arm="C",
+                    trial=trial,
+                    seed=i << 8 ^ trial,
+                    flagged=1,
+                    route="flag",
+                )
             )
     for i in range(m_clean):
         for trial in range(catch_total):
             for arm in ("C", "D"):
                 cells.append(
-                    Cell(item_id=10_000 + i, stratum="clean", arm=arm, trial=trial,
-                         seed=(10_000 + i) << 8 ^ trial, flagged=0, route="pass")
+                    Cell(
+                        item_id=10_000 + i,
+                        stratum="clean",
+                        arm=arm,
+                        trial=trial,
+                        seed=(10_000 + i) << 8 ^ trial,
+                        flagged=0,
+                        route="pass",
+                    )
                 )
     return cells
 

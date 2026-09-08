@@ -549,9 +549,7 @@ def score_gate(
 
     paired_ids = list(shuffle_paired_ids) if shuffle_paired_ids is not None else []
     unpaired_ids = (
-        list(shuffle_unpaired_ids)
-        if shuffle_unpaired_ids is not None
-        else _global_unpaired(cells)
+        list(shuffle_unpaired_ids) if shuffle_unpaired_ids is not None else _global_unpaired(cells)
     )
     ok_shuffle = True
     try:
@@ -576,9 +574,7 @@ def score_gate(
         ok_shuffle = False
 
     if not (ok_a and ok_spec and ok_regime and ok_shuffle):
-        return _verdict(
-            "INSTRUMENT_INVALID", gates=tuple(gates), shuffle_paired_k=shuffle_paired_k
-        )
+        return _verdict("INSTRUMENT_INVALID", gates=tuple(gates), shuffle_paired_k=shuffle_paired_k)
 
     def _missing_arm_verdict(arm: str, *, controls: ControlReport | None = None) -> GateVerdict:
         gates.append(

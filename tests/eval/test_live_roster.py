@@ -180,9 +180,7 @@ def test_planter_arm_collision_predicate_parity() -> None:
     settings = _settings(mode="bring-up", arm_family="deepseek", planter="deepseek")
     report = preflight_roster(settings)
 
-    collisions = [
-        r for r in report.binding_blocked_reasons if "planter" in r and "collide" in r
-    ]
+    collisions = [r for r in report.binding_blocked_reasons if "planter" in r and "collide" in r]
     assert collisions, report.binding_blocked_reasons
     assert "deepseek" in collisions[0]
     assert "SameFamilyFallback" in collisions[0]
@@ -195,9 +193,7 @@ def test_planter_disjoint_from_arm_family_no_collision_reason() -> None:
 
     report = preflight_roster(settings)
 
-    collisions = [
-        r for r in report.binding_blocked_reasons if "planter" in r and "collide" in r
-    ]
+    collisions = [r for r in report.binding_blocked_reasons if "planter" in r and "collide" in r]
     assert collisions == []
 
 
@@ -226,9 +222,7 @@ def test_converter_panel_collision_predicate_parity() -> None:
     )
     report = preflight_roster(settings)
 
-    collisions = [
-        r for r in report.binding_blocked_reasons if "converter" in r and "collide" in r
-    ]
+    collisions = [r for r in report.binding_blocked_reasons if "converter" in r and "collide" in r]
     assert collisions, report.binding_blocked_reasons
     assert "deepseek" in collisions[0]
     assert "PanelFamilyCollision" in collisions[0]
@@ -252,9 +246,7 @@ def test_converter_panel_internal_duplicate_collision_predicate_parity() -> None
     )
     report = preflight_roster(settings)
 
-    collisions = [
-        r for r in report.binding_blocked_reasons if "converter" in r and "collide" in r
-    ]
+    collisions = [r for r in report.binding_blocked_reasons if "converter" in r and "collide" in r]
     assert collisions, report.binding_blocked_reasons
 
 
@@ -271,9 +263,7 @@ def test_converter_disjoint_from_forbidden_no_collision_reason() -> None:
 
     report = preflight_roster(settings)
 
-    collisions = [
-        r for r in report.binding_blocked_reasons if "converter" in r and "collide" in r
-    ]
+    collisions = [r for r in report.binding_blocked_reasons if "converter" in r and "collide" in r]
     assert collisions == []
 
 

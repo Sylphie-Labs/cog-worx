@@ -21,6 +21,7 @@ from cogworx.verification.oracles.code import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _passing_result() -> _RunResult:
     return _RunResult(returncode=0, stdout="1 passed\n", stderr="", timed_out=False)
 
@@ -41,6 +42,7 @@ def _timeout_result() -> _RunResult:
 # Task B — Verdict.test_provenance field contract
 # ---------------------------------------------------------------------------
 
+
 def test_verdict_default_test_provenance_is_na() -> None:
     """Non-CodeOracle Verdict constructions default to 'n/a' (CANON §6.1 additive field)."""
     v = Verdict(holds=True, valid_check=True, reasoning="", source="tool")
@@ -49,25 +51,36 @@ def test_verdict_default_test_provenance_is_na() -> None:
 
 def test_verdict_test_provenance_not_read_by_is_executable() -> None:
     """is_executable derives ONLY from source — test_provenance is control-inert (S9 pin)."""
-    v_tool = Verdict(holds=True, valid_check=True, reasoning="", source="tool",
-                     test_provenance="frozen")
-    v_inference = Verdict(holds=False, valid_check=True, reasoning="", source="inference",
-                          test_provenance="thesis")
+    v_tool = Verdict(
+        holds=True, valid_check=True, reasoning="", source="tool", test_provenance="frozen"
+    )
+    v_inference = Verdict(
+        holds=False, valid_check=True, reasoning="", source="inference", test_provenance="thesis"
+    )
     assert v_tool.is_executable is True
     assert v_inference.is_executable is False
 
 
 def test_verdict_test_provenance_n_a_does_not_affect_is_executable() -> None:
     """Baseline: n/a does not change is_executable for any source value."""
-    assert Verdict(holds=True, valid_check=True, reasoning="", source="system",
-                   test_provenance="n/a").is_executable is True
-    assert Verdict(holds=True, valid_check=True, reasoning="", source="inference",
-                   test_provenance="n/a").is_executable is False
+    assert (
+        Verdict(
+            holds=True, valid_check=True, reasoning="", source="system", test_provenance="n/a"
+        ).is_executable
+        is True
+    )
+    assert (
+        Verdict(
+            holds=True, valid_check=True, reasoning="", source="inference", test_provenance="n/a"
+        ).is_executable
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
 # Task A + B — verdict_from_result stamps test_provenance
 # ---------------------------------------------------------------------------
+
 
 def test_verdict_from_result_defaults_to_thesis() -> None:
     """verdict_from_result with no test_provenance kwarg stamps 'thesis' (additive default)."""
@@ -115,6 +128,7 @@ def test_verdict_from_result_timeout_carries_test_provenance() -> None:
 # Task A — CodeOracle construction invariants
 # ---------------------------------------------------------------------------
 
+
 def test_code_oracle_default_construction() -> None:
     """CodeOracle() is valid; test_source defaults to 'thesis'."""
     oracle = CodeOracle()
@@ -149,6 +163,7 @@ def test_code_oracle_frozen_source_explicit_none_raises() -> None:
 # Task C — default preservation: non-CodeOracle Verdict stays "n/a"
 # ---------------------------------------------------------------------------
 
+
 def test_non_code_oracle_verdict_test_provenance_is_na() -> None:
     """Verdict constructed outside CodeOracle always has test_provenance='n/a'."""
     for source in ("tool", "system", "inference", "extraction"):
@@ -159,6 +174,7 @@ def test_non_code_oracle_verdict_test_provenance_is_na() -> None:
 def test_verdict_is_frozen_still_holds() -> None:
     """The new field does not break Verdict's frozen config."""
     import pydantic
+
     v: object = Verdict(holds=True, valid_check=True, reasoning="", source="tool")
     with pytest.raises(pydantic.ValidationError):
         v.test_provenance = "frozen"  # type: ignore[attr-defined]

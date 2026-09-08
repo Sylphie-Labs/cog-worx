@@ -100,8 +100,7 @@ class ColumnarArtifact:
         self.routes = routes
         self.regimes = regimes
         self.stratum_rows: dict[Stratum, np.ndarray] = {
-            s: np.flatnonzero(np.array([st == s for st in strata]))
-            for s in dict.fromkeys(strata)
+            s: np.flatnonzero(np.array([st == s for st in strata])) for s in dict.fromkeys(strata)
         }
 
 
@@ -243,15 +242,15 @@ def nested_bootstrap_delta_fast(
     a numpy version bump can't silently change draws. The endpoint index convention is verbatim from
     the stdlib (``int(q*n_outer)`` / ``min(int((1-q)*n_outer), n_outer-1)``).
     """
-    col = cells if isinstance(cells, ColumnarArtifact) else cells_to_columnar(
-        cells, arm_a=arm_a, arm_b=arm_b
+    col = (
+        cells
+        if isinstance(cells, ColumnarArtifact)
+        else cells_to_columnar(cells, arm_a=arm_a, arm_b=arm_b)
     )
     rng = Generator(PCG64(SeedSequence(seed)))
 
     clean_rows = col.stratum_rows.get("clean", np.empty(0, dtype=np.int64))
-    error_row_groups = [
-        col.stratum_rows.get(s, np.empty(0, dtype=np.int64)) for s in error_strata
-    ]
+    error_row_groups = [col.stratum_rows.get(s, np.empty(0, dtype=np.int64)) for s in error_strata]
 
     n_clean = int(clean_rows.size)
     error_sizes = [int(g.size) for g in error_row_groups]
