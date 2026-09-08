@@ -43,7 +43,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
-from pgvector.psycopg import Vector, register_vector_async
+from pgvector import Vector
+from pgvector.psycopg import register_vector_async
 from psycopg.types.json import Jsonb
 
 from cogworx.adapters.config import SubstrateSettings
@@ -184,7 +185,7 @@ class PgLatentStore:
             "payload = EXCLUDED.payload",
             (
                 record.id,
-                Vector(record.embedding),
+                Vector(list(record.embedding)),
                 Jsonb(record.payload),
                 now,
                 now,
@@ -238,7 +239,7 @@ class PgLatentStore:
             LatentMatch(
                 record=LatentRecord(
                     id=row[0],
-                    embedding=tuple(float(v) for v in row[1]),
+                    embedding=tuple(row[1].to_list()),
                     payload=row[2],
                 ),
                 score=1.0 - float(row[6]),

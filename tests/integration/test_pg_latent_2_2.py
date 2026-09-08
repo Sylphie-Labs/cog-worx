@@ -73,7 +73,7 @@ async def test_migration_pre_2_2_table(settings: SubstrateSettings) -> None:
         "use_count int NOT NULL DEFAULT 0)"
     )
     # Insert a row as if it were a pre-2.2 row
-    from pgvector.psycopg import Vector
+    from pgvector import Vector
     from psycopg.types.json import Jsonb
 
     await conn.execute(
