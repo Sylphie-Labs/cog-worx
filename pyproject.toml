@@ -18,7 +18,14 @@ dependencies = [
     # Polyglot substrate drivers (S3). Each engine for its strength.
     "neo4j>=5.27.0",
     "psycopg[binary]>=3.2.0",
-    "pgvector>=0.3.6",
+    # Pinned to the 0.5 line, floor and cap, because 0.5.0 changed three things this adapter
+    # depends on, none of them deprecated first: `Vector` moved to the top-level package,
+    # its constructor stopped accepting a tuple (list/ndarray only), and the psycopg loader
+    # returns a `Vector` rather than an ndarray, so a loaded embedding is no longer iterable.
+    # pg_latent.py is written against that surface. The previous uncapped `>=0.3.6` let 0.5.0
+    # in silently and left the adapter unimportable. Lift deliberately, running the pg_latent
+    # integration tests against a real Postgres — the unit tier cannot see any of this.
+    "pgvector>=0.5.0,<0.6",
 ]
 
 [project.optional-dependencies]
