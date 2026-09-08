@@ -49,6 +49,15 @@
             "timeout": 120
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook.sh\" hive-scribe-capture",
+            "timeout": 30
+          }
+        ]
       }
     ]
   }
