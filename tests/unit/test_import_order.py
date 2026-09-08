@@ -15,6 +15,7 @@ guarantee: importing ``cogworx.loop`` or cherry-picking ``StageResult`` must NOT
 
 from __future__ import annotations
 
+import pkgutil
 import subprocess
 import sys
 
@@ -37,21 +38,26 @@ PACKAGES = (
 )
 
 
-# Every module under ``cogworx.adapters``.  ``adapters/__init__`` re-exports only four of the
-# six, so ``import cogworx.adapters`` never reaches ``pg_latent`` or ``timescale_journal`` — a
-# break in either is invisible to the deterministic tier.  That is exactly how
-# ``from pgvector.psycopg import Vector`` stayed broken: pgvector 0.5.0 moved ``Vector`` to the
-# top-level package, the adapter stopped importing at all, and the only tests that touch it are
-# marked ``integration`` and run on ``main`` alone.
-ADAPTER_MODULES = (
-    "cogworx.adapters.config",
-    "cogworx.adapters.neo4j_entity_kg",
-    "cogworx.adapters.neo4j_graph",
-    "cogworx.adapters.neo4j_procedural_kg",
-    "cogworx.adapters.pg_episodes",
-    "cogworx.adapters.pg_latent",
-    "cogworx.adapters.timescale_journal",
-)
+# Every module under ``cogworx.adapters``, discovered rather than listed.  ``adapters/__init__``
+# re-exports four of the six adapters, so ``import cogworx.adapters`` never reaches ``pg_latent``
+# or ``timescale_journal`` — a break in either is invisible to the deterministic tier.  That is
+# exactly how ``from pgvector.psycopg import Vector`` stayed broken: pgvector 0.5.0 moved
+# ``Vector`` to the top-level package, the adapter stopped importing at all, and the only tests
+# that touch it are marked ``integration`` and run on ``main`` alone.  Enumerating the package
+# rather than hand-listing it keeps the guarantee true for adapters not yet written.
+def _adapter_modules() -> tuple[str, ...]:
+    import cogworx.adapters
+
+    return tuple(
+        sorted(
+            f"cogworx.adapters.{info.name}"
+            for info in pkgutil.iter_modules(cogworx.adapters.__path__)
+            if not info.name.startswith("_")
+        )
+    )
+
+
+ADAPTER_MODULES = _adapter_modules()
 
 
 @pytest.mark.parametrize("package", PACKAGES)
@@ -67,6 +73,12 @@ def test_package_imports_first_in_fresh_interpreter(package: str) -> None:
         f"`import {package}` failed in a fresh interpreter (import-cycle regression):\n"
         f"{proc.stderr}"
     )
+
+
+def test_adapter_module_discovery_is_not_empty() -> None:
+    """A discovery bug that returned nothing would make the test below vacuously pass."""
+    assert len(ADAPTER_MODULES) >= 6, f"expected every adapters/ module, found {ADAPTER_MODULES}"
+    assert "cogworx.adapters.pg_latent" in ADAPTER_MODULES
 
 
 @pytest.mark.parametrize("module", ADAPTER_MODULES)
