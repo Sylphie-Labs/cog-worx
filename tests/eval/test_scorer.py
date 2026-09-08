@@ -163,8 +163,16 @@ def _artifact(
         fp_jit = 0 if hollow_clean else rng.randint(0, 1)
         converted = k_id in converted_o_ids
         # K stratum (converted_o is a per-item provenance flag — welded across ALL arms).
-        _emit(cells, k_id, "K", "A", a_k_flagged if i < a_k_flagged else 0, R, regime,
-              converted=converted)
+        _emit(
+            cells,
+            k_id,
+            "K",
+            "A",
+            a_k_flagged if i < a_k_flagged else 0,
+            R,
+            regime,
+            converted=converted,
+        )
         _emit(cells, k_id, "K", "D", d_k + k_jit, R, regime, converted=converted)
         _emit(cells, k_id, "K", "C", c_k + k_jit, R, regime, converted=converted)
         _emit(cells, k_id, "K", "B", b_k + k_jit, R, regime, converted=converted)

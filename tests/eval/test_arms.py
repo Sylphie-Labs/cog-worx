@@ -139,9 +139,7 @@ class _StubDialecticModel:
         self.seeds.append(seed)
         disposition = "broke" if seed % 2 == 0 else "could_not_break"
         breakage = "off-by-one in the sum" if disposition == "broke" else None
-        text = json.dumps(
-            {"disposition": disposition, "breakage": breakage, "confidence": 0.7}
-        )
+        text = json.dumps({"disposition": disposition, "breakage": breakage, "confidence": 0.7})
         return ModelResponse(text=text, model_id="stub", finish_reason="stop")
 
     def count_tokens(self, text: str) -> int:

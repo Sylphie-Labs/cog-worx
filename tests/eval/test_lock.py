@@ -1022,8 +1022,15 @@ def _weak_assoc_cells(n_k: int = 12, n_clean: int = 12, R: int = 6, seed: int = 
         for arm in ("D", "C"):
             for t in range(R):
                 cells.append(
-                    Cell(item_id=item, stratum=stratum, arm=arm, trial=t, seed=item * 100 + t,
-                         flagged=1 if t < f else 0, route="x")
+                    Cell(
+                        item_id=item,
+                        stratum=stratum,
+                        arm=arm,
+                        trial=t,
+                        seed=item * 100 + t,
+                        flagged=1 if t < f else 0,
+                        route="x",
+                    )
                 )
 
     for i in range(n_k):

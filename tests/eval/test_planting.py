@@ -171,9 +171,7 @@ def test_pair_clean_member_non_mutual_sibling_raises() -> None:
 
 
 def test_pair_mismatched_split_raises() -> None:
-    err = _planted(
-        provisional_id=10, is_error=1, matched_sibling_id=11, split="tuning"
-    )
+    err = _planted(provisional_id=10, is_error=1, matched_sibling_id=11, split="tuning")
     clean = _planted(
         provisional_id=11,
         is_error=0,
@@ -192,9 +190,7 @@ def test_pair_same_split_both_directions_construct() -> None:
 
 def test_pair_clean_member_non_clean_candidate_stratum_raises() -> None:
     err = _planted(provisional_id=10, is_error=1, matched_sibling_id=11)
-    clean = _planted(
-        provisional_id=11, is_error=0, candidate_stratum="K", matched_sibling_id=10
-    )
+    clean = _planted(provisional_id=11, is_error=0, candidate_stratum="K", matched_sibling_id=10)
     with pytest.raises(ValidationError):
         PlantedPair(error_item=err, clean_item=clean)
 
@@ -376,7 +372,8 @@ def test_o_injector_stamp_mutation_regime_share_one_operator_binding(operator: s
     # (2) the mutation is real (source changed) — what mutate_source was asked to do, it did
     assert pair.error_item.thesis.proposed_solution != _OP_SEED_SOURCE[operator]
     assert pair.error_item.thesis.proposed_solution == mutate_source(
-        _OP_SEED_SOURCE[operator], operator  # type: ignore[arg-type]
+        _OP_SEED_SOURCE[operator],
+        operator,  # type: ignore[arg-type]
     )
     # (3) the regime derives off the SAME stamped operators (one binding)
     assert pair.error_item.error_regime == _derive_o_regime(stamp.operators)
@@ -393,7 +390,8 @@ def test_detk_stamp_mutation_regime_share_one_operator_binding(operator: str) ->
     assert isinstance(stamp, DeterministicPlanterStamp)
     assert stamp.operators == (operator, DETK_PROBE_OPERATOR)
     assert pair.error_item.thesis.proposed_solution == mutate_source(
-        _OP_SEED_SOURCE[operator], operator  # type: ignore[arg-type]
+        _OP_SEED_SOURCE[operator],
+        operator,  # type: ignore[arg-type]
     )
     assert pair.error_item.error_regime == _derive_o_regime(stamp.operators)
 
@@ -556,9 +554,7 @@ def test_split_draw_regime_cells_sum_to_stratum_via_hamilton() -> None:
     per_cell = {}
     for regime in ("logic-wrong", "edge-case-miss", "off-by-semantics"):
         cell = [p for p in pairs if p.error_item.error_regime == regime]
-        per_cell[regime] = sum(
-            1 for p in cell if asg[p.error_item.provisional_id] == "measurement"
-        )
+        per_cell[regime] = sum(1 for p in cell if asg[p.error_item.provisional_id] == "measurement")
     # Hamilton over {27,27,26}: 19+19+18 = 56, summing EXACTLY to the stratum target.
     assert per_cell == {"logic-wrong": 19, "edge-case-miss": 19, "off-by-semantics": 18}
     assert sum(per_cell.values()) == 56
@@ -640,10 +636,7 @@ def _meas_count(asg: Mapping[int, str], items: list[PlantedItem]) -> int:
 
 def _clean_members(pairs: list[PlantedPair]) -> list[PlantedItem]:
     return [
-        m
-        for p in pairs
-        for m in (p.error_item, p.clean_item)
-        if m.candidate_stratum == "clean"
+        m for p in pairs for m in (p.error_item, p.clean_item) if m.candidate_stratum == "clean"
     ]
 
 
@@ -929,9 +922,7 @@ def test_split_draw_o_path_byte_identical_after_fix() -> None:
     per_cell = {}
     for regime in ("logic-wrong", "edge-case-miss", "off-by-semantics"):
         cell = [p for p in pairs if p.error_item.error_regime == regime]
-        per_cell[regime] = sum(
-            1 for p in cell if asg[p.error_item.provisional_id] == "measurement"
-        )
+        per_cell[regime] = sum(1 for p in cell if asg[p.error_item.provisional_id] == "measurement")
     assert per_cell == {"logic-wrong": 19, "edge-case-miss": 19, "off-by-semantics": 18}
 
 
@@ -960,11 +951,7 @@ def test_mutation_reading_raw_error_regime_directly_reproduces_the_crash() -> No
     # Pre-fix: NO raw-K pair lands in any canonical cell -> a total monoculture (all skipped).
     assert placed == 0
     # The fix routes all of them through canonical_split_regime -> they DO land.
-    fixed_placed = sum(
-        1
-        for pair in pairs
-        if canonical_split_regime(pair.error_item) in _REGIMES
-    )
+    fixed_placed = sum(1 for pair in pairs if canonical_split_regime(pair.error_item) in _REGIMES)
     assert fixed_placed == len(pairs) == 40
 
 
@@ -978,8 +965,9 @@ def test_detk_pool_floor_is_thirty() -> None:
 
 
 def test_detk_pair_is_measurement_split_and_tagged() -> None:
-    pair = build_detk_pair(_seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "constant-replacement",
-                           error_id=1, clean_id=2)
+    pair = build_detk_pair(
+        _seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "constant-replacement", error_id=1, clean_id=2
+    )
     assert pair.error_item.split == "measurement"
     assert pair.clean_item.split == "measurement"
     assert is_detk(pair.error_item) is True
@@ -990,8 +978,9 @@ def test_detk_pair_is_measurement_split_and_tagged() -> None:
 
 
 def test_detk_stamp_carries_real_operator_plus_sentinel() -> None:
-    pair = build_detk_pair(_seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "sign-flip",
-                           error_id=1, clean_id=2)
+    pair = build_detk_pair(
+        _seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "sign-flip", error_id=1, clean_id=2
+    )
     stamp = pair.error_item.planter
     assert isinstance(stamp, DeterministicPlanterStamp)
     assert "sign-flip" in stamp.operators
@@ -1002,10 +991,12 @@ def test_detk_is_not_a_plain_o_item() -> None:
     """The exclusion predicate distinguishes detK from a binding O item carrying the same operator —
     a plain O item is NOT detK (so it stays in the binding deltas), a detK item IS (so 4.4d excludes
     it). This is the firewall that keeps detK out of error_pools['K']."""
-    o_pair = OInjector().emit(_seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "constant-replacement",
-                              error_id=1, clean_id=2)
-    dk_pair = build_detk_pair(_seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "constant-replacement",
-                              error_id=3, clean_id=4)
+    o_pair = OInjector().emit(
+        _seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "constant-replacement", error_id=1, clean_id=2
+    )
+    dk_pair = build_detk_pair(
+        _seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "constant-replacement", error_id=3, clean_id=4
+    )
     assert is_detk(o_pair.error_item) is False  # plain O -> stays binding
     assert is_detk(dk_pair.error_item) is True  # detK -> excluded
 
@@ -1014,8 +1005,9 @@ def test_detk_requires_off_by_semantics_operator() -> None:
     """Negative control: detK is off-by-semantics by construction; a logic-wrong operator is
     rejected (the collusion probe's positive signature depends on the regime)."""
     with pytest.raises(ValueError, match="off-by-semantics"):
-        build_detk_pair(_seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "arithmetic-swap",
-                        error_id=1, clean_id=2)
+        build_detk_pair(
+            _seed(sol=_SCALE_SOLUTION, test=_SCALE_TEST), "arithmetic-swap", error_id=1, clean_id=2
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1171,8 +1163,14 @@ def test_planting_module_does_no_journal_io() -> None:
     tree = _planting_tree()
     imported = _imported_modules(tree)
     referenced = _referenced_names(tree)
-    for forbidden in ("Journal", "RunContext", "StageContext", "load_run", "GraphStore",
-                      "LatentStore"):
+    for forbidden in (
+        "Journal",
+        "RunContext",
+        "StageContext",
+        "load_run",
+        "GraphStore",
+        "LatentStore",
+    ):
         assert forbidden not in referenced, (
             f"planting.py CODE references {forbidden!r} (S1 write-path smell)"
         )

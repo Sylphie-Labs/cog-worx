@@ -217,7 +217,10 @@ def _corpus() -> list[CorpusItem]:
                 is_error=0,
                 label_source="oracle",
                 label_provenance=OracleLabelProvenance(
-                    returncode=0, test_provenance="frozen", holds=True, valid_check=True,
+                    returncode=0,
+                    test_provenance="frozen",
+                    holds=True,
+                    valid_check=True,
                     oracle_id="o",
                 ),
                 stratum="clean",

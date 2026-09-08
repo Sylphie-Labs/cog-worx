@@ -275,9 +275,7 @@ def _crn_diagnostic(
     has no missing-arm guard and would raise (``StopIteration``) on one."""
     present_arms = {c.arm for c in cells}
     measured_pairs = [
-        pair
-        for pair in _CRN_CANDIDATE_PAIRS
-        if pair[1] in present_arms and pair[2] in present_arms
+        pair for pair in _CRN_CANDIDATE_PAIRS if pair[1] in present_arms and pair[2] in present_arms
     ]
     measured_labels = {pair[0] for pair in measured_pairs}
     not_measured = tuple(

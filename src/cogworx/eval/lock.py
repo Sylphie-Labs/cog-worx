@@ -1178,9 +1178,7 @@ def assert_shuffle_null(
         paired_k[label] = kp
         paired_ucb95[label] = 1.0 - beta.lcb(n - kp + 1, kp + 1, quantile=0.05)
 
-    return ShuffleNullReport(
-        n_shuffles=n, paired_k=paired_k, paired_coverage_ucb95=paired_ucb95
-    )
+    return ShuffleNullReport(n_shuffles=n, paired_k=paired_k, paired_coverage_ucb95=paired_ucb95)
 
 
 # ---------------------------------------------------------------------------
@@ -1438,15 +1436,11 @@ def report_loro(
         cells, arm_a=a, arm_b=arm_b, error_strata=(error_stratum,), n_outer=n_outer, seed=seed
     )
 
-    regimes = sorted(
-        {c.regime for c in cells if c.stratum == error_stratum and c.regime != ""}
-    )
+    regimes = sorted({c.regime for c in cells if c.stratum == error_stratum and c.regime != ""})
     collapses: dict[str, bool] = {}
     for r in regimes:
         # Drop every cell of a regime-r ERROR item (item-granular). Clean/other-stratum cells stay.
-        survivors = [
-            c for c in cells if not (c.stratum == error_stratum and c.regime == r)
-        ]
+        survivors = [c for c in cells if not (c.stratum == error_stratum and c.regime == r)]
         _, lo, _ = nested_bootstrap_delta(
             survivors,
             arm_a=a,

@@ -147,9 +147,7 @@ def _tie_break(verdict: _Verdict3) -> TieBreakCallback:
     return tie_break
 
 
-def _regime(
-    verdict: _RegimeVerdict, reassigned: str | None = None
-) -> RegimeAdjudicateCallback:
+def _regime(verdict: _RegimeVerdict, reassigned: str | None = None) -> RegimeAdjudicateCallback:
     def regime_adjudicate(request: AdjudicationRequest) -> RegimeAdjudication:
         return RegimeAdjudication(
             adjudicator_id="second-author",
@@ -266,9 +264,7 @@ def test_c1_clean_oracle_reachable_emits_oracle_provenance() -> None:
     label_source='oracle', test_provenance=='frozen'. The human harness is NOT consulted."""
     item = _clean_item()
     asg = assign_stratum(item, probe=_const_probe(_verdict(holds=True, valid_check=True)))
-    label = reverify_clean(
-        item, asg, adjudicate=_no_call_adjudicate, tie_break=_no_call_tie_break
-    )
+    label = reverify_clean(item, asg, adjudicate=_no_call_adjudicate, tie_break=_no_call_tie_break)
     assert isinstance(label, CleanLabel)
     assert label.label_source == "oracle"
     assert isinstance(label.label_provenance, OracleLabelProvenance)
@@ -284,9 +280,7 @@ def test_c1_reuses_carried_verdict_no_second_probe() -> None:
     assert "probe" not in inspect.signature(reverify_clean).parameters
     item = _clean_item()
     asg = assign_stratum(item, probe=_const_probe(_verdict(holds=True, valid_check=True)))
-    label = reverify_clean(
-        item, asg, adjudicate=_no_call_adjudicate, tie_break=_no_call_tie_break
-    )
+    label = reverify_clean(item, asg, adjudicate=_no_call_adjudicate, tie_break=_no_call_tie_break)
     assert isinstance(label, CleanLabel)
 
 
@@ -295,9 +289,7 @@ def test_c1_oracle_reachable_clean_failing_its_test_is_dropped() -> None:
     AbstentionDrop, never a forced oracle 'clean' label."""
     item = _clean_item()
     asg = assign_stratum(item, probe=_const_probe(_verdict(holds=False, valid_check=True)))
-    result = reverify_clean(
-        item, asg, adjudicate=_no_call_adjudicate, tie_break=_no_call_tie_break
-    )
+    result = reverify_clean(item, asg, adjudicate=_no_call_adjudicate, tie_break=_no_call_tie_break)
     assert isinstance(result, AbstentionDrop)
 
 

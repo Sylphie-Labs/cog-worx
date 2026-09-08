@@ -130,13 +130,9 @@ class PlantedPair(BaseModel):
     @model_validator(mode="after")
     def _pair_invariants(self) -> PlantedPair:
         if self.error_item.is_error != 1:
-            raise ValueError(
-                f"error_item.is_error must be 1, got {self.error_item.is_error}"
-            )
+            raise ValueError(f"error_item.is_error must be 1, got {self.error_item.is_error}")
         if self.clean_item.is_error != 0:
-            raise ValueError(
-                f"clean_item.is_error must be 0, got {self.clean_item.is_error}"
-            )
+            raise ValueError(f"clean_item.is_error must be 0, got {self.clean_item.is_error}")
         if self.clean_item.candidate_stratum != "clean":
             raise ValueError(
                 f"clean_item.candidate_stratum must be 'clean', got "
@@ -423,9 +419,7 @@ class OInjector:
     author's operator schedule, never stacked within one item.
     """
 
-    def emit(
-        self, seed: Seed, operator: Operator, *, error_id: int, clean_id: int
-    ) -> PlantedPair:
+    def emit(self, seed: Seed, operator: Operator, *, error_id: int, clean_id: int) -> PlantedPair:
         """Emit one O pair from ``seed`` under ``operator``. ``error_id``/``clean_id`` are the
         author-assigned provisional ids (the pair's mutual sibling references). Raises
         :exc:`MutationFailed` if ``operator`` has no site in this seed (re-route it to a fitting
@@ -473,9 +467,7 @@ measurement K — carving would drop binding K below the n=30 power floor and bu
 the positive collusion signature is unreliable."""
 
 
-def build_detk_pair(
-    seed: Seed, operator: Operator, *, error_id: int, clean_id: int
-) -> PlantedPair:
+def build_detk_pair(seed: Seed, operator: Operator, *, error_id: int, clean_id: int) -> PlantedPair:
     """Build one detK collusion-probe pair (§7): an off-by-semantics deterministic mutation on an
     oracle-blind item, stamped distinguishably so 4.4d/4.4e exclude it from binding deltas.
 
@@ -728,9 +720,7 @@ assert set(K_REGIME_TO_SPLIT_BUCKET) == set(K_ERROR_KINDS), (
     "K_REGIME_TO_SPLIT_BUCKET domain must be exactly K_ERROR_KINDS"
 )
 assert all(
-    bucket in _REGIMES
-    for buckets in K_REGIME_TO_SPLIT_BUCKET.values()
-    for bucket in buckets
+    bucket in _REGIMES for buckets in K_REGIME_TO_SPLIT_BUCKET.values() for bucket in buckets
 ), "K_REGIME_TO_SPLIT_BUCKET image must lie inside the canonical split buckets (_REGIMES)"
 assert {b for buckets in K_REGIME_TO_SPLIT_BUCKET.values() for b in buckets} == set(_REGIMES), (
     "K_REGIME_TO_SPLIT_BUCKET image must COVER all 3 canonical buckets (no permanent monoculture)"
