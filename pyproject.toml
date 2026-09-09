@@ -119,6 +119,8 @@ asyncio_mode = "auto"
 markers = [
     "integration: hits the real polyglot substrate (Neo4j + Postgres/Timescale/pgvector). Skipped by default when services are missing.",
     "spike: Spike Suite gate tests (S12). A sector does not harden until its spike passes.",
+    "neo4j: needs the Neo4j service specifically, a subset of `integration`.",
+    "postgres: needs the Postgres/Timescale/pgvector service specifically, a subset of `integration`.",
     "slow: long-running soak/chaos tests (e.g. the Pod 2.1 commit_xid soak). Opt in with -m slow.",
 ]
 norecursedirs = [".*", "*.egg", "*.egg-info", "build", "dist"]

@@ -362,9 +362,9 @@ def _tuning(item_id: int, **overrides: object) -> CorpusItem:
 
 def test_contamination_clean_partition_passes() -> None:
     """Disjoint item_ids + no measurement hash in the tuning log -> the lock precondition holds
-    (returns None, raises nothing)."""
+    (raises nothing)."""
     items = [_tuning(1), _tuning(2), _measurement(10), _measurement(11)]
-    assert assert_no_contamination(items, tuning_run_hashes=["unrelated-hash"]) is None
+    assert_no_contamination(items, tuning_run_hashes=["unrelated-hash"])  # must not raise
 
 
 def test_contamination_refuses_item_id_in_both_splits() -> None:
@@ -391,7 +391,7 @@ def test_contamination_ignores_tuning_hash_overlap() -> None:
     t = _tuning(1)
     items = [t, _measurement(10)]
     # t.content_hash is in the log (a tuning item DID feed tuning) — must NOT refuse.
-    assert assert_no_contamination(items, tuning_run_hashes=[t.content_hash]) is None
+    assert_no_contamination(items, tuning_run_hashes=[t.content_hash])  # must not raise
 
 
 def test_contamination_refuses_never_locked_measurement_item() -> None:
@@ -429,7 +429,7 @@ def test_contamination_mutation_audit_skipping_hash_check_is_caught() -> None:
         # hash-overlap check DROPPED — the mutation.
 
     # The mutant passes the contaminated corpus (ids are disjoint).
-    assert mutant_audit_id_only(items, tuning_run_hashes=log) is None
+    mutant_audit_id_only(items, tuning_run_hashes=log)  # must not raise
     # The real audit refuses it.
     with pytest.raises(CorpusLockError, match="tuning-run log"):
         assert_no_contamination(items, tuning_run_hashes=log)
@@ -614,14 +614,12 @@ def test_spec_ceiling_nontrivial_spec_passes() -> None:
     # 8 of 80 clean items flag every trial -> spec = 0.90, var of {1.0x8, 0.0x72} ~ 0.0825 (>>
     # 0.014 floor). Both parts satisfied.
     cells = _clean_cells_with_spec("C", n_clean=_N_CLEAN_PLANNED, n_flagged_items=8)
-    assert (
-        assert_spec_ceiling(
-            cells,
-            n_clean_planned=_N_CLEAN_PLANNED,
-            R=_R,
-            sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
-        )
-        is None
+    # Must not raise.
+    assert_spec_ceiling(
+        cells,
+        n_clean_planned=_N_CLEAN_PLANNED,
+        R=_R,
+        sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
     )
 
 
@@ -765,14 +763,12 @@ def test_spec_ceiling_on_synth_cells_passes() -> None:
         sb_spec=_SIGMA_SQ_B_SPEC,
         rho_w=0.3,
     )
-    assert (
-        assert_spec_ceiling(
-            cells,
-            n_clean_planned=_N_CLEAN_PLANNED,
-            R=_R,
-            sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
-        )
-        is None
+    # Must not raise.
+    assert_spec_ceiling(
+        cells,
+        n_clean_planned=_N_CLEAN_PLANNED,
+        R=_R,
+        sigma_sq_b_spec_planning=_SIGMA_SQ_B_SPEC,
     )
 
 
@@ -827,13 +823,13 @@ def test_arm_a_floor_satisfied_passes() -> None:
     # tau_A = 2/(7*80) = 0.003571 -> 1-tau_A = 0.996428. Over 80x7=560 clean cells, <=2 FPs keeps
     # spec_A = 1 - 2/560 = 0.99643 >= floor. Use exactly 1 FP -> spec_A = 0.99821 (> floor).
     cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=1)
-    assert assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R) is None
+    assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)  # must not raise
 
 
 def test_arm_a_floor_zero_clean_fps_passes() -> None:
     """A perfectly clean arm A (spec_A = 1.0) trivially clears INV-A1."""
     cells = _arm_a_artifact(k_flagged_items=0, clean_flagged_cells=0)
-    assert assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R) is None
+    assert_arm_a_floor(cells, n_clean_planned=_N_CLEAN_PLANNED, R=_R)  # must not raise
 
 
 def test_arm_a_floor_refuses_inv_a0_violation() -> None:

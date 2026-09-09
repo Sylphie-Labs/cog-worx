@@ -319,6 +319,30 @@ class _RecordHumanInputSpyJournal:
     async def set_run_tainted(self, run_id: str) -> None:
         await self._inner.set_run_tainted(run_id)
 
+    async def append_design_look(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+        fingerprint: str,
+    ) -> None:
+        await self._inner.append_design_look(
+            planning_variance_config_hash=planning_variance_config_hash,
+            design_lineage_chain=design_lineage_chain,
+            fingerprint=fingerprint,
+        )
+
+    async def read_design_lineage_budget(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+    ) -> int:
+        return await self._inner.read_design_lineage_budget(
+            planning_variance_config_hash=planning_variance_config_hash,
+            design_lineage_chain=design_lineage_chain,
+        )
+
 
 # ---------------------------------------------------------------------------
 # A journal wrapper that raises inside compare_and_set_run_status on the FIRST call after
@@ -419,6 +443,30 @@ class _CrashBeforeCASJournal:
 
     async def set_run_tainted(self, run_id: str) -> None:
         await self._inner.set_run_tainted(run_id)
+
+    async def append_design_look(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+        fingerprint: str,
+    ) -> None:
+        await self._inner.append_design_look(
+            planning_variance_config_hash=planning_variance_config_hash,
+            design_lineage_chain=design_lineage_chain,
+            fingerprint=fingerprint,
+        )
+
+    async def read_design_lineage_budget(
+        self,
+        *,
+        planning_variance_config_hash: str,
+        design_lineage_chain: Sequence[str],
+    ) -> int:
+        return await self._inner.read_design_lineage_budget(
+            planning_variance_config_hash=planning_variance_config_hash,
+            design_lineage_chain=design_lineage_chain,
+        )
 
 
 # ---------------------------------------------------------------------------

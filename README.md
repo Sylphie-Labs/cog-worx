@@ -27,7 +27,7 @@ Each engine for its strength: **Neo4j** (graph knowledge layer) · **Postgres** 
 
 ```bash
 uv sync --all-extras          # install (Python 3.13+)
-uv run nox -s lint typecheck test   # ruff + mypy --strict + pytest (deterministic, no Docker)
+uv run nox -s lint typecheck test sizing   # ruff + mypy --strict + pytest (deterministic, no Docker)
 docker compose up -d          # bring up the polyglot substrate
 uv run pytest -m integration  # integration + Spike Suite 1 (needs the substrate)
 ```

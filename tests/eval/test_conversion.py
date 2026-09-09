@@ -979,7 +979,7 @@ def test_nc4_deleting_author_anchor_conjunct_would_convert_wrong_intent() -> Non
         return _is_o_catch(v_err) and _is_clean_pass(v_clean)
 
     orig = conv_mod._gate
-    conv_mod._gate = _two_sided_only  # type: ignore[assignment]
+    conv_mod._gate = _two_sided_only
     try:
         result = convert_k_pool(
             [_k_pair()],
@@ -990,7 +990,7 @@ def test_nc4_deleting_author_anchor_conjunct_would_convert_wrong_intent() -> Non
             config=_config(),
         )
     finally:
-        conv_mod._gate = orig  # type: ignore[assignment]
+        conv_mod._gate = orig
     # Without the author-anchor the wrong-intent candidate launders through — proving the conjunct
     # is the ONLY thing rejecting it in NC-1.
     assert len(result.pairs) == 1

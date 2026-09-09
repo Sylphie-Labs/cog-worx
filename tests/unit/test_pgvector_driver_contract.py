@@ -41,7 +41,14 @@ def test_vector_accepts_a_list_and_rejects_a_tuple() -> None:
     assert Vector([1.0, 2.0, 3.0]) is not None
 
     with pytest.raises(ValueError, match="expected list or ndarray"):
-        Vector((1.0, 2.0, 3.0))
+        # Deliberately the wrong type: passing a tuple is the thing being asserted about.
+        # The `[arg-type]` half fires only when numpy is present (`nox -s sizing`, or the
+        # `uv sync --all-extras` env README.md tells contributors to create), because pgvector's
+        # signature is `list[float] | ndarray`. Without numpy that `ndarray` collapses to `Any`,
+        # the union swallows the tuple, and no error is raised — which is why `unused-ignore` is
+        # needed too. Both halves together keep this clean in either environment, as
+        # pyproject.toml's numpy override requires.
+        Vector((1.0, 2.0, 3.0))  # type: ignore[arg-type, unused-ignore]
 
 
 def test_a_loaded_vector_is_not_iterable_and_unpacks_via_to_list() -> None:

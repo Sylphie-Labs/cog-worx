@@ -33,8 +33,19 @@ import math
 from collections.abc import Sequence
 from random import Random
 
-import numpy as np
 import pytest
+
+# numpy ships in the optional `sizing` extra, which the `test` nox session deliberately does not
+# install (CANON S2: numpy is the adopter's burden, and `import cogworx.eval` must work without
+# it). Without this guard the missing import is a collection ERROR, aborting the whole pytest run
+# rather than skipping this module.
+#
+# This module therefore does NOT run under `nox -s test`. It runs under `nox -s sizing`, which
+# installs the extra, asserts numpy is importable so this guard cannot silently skip everything,
+# and type-checks the numpy-present environment too.
+pytest.importorskip("numpy", reason="requires the optional `sizing` extra")
+
+import numpy as np
 from numpy.random import PCG64, SeedSequence
 from numpy.random import Generator as NPGenerator
 
@@ -299,7 +310,9 @@ def _spy_integers_sizes(
     is injectable so a mutant can be spied identically."""
     sizes: list[object] = []
 
-    class _SpyGen(NPGenerator):
+    # Subclassing is real when numpy is installed; without it `NPGenerator` is `Any` and
+    # --strict refuses to subclass Any. `unused-ignore` keeps both environments clean.
+    class _SpyGen(NPGenerator):  # type: ignore[misc, unused-ignore]
         def integers(self, low, high=None, size=None, *a, **k):  # type: ignore[no-untyped-def]
             sizes.append(tuple(size) if isinstance(size, tuple) else size)
             return super().integers(low, high, size, *a, **k)

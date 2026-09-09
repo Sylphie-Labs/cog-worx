@@ -423,7 +423,7 @@ def test_regime_adjudication_rejects_unknown_verdict() -> None:
     with pytest.raises(ValidationError):
         RegimeAdjudication(
             adjudicator_id="r1",
-            verdict="error",  # type: ignore[arg-type]
+            verdict="error",
             rationale="x",
             timestamp=_TS,
         )
