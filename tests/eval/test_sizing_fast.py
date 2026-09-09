@@ -306,7 +306,9 @@ def _spy_integers_sizes(
     is injectable so a mutant can be spied identically."""
     sizes: list[object] = []
 
-    class _SpyGen(NPGenerator):
+    # Subclassing is real when numpy is installed; without it `NPGenerator` is `Any` and
+    # --strict refuses to subclass Any. `unused-ignore` keeps both environments clean.
+    class _SpyGen(NPGenerator):  # type: ignore[misc, unused-ignore]
         def integers(self, low, high=None, size=None, *a, **k):  # type: ignore[no-untyped-def]
             sizes.append(tuple(size) if isinstance(size, tuple) else size)
             return super().integers(low, high, size, *a, **k)

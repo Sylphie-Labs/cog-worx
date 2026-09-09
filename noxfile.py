@@ -1,6 +1,6 @@
 """Local task runner for cog-worx — the same checks CI runs.
 
-    uv run nox -s lint typecheck test     # deterministic tiers (no Docker)
+    uv run nox -s lint typecheck test sizing   # deterministic tiers (no Docker)
     uv run nox -s integration             # needs the polyglot substrate up
 
 The deterministic sessions (lint/typecheck/test) must stay green on every change — they are the bet
@@ -12,7 +12,7 @@ from __future__ import annotations
 import nox
 
 nox.options.default_venv_backend = "uv"
-nox.options.sessions = ["lint", "typecheck", "test"]
+nox.options.sessions = ["lint", "typecheck", "test", "sizing"]
 
 PYTHON_VERSIONS = ["3.13"]
 
@@ -26,12 +26,10 @@ def lint(session: nox.Session) -> None:
 
 @nox.session(python=PYTHON_VERSIONS)
 def typecheck(session: nox.Session) -> None:
-    # The `sizing` extra is installed here but NOT in `test`, and the asymmetry is deliberate.
-    # Typechecking wants numpy's real types: without it `numpy.*` falls back to `Any` under the
-    # ignore_missing_imports override, and mypy --strict then refuses `class _SpyGen(NPGenerator)`
-    # as subclassing Any. The `test` session must keep numpy absent, because CANON S2 makes it an
-    # opt-in adopter dependency and the suite has to prove it stays optional.
-    session.install("-e", ".[sizing]", "--group", "dev")
+    # Deliberately WITHOUT the `sizing` extra, per the invariant in pyproject.toml: a checkout
+    # without it must still type-check. The two numpy-dependent lines that mypy reads differently
+    # with and without numpy carry `[..., unused-ignore]`, so both environments are clean.
+    session.install("-e", ".", "--group", "dev")
     session.run("mypy")
 
 
@@ -39,6 +37,20 @@ def typecheck(session: nox.Session) -> None:
 def test(session: nox.Session) -> None:
     """Deterministic tiers only — unit + invariant suites on in-memory doubles."""
     session.install("-e", ".", "--group", "dev")
+    session.run("pytest", "-m", "not integration and not spike", *session.posargs)
+
+
+@nox.session(python=PYTHON_VERSIONS)
+def sizing(session: nox.Session) -> None:
+    """The numpy fast-kernel suite — the one tier that installs the optional `sizing` extra.
+
+    `test` deliberately runs without numpy, so CANON S2's "numpy is the adopter's burden" stays
+    proven; the consequence is that `tests/eval/test_sizing_fast.py` skips there. That module is
+    the ONLY coverage of `cogworx.eval._sizing_fast` and `cogworx.eval.equiv_check`, including
+    their mutation kill-set, so without this session a fast-kernel regression would pass every
+    check. Runs the same deselection as `test`; only the environment differs.
+    """
+    session.install("-e", ".[sizing]", "--group", "dev")
     session.run("pytest", "-m", "not integration and not spike", *session.posargs)
 
 
