@@ -235,8 +235,10 @@ async def test_cursor_atomicity_kill_simulation(store: PgEpisodeStore) -> None:
                     batch2[0].occurred_at,
                 ),
             )
-            # Simulate crash: rollback before cursor upsert
-            await raw_conn.rollback()
+            # Simulate crash: roll back before the cursor upsert. psycopg 3.3 forbids an
+            # explicit rollback() inside a transaction() block; raising Rollback is the
+            # supported way to abandon the block, and it exits the context cleanly.
+            raise psycopg.Rollback()
     finally:
         await raw_conn.close()
 

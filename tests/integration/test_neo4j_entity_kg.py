@@ -251,6 +251,24 @@ async def test_claims_about_subject_and_object_side(kg: Neo4jEntityKG) -> None:
     assert c_obj.id in ids
 
 
+async def test_claims_about_accepts_the_normalized_subject(kg: Neo4jEntityKG) -> None:
+    """claims_about finds a subject by its normalized form as well as its original name.
+
+    The coherence reconciler only has ``subject_norm`` (from the DirtySubject node); the
+    in-memory double has always accepted both spellings, and the adapter must agree or the
+    reconciler clears every dirty subject having found no claims to adjudicate.
+    """
+    from cogworx.knowledge.identity import normalize_topic_part
+
+    claim = _make_claim("IntegAlice", "status", "active")
+    await kg.write_claim(claim, evidence=_ev(source_id="src-n"))
+
+    by_name = {sc.claim.id for sc in await kg.claims_about("IntegAlice")}
+    by_norm = {sc.claim.id for sc in await kg.claims_about(normalize_topic_part("IntegAlice"))}
+    assert claim.id in by_name
+    assert by_norm == by_name
+
+
 async def test_claims_about_as_of_filter(kg: Neo4jEntityKG) -> None:
     """as_of filtering: claim disappears after valid_to."""
     claim = _make_claim("pluto", "has_mass", "1.3e22 kg", valid_from=_T0)

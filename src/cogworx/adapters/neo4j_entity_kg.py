@@ -295,11 +295,17 @@ ORDER BY ev.recorded_at ASC
 # Returns claim rows + own evidence + ancestor evidence (depth *1..5). The depth cap prevents
 # runaway traversals on deep lineage graphs. DISTINCT on ancestor aggregation collapses diamond
 # lineage paths so the same ancestor's evidence is not double-counted in Python.
+# Callers may pass either the original entity name or its normalized form: the coherence
+# reconciler only has ``subject_norm`` (from the DirtySubject node), so the exact-name match on
+# :Entity is joined with a match on the claims' stored ``subject_norm`` (indexed). The in-memory
+# double has always accepted both; without this the reconciler found zero claims for every dirty
+# subject and cleared it with no adjudication.
 _CLAIMS_ABOUT_BASE = """
-MATCH (e:Entity {{name: $entity}})
+OPTIONAL MATCH (e:Entity {{name: $entity}})
 OPTIONAL MATCH (e)-[:HAS_CLAIM]->(c1:Claim)
 OPTIONAL MATCH (c2:Claim)-[:REFERS_TO]->(e)
-WITH collect(DISTINCT c1) + collect(DISTINCT c2) AS claims_raw
+OPTIONAL MATCH (c3:Claim {{subject_norm: $entity_norm}})
+WITH collect(DISTINCT c1) + collect(DISTINCT c2) + collect(DISTINCT c3) AS claims_raw
 UNWIND claims_raw AS c
 WITH DISTINCT c
 WHERE c IS NOT NULL AND c.payload IS NOT NULL{as_of_filter}{scope_filter}
@@ -632,6 +638,11 @@ RETURN c.commit_ordinal    AS commit_ordinal,
 # Reset: wipe Entity + Evidence nodes in addition to base Claim wipe (integration fixture).
 _RESET_ENTITY_CYPHER = "MATCH (e:Entity) DETACH DELETE e"
 _RESET_EVIDENCE_CYPHER = "MATCH (ev:Evidence) DETACH DELETE ev"
+# Coherence state (Pod 2.7) is per-claim-set too. Leaving it behind made the reconciler tests
+# order-dependent: dirty marks from earlier test files filled a batch_limit=4 tick before the
+# test's own subject was reached, so its adjudication was never written.
+_RESET_DIRTY_CYPHER = "MATCH (d:DirtySubject) DETACH DELETE d"
+_RESET_ADJUDICATION_CYPHER = "MATCH (a:Adjudication) DETACH DELETE a"
 
 # ---------------------------------------------------------------------------
 # Coherence write-path Cypher (Pod 2.7)
@@ -941,12 +952,17 @@ class Neo4jEntityKG(Neo4jGraphStore):
                 await session.execute_write(_write_vector)
 
     async def reset(self) -> None:
-        """Drop all :Claim, :Entity, and :Evidence nodes. Used by per-case integration fixtures."""
+        """Drop all :Claim, :Entity, :Evidence, :DirtySubject and :Adjudication nodes.
+
+        Used by per-case integration fixtures; everything a claim set produces goes with it.
+        """
         await super().reset()
 
         async def _wipe(tx: AsyncManagedTransaction) -> None:
             await tx.run(_RESET_ENTITY_CYPHER)
             await tx.run(_RESET_EVIDENCE_CYPHER)
+            await tx.run(_RESET_DIRTY_CYPHER)
+            await tx.run(_RESET_ADJUDICATION_CYPHER)
 
         async with self._connection.session() as session:
             await session.execute_write(_wipe)
@@ -1079,7 +1095,11 @@ class Neo4jEntityKG(Neo4jGraphStore):
             as_of_filter=_AS_OF_FILTER if as_of is not None else "",
             scope_filter=sf,
         )
-        params: dict[str, Any] = {"entity": entity, "limit": limit}
+        params: dict[str, Any] = {
+            "entity": entity,
+            "entity_norm": normalize_topic_part(entity),
+            "limit": limit,
+        }
         if as_of is not None:
             # UTC-normalise so the ISO string comparison in Cypher is correct regardless of the
             # caller's offset. Stored datetimes are always +00:00 after FIX 4 normalisation.
