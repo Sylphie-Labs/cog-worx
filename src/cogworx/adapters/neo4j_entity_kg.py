@@ -295,17 +295,28 @@ ORDER BY ev.recorded_at ASC
 # Returns claim rows + own evidence + ancestor evidence (depth *1..5). The depth cap prevents
 # runaway traversals on deep lineage graphs. DISTINCT on ancestor aggregation collapses diamond
 # lineage paths so the same ancestor's evidence is not double-counted in Python.
-# Callers may pass either the original entity name or its normalized form: the coherence
-# reconciler only has ``subject_norm`` (from the DirtySubject node), so the exact-name match on
-# :Entity is joined with a match on the claims' stored ``subject_norm`` (indexed). The in-memory
-# double has always accepted both; without this the reconciler found zero claims for every dirty
-# subject and cleared it with no adjudication.
+# Callers may pass either the original entity name or its normalized subject form: the coherence
+# reconciler only has ``subject_norm`` (all a DirtySubject node carries), so the exact-name match
+# on :Entity is joined with a match on the claims' stored ``subject_norm``. The in-memory double
+# has accepted both since the reconciler landed; without this the adapter found zero claims for
+# every dirty subject and cleared it with no adjudication. Subject side only: object entities have
+# no stored normalized form, so the ``REFERS_TO`` side still needs the exact name.
+#
+# Each pattern is collected on its own row stream (three staged collects) so the intermediate
+# row count is |c1| + |c2| + |c3|, not their product. The ``predicate_norm IS NOT NULL`` predicate
+# is what lets the planner use the composite (subject_norm, predicate_norm) index for ``c3``; a
+# bare ``{subject_norm: $x}`` equality is a full :Claim label scan (neither index is single-
+# property). Every populated claim has predicate_norm; skeletons are dropped by the payload filter.
 _CLAIMS_ABOUT_BASE = """
 OPTIONAL MATCH (e:Entity {{name: $entity}})
 OPTIONAL MATCH (e)-[:HAS_CLAIM]->(c1:Claim)
+WITH e, collect(DISTINCT c1) AS by_entity
 OPTIONAL MATCH (c2:Claim)-[:REFERS_TO]->(e)
+WITH by_entity, collect(DISTINCT c2) AS by_object
 OPTIONAL MATCH (c3:Claim {{subject_norm: $entity_norm}})
-WITH collect(DISTINCT c1) + collect(DISTINCT c2) + collect(DISTINCT c3) AS claims_raw
+WHERE c3.predicate_norm IS NOT NULL
+WITH by_entity, by_object, collect(DISTINCT c3) AS by_norm
+WITH by_entity + by_object + by_norm AS claims_raw
 UNWIND claims_raw AS c
 WITH DISTINCT c
 WHERE c IS NOT NULL AND c.payload IS NOT NULL{as_of_filter}{scope_filter}
@@ -365,11 +376,8 @@ LIMIT $limit
 # "WHERE c IS NOT NULL AND c.valid_from <= ..." (one WHERE clause, not two).
 _AS_OF_FILTER = " AND c.valid_from <= $as_of AND (c.valid_to IS NULL OR c.valid_to > $as_of)"
 
-# Base variants pre-formatted with no scope filter; the scope-aware versions are built at call
-# time inside claims_about() so each (as_of, scope) combination is constructed on demand rather
-# than pre-expanding all four variants as module-level constants.
-_CLAIMS_ABOUT_CYPHER = _CLAIMS_ABOUT_BASE.format(as_of_filter="", scope_filter="")
-_CLAIMS_ABOUT_AS_OF_CYPHER = _CLAIMS_ABOUT_BASE.format(as_of_filter=_AS_OF_FILTER, scope_filter="")
+# The (as_of, scope) variants are built at call time inside claims_about(), never as
+# module-level constants.
 
 # ---------------------------------------------------------------------------
 # Read-path Cypher — claims_by_similarity (vector index)
@@ -1085,6 +1093,10 @@ class Neo4jEntityKG(Neo4jGraphStore):
     ) -> Sequence[ScoredClaim]:
         """Return scored claims where ``entity`` is subject or object, newest-first.
 
+        ``entity`` may be the original name or its normalized subject form
+        (``normalize_topic_part``); the reconciler passes the latter. Object-side matches need the
+        exact name. Distinct raw spellings that normalize alike ("Alice", "alice ") are distinct
+        :Entity nodes and all of their subject-side claims are returned, as in the in-memory double.
         ``as_of`` filter: valid_from <= as_of AND (valid_to IS NULL OR valid_to > as_of).
         ``scope``: when not ``None``, restricts to claims matching that scope.
         Confidence is derived at read — never stored.
@@ -1095,9 +1107,11 @@ class Neo4jEntityKG(Neo4jGraphStore):
             as_of_filter=_AS_OF_FILTER if as_of is not None else "",
             scope_filter=sf,
         )
+        # An entity that normalizes to "" (punctuation only) must not match every claim whose
+        # subject_norm is empty; a null parameter matches nothing in a property equality.
         params: dict[str, Any] = {
             "entity": entity,
-            "entity_norm": normalize_topic_part(entity),
+            "entity_norm": normalize_topic_part(entity) or None,
             "limit": limit,
         }
         if as_of is not None:

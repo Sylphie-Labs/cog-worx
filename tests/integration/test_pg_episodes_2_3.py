@@ -191,12 +191,13 @@ async def test_project_episodes_idempotent(store: PgEpisodeStore) -> None:
 
 
 async def test_cursor_atomicity_kill_simulation(store: PgEpisodeStore) -> None:
-    """Crash simulation: a failing second project_episodes must NOT advance the cursor.
+    """Crash simulation: a transaction abandoned before the cursor upsert leaves no trace.
 
     Approach (no real process kill needed):
     1. Project batch 1 successfully → cursor at step 0.
-    2. Monkeypatch store._conn.transaction() to fail mid-flight on the second call.
-    3. Assert cursor is still at step 0 (batch-2 cursor was NOT committed).
+    2. On a separate connection, insert the batch-2 episode inside a transaction block and
+       abandon the block before any cursor write (``raise psycopg.Rollback()``).
+    3. Assert the cursor is still at step 0 and the batch-2 episode is absent.
     4. Re-project batch 2 for real → cursor advances to step 1, all episodes present.
     """
     batch1 = [_episode(episode_id="r1:0:0", step_index=0, turn_index=0)]

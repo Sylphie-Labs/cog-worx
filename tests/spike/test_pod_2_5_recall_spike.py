@@ -780,7 +780,8 @@ def test_sc5_recall_does_not_transitively_import_model() -> None:
             "-c",
             (
                 "import cogworx.recall; import sys; "
-                "print(sorted(m for m in sys.modules if m.startswith('cogworx.model')))"
+                "print(sorted(m for m in sys.modules "
+                "if m == 'cogworx.model' or m.startswith('cogworx.model.')))"
             ),
         ],
         capture_output=True,
