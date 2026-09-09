@@ -37,29 +37,110 @@ hive_log() {
     printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" >>"$1"
 }
 
+# _fc_usable <path> -- true when <path> is an executable REGULAR file. `[ -x ]`
+# alone is also true for a directory, which `command -v` would have skipped, so a
+# directory named "claude" in an earlier PATH entry would beat the real binary
+# later on PATH -- capture is then disabled for as long as that directory exists,
+# while a working claude sits one PATH entry away.
+#
+# It is NOT true that this failure is invisible: capture logs
+# "pass FAILED (claude exit 126)" with the path. An earlier comment said that
+# AND that the offset never advances; only the first half was wrong. The offset
+# really does advance only on rc=0 (hive-scribe-capture.sh:119), so nothing is
+# lost and the next Stop retries the same slice. The reason to reject a
+# directory is the masking, not a lost offset.
+_fc_usable() {
+    [ -f "$1" ] && [ -x "$1" ]
+}
+
+# usable_claude_bin <path> -- true when <path> is an ABSOLUTE path to an
+# executable regular file: the contract find_claude returns, and the one any
+# caller must hold an inherited CLAUDE_BIN to before exec'ing it.
+usable_claude_bin() {
+    case "$1" in
+        /*) _fc_usable "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
 # find_claude -- prints the ABSOLUTE path to the claude binary. Honors
 # HIVE_CLAUDE_BIN when set (exclusively: an operator override, and what the
 # test harness uses to simulate "not installed"). Otherwise PATH, then the
-# known install locations, because `command -v` alone misses the alias-style
-# local install (`claude migrate-installer` puts the binary at
+# known install locations, because PATH alone misses the alias-style local
+# install (`claude migrate-installer` puts the binary at
 # ~/.claude/local/claude and adds a shell alias that a non-interactive
-# /bin/sh never sees). A relative PATH entry (node_modules/.bin, ".") makes
-# `command -v` return a relative path under dash; that is rejected rather
-# than resolved, since capture mode changes directory before exec and a
-# repo-checked-in "claude" must never run with the user's credentials.
+# /bin/sh never sees).
+#
+# A relative PATH entry -- "." , "bin", or an EMPTY component, which POSIX
+# defines as the current directory -- must never win: HOOK mode resolves the
+# binary with cwd still set to the project directory, because nothing in hook.sh
+# or the hook-mode branch cds at all, so a repo-checked-in "claude" would run
+# with the user's credentials and the repo's hive-scribe key. Capture mode cds
+# to $STATE_DIR/work first and is the safer of the two -- an earlier version of
+# this comment credited capture mode's cd with CREATING the hazard, when it is
+# what avoids it. That is the whole of the
+# invariant here: components are trusted iff they start with "/". It does NOT
+# make an absolute path safe -- npm, yarn and pnpm prepend node_modules/.bin
+# as an ABSOLUTE path, so a dependency's bin shim still passes this test.
+# See tik_01M221A74YJJ8HY8M973CB7GHB.
+#
+# This walks PATH itself rather than asking `command -v`, because the shells
+# disagree about what `command -v` prints for a relative entry and so the
+# answer cannot be inferred from the result's shape. Under bash in POSIX mode
+# -- which is /bin/sh on macOS, and how the installed hook is launched -- it
+# resolves the entry against the cwd and returns an ABSOLUTE path, so a
+# leading-slash test accepts exactly the binary it was written to reject.
+# dash and zsh return it relative. Inspecting the PATH component instead is
+# the same answer on every shell. See tik_01M21Y44H5KTEQSNM60W61DNJD.
+#
+# The split is done with ${.%%:*} rather than `IFS=: ; for _d in $PATH`,
+# because that loop is not portable in the direction this function needs:
+# zsh does not field-split an unquoted expansion, so it would iterate ONCE
+# with the whole PATH as a single word and silently skip the walk entirely.
+# Unquoted $PATH is also glob-expanded, which would return a directory that
+# is not on PATH at all. This form splits identically on sh, dash, bash and
+# zsh, and needs no $IFS save/restore (which cannot restore "unset" anyway, and
+# would leave the caller with field splitting disabled). It does still leave
+# _fc_rest and _d set in the calling shell -- and _c when the fallback loop runs,
+# though not on the PATH-hit path; what it no longer touches is a variable with
+# shell SEMANTICS attached.
 find_claude() {
     if [ -n "${HIVE_CLAUDE_BIN:-}" ]; then
-        [ -x "$HIVE_CLAUDE_BIN" ] || return 1
+        # Held to the same two rules as a PATH entry, because this is the one
+        # lookup an operator sets by hand. A relative override is rejected, not
+        # returned: this function's contract is an ABSOLUTE path, and
+        # hive-scribe-capture.sh does `cd "$work_dir"` six lines before calling
+        # it, so a relative value would resolve somewhere neither of us chose.
+        usable_claude_bin "$HIVE_CLAUDE_BIN" || return 1
         printf '%s' "$HIVE_CLAUDE_BIN"
         return 0
     fi
-    _c=$(command -v claude 2>/dev/null)
-    case "$_c" in
-        /*) if [ -x "$_c" ]; then printf '%s' "$_c"; return 0; fi ;;
-    esac
-    for _c in "$HOME/.claude/local/claude" "$HOME/.local/bin/claude" \
+    # ${PATH:-} and not $PATH: this function already uses ${HIVE_CLAUDE_BIN:-}
+    # above, and a bare reference aborts a caller running under `set -u`.
+    _fc_rest=${PATH:-}
+    while [ -n "$_fc_rest" ]; do
+        case "$_fc_rest" in
+            *:*) _d=${_fc_rest%%:*}; _fc_rest=${_fc_rest#*:} ;;
+            *)   _d=$_fc_rest;       _fc_rest= ;;
+        esac
+        # Only absolute components are trusted. An empty component (PATH=":/bin",
+        # "/bin::/usr/bin") means the cwd and is skipped by the same test.
+        case "$_d" in
+            /*)
+                if _fc_usable "$_d/claude"; then
+                    printf '%s' "$_d/claude"
+                    return 0
+                fi
+                ;;
+        esac
+    done
+    # ${HOME:-} for the same reason as ${PATH:-} above: a bare $HOME killed a
+    # `set -u` caller here, seventeen lines after the comment promising it
+    # would not. With HOME unset these become "/.claude/local/claude", which
+    # _fc_usable rejects like any other missing file.
+    for _c in "${HOME:-}/.claude/local/claude" "${HOME:-}/.local/bin/claude" \
               /usr/local/bin/claude /opt/homebrew/bin/claude; do
-        if [ -x "$_c" ]; then
+        if _fc_usable "$_c"; then
             printf '%s' "$_c"
             return 0
         fi
