@@ -26,7 +26,12 @@ def lint(session: nox.Session) -> None:
 
 @nox.session(python=PYTHON_VERSIONS)
 def typecheck(session: nox.Session) -> None:
-    session.install("-e", ".", "--group", "dev")
+    # The `sizing` extra is installed here but NOT in `test`, and the asymmetry is deliberate.
+    # Typechecking wants numpy's real types: without it `numpy.*` falls back to `Any` under the
+    # ignore_missing_imports override, and mypy --strict then refuses `class _SpyGen(NPGenerator)`
+    # as subclassing Any. The `test` session must keep numpy absent, because CANON S2 makes it an
+    # opt-in adopter dependency and the suite has to prove it stays optional.
+    session.install("-e", ".[sizing]", "--group", "dev")
     session.run("mypy")
 
 

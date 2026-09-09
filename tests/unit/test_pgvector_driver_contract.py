@@ -41,7 +41,11 @@ def test_vector_accepts_a_list_and_rejects_a_tuple() -> None:
     assert Vector([1.0, 2.0, 3.0]) is not None
 
     with pytest.raises(ValueError, match="expected list or ndarray"):
-        Vector((1.0, 2.0, 3.0))
+        # Deliberately the wrong type: passing a tuple is the thing being asserted about, and
+        # mypy sees pgvector's real signature here (the typecheck session installs the `sizing`
+        # extra, so numpy resolves). Under --strict this ignore is also a second tripwire — if a
+        # future pgvector accepts tuples again, `warn_unused_ignores` fails on this line.
+        Vector((1.0, 2.0, 3.0))  # type: ignore[arg-type]
 
 
 def test_a_loaded_vector_is_not_iterable_and_unpacks_via_to_list() -> None:
