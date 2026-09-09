@@ -14,11 +14,12 @@ Rules. Each finding prints file:line, the offending text, and how to fix it.
 
   1. `uses:` must name a full 40-hex commit SHA and carry a `# <version>`
      comment (Dependabot reads the comment to know what to bump). Local
-     `./...` references are exempt: the containing commit pins them.
+     `./...` references are exempt: the containing commit pins them, and
+     `.github/actions/*/action.yml` files are scanned like workflows.
      `docker://` references need an `@sha256:` digest.
-  2. No `ubuntu-latest`, `macos-latest`, or `windows-latest`. Name the image.
-     A repo that deliberately tracks a floating label declares it in the
-     manifest as `runs-on=<label>`.
+  2. No `ubuntu-latest`, `macos-latest`, `windows-latest` or `ubuntu-slim`.
+     Name the image. A repo that deliberately tracks a floating label
+     declares it in the manifest as `runs-on=<label>`.
   3. An install that bypasses a lockfile must name an exact version:
      pip / uv pip / uv tool / uvx / pipx, npm -g / npx / yarn add / pnpm add,
      cargo install, gem, go install, brew, apt-get, choco. Also
@@ -27,8 +28,10 @@ Rules. Each finding prints file:line, the offending text, and how to fix it.
      --frozen-lockfile`, `cargo build`) are the pin and are not checked here.
   4. Every program a `run:` step invokes must be declared in
      `.github/pinned-tools.txt` as `name=<what governs its version>`, except
-     shell builtins and a fixed list of POSIX utilities. Steps with an explicit
-     PowerShell or cmd shell are skipped: the tokenizer is a sh tokenizer.
+     shell builtins and a fixed list of POSIX utilities. Only sh/bash steps
+     are tokenized; a step whose effective shell is pwsh, cmd, python or
+     anything else is skipped (the shell comes from the step, the job's or
+     the workflow's `defaults.run.shell`, or pwsh on a windows-* runner).
   5. A service container `image:` must carry a tag with an x.y version, or a
      digest.
 
@@ -43,48 +46,73 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
 MANIFEST = Path(".github") / "pinned-tools.txt"
 WORKFLOWS = Path(".github") / "workflows"
+ACTIONS = Path(".github") / "actions"
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-LATEST_RE = re.compile(r"\b(?:ubuntu|macos|windows)-latest(?:-[a-z]+)?\b")
+LATEST_RE = re.compile(r"\b(?:(?:ubuntu|macos|windows)-latest(?:-[a-z]+)?|ubuntu-slim)\b")
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 VERSION_TAG_RE = re.compile(r"\d+\.\d+")
 ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-EXACT_PY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]*\])?==\d[\w.!+*-]*$")
-EXACT_NPM_RE = re.compile(r"^(?:@[^/@\s]+/)?[^@\s]+@\d[\w.-]*$")
+FUNCTION_DEF_RE = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{?")
+COMMAND_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.+-]*$")
+HEREDOC_RE = re.compile(r"(?<!<)<<-?(?!<)\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+# `name==1.2.3`, `name[extra]==1.2.3`, or a version held in an f-string constant.
+EXACT_PY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[^\]]*\])?==(?:\d[\w.!+-]*|\{[A-Za-z_]\w*\})$")
+EXACT_UVX_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*@\d+\.\d+\.\d+[\w.+-]*$")
+EXACT_NPM_RE = re.compile(r"^(?:@[^/@\s]+/)?[^@\s]+@\d+\.\d+\.\d+[\w.-]*$")
 EXACT_APT_RE = re.compile(r"^[^=\s]+=\S+$")
-EXACT_GO_RE = re.compile(r"@v?\d[\w.-]*$")
+EXACT_GO_RE = re.compile(r"@v?\d+\.\d+\.\d+[\w.-]*$")
+EXACT_CARGO_VERSION_RE = re.compile(r"^=?\d+\.\d+\.\d+[\w.+-]*$")
 PACKAGE_LIKE_RE = re.compile(r"^[A-Za-z@][A-Za-z0-9._@/\[\]-]*(?:[<>=!~^,][^\s]*)?$")
 
 # Words that never need a manifest entry: shell syntax, builtins, and the POSIX
 # utilities every image ships. Deliberately not a list of "things Ubuntu has".
 SHELL_WORDS: Set[str] = set(
     """
-    : . [ [[ ]] ! { } ( )
-    alias bg break builtin case cd command continue declare do done echo elif else esac eval exec
-    exit export fg fi for function getopts hash if in jobs let local popd printf pushd pwd read
-    readonly return select set shift shopt source test then time times trap true false type
-    typeset ulimit umask unalias unset until wait while
+    : . [ [[ ]] } ) ;; fi done esac
+    alias bg break builtin case cd command continue declare echo eval exec exit export fg
+    getopts hash jobs kill let local popd printf pushd pwd read readonly return select set shift
+    shopt source test times trap true false type typeset ulimit umask unalias unset wait
     awk basename bash cat chgrp chmod chown cmp comm cp cut dash date dd df diff dirname du env
-    expr file find fold grep gzip head id join kill ln ls mkdir mktemp mv nl od paste readlink rm
+    expr file find fold grep gzip head id join ln ls mkdir mktemp mv nl od paste readlink rm
     rmdir sed seq sh sleep sort split stat tail tar tee touch tr uname uniq wc which xargs xxd zsh
     """.split()
 )
 
-# Words that wrap another command: skip them (and their flags) and check what follows.
-TRANSPARENT: Set[str] = {"sudo", "env", "time", "exec", "nohup", "command", "nice", "xargs", "if", "elif", "while", "until", "!"}
+# Words that precede another command on the same segment: skip them (and their
+# flags) and check what follows.
+TRANSPARENT: Set[str] = {
+    "sudo", "env", "time", "exec", "nohup", "command", "nice", "xargs",
+    "if", "elif", "while", "until", "then", "do", "else", "{", "!",
+}
 # Flags of the transparent words above that take a value.
 TRANSPARENT_VALUE_FLAGS: Set[str] = {"-u", "-g", "-n", "-I", "-L", "-P", "-d", "-a", "-s", "-C", "-S", "-p"}
 
-INSTALL_VALUE_FLAGS: Set[str] = {
-    "-r", "--requirement", "-c", "--constraint", "-i", "--index-url", "--extra-index-url", "-f",
-    "--find-links", "-t", "--target", "--prefix", "--root", "--python", "-p", "--group",
-    "--only-group", "--extra", "--with", "--from", "--version", "--vers", "-v", "--index",
-    "--registry", "--git", "--branch", "--tag", "--rev", "--path", "--features", "--profile",
-    "--config", "-Z", "--cask", "--package", "--source", "-s", "--tags", "--ldflags",
+# Per installer: flags that take a value, so the value is not mistaken for a package.
+VALUE_FLAGS: Dict[str, Set[str]] = {
+    "py": {
+        "-r", "--requirement", "-c", "--constraint", "-i", "--index-url", "--extra-index-url", "-f",
+        "--find-links", "-t", "--target", "--prefix", "--root", "--python", "-p", "--group",
+        "--only-group", "--extra", "--with", "--from", "--index", "-e", "--editable", "--config-file",
+        "--cache-dir", "--build", "-b", "--log", "--proxy", "--platform", "--implementation",
+        "--abi", "--python-version", "--pip-args",
+    },
+    "uvx": {"--from", "--with", "--python", "-p", "--index", "--index-url", "--extra-index-url"},
+    "npm": {"--registry", "--prefix", "-C", "--workspace", "-w", "--tag", "--package", "-p", "-c", "--call"},
+    "cargo": {
+        "--version", "--vers", "--git", "--branch", "--tag", "--rev", "--path", "--features", "-F",
+        "--profile", "--config", "-Z", "--index", "--registry", "--root", "--target", "--target-dir",
+        "-j", "--jobs",
+    },
+    "go": {"-tags", "-ldflags", "-p", "-o", "-gcflags", "-asmflags", "-mod", "-modfile", "-overlay"},
+    "apt": {"-o", "-t", "--target-release", "-c", "--config-file"},
+    "brew": set(),
+    "gem": {"-v", "--version", "-s", "--source", "-n", "--bindir"},
+    "choco": {"--version", "--source", "-s", "--params", "--install-arguments", "-ia"},
 }
 
 
@@ -129,26 +157,53 @@ def indent_of(line: str) -> int:
 
 
 def split_segments(line: str) -> List[str]:
-    """Split one sh line into command segments at && || ; | $( ( ) outside quotes."""
+    """Split one sh line into command segments at && || ; | ( ) $( ) and backticks.
+
+    A `$( )` inside double quotes is a command too (`echo "sha=$(git rev-parse HEAD)"`),
+    so the quote context is suspended for its extent and restored at the `)`.
+    """
     segments: List[str] = []
     buf: List[str] = []
     quote: Optional[str] = None
+    saved: List[Optional[str]] = []  # quote context to restore at each `)`
+
+    def cut() -> None:
+        segments.append("".join(buf))
+        buf.clear()
+
     i = 0
     n = len(line)
     while i < n:
         ch = line[i]
-        if quote:
+        two = line[i : i + 2]
+        if quote == "'":
             buf.append(ch)
-            if ch == "\\" and quote == '"' and i + 1 < n:
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if quote == '"':
+            if ch == "\\" and i + 1 < n:
+                buf.append(ch)
                 buf.append(line[i + 1])
                 i += 2
                 continue
-            if ch == quote:
+            if two == "$(":
+                cut()
+                saved.append(quote)
+                quote = None
+                i += 2
+                continue
+            if ch == "`":
+                cut()
+                i += 1
+                continue
+            buf.append(ch)
+            if ch == '"':
                 quote = None
             i += 1
             continue
         if ch in ("'", '"'):
-            # $'...' is a quote too; the dollar is already in buf and harmless.
             quote = ch
             buf.append(ch)
             i += 1
@@ -158,20 +213,35 @@ def split_segments(line: str) -> List[str]:
             buf.append(line[i + 1])
             i += 2
             continue
-        two = line[i : i + 2]
-        if two in ("&&", "||", "$(", ";;"):
-            segments.append("".join(buf))
-            buf = []
+        if two in ("&&", "||", ";;"):
+            cut()
             i += 2
             continue
-        if ch in (";", "|", "(", ")", "&"):
-            segments.append("".join(buf))
-            buf = []
+        if two == "$(":
+            cut()
+            saved.append(None)
+            i += 2
+            continue
+        if ch == "(":
+            cut()
+            saved.append(None)
+            i += 1
+            continue
+        if ch == ")":
+            cut()
+            if saved:
+                quote = saved.pop()
+                if quote:
+                    buf.append(quote)  # the tail of the string is content, not a command
+            i += 1
+            continue
+        if ch in (";", "|", "&", "`"):
+            cut()
             i += 1
             continue
         buf.append(ch)
         i += 1
-    segments.append("".join(buf))
+    cut()
     return [s.strip() for s in segments if s.strip()]
 
 
@@ -226,8 +296,8 @@ def command_words(segment: str) -> Tuple[Optional[str], List[str]]:
         break
     if i >= len(words):
         return None, []
-    cmd = words[i]
-    if cmd[0] in "$\"'`{}()<>0123456789-" or is_path_like(cmd) or cmd.startswith("${{"):
+    cmd = unquote(words[i])
+    if not cmd or is_path_like(cmd) or not COMMAND_NAME_RE.match(cmd):
         return None, []
     return cmd, words[i + 1 :]
 
@@ -236,8 +306,13 @@ def command_words(segment: str) -> Tuple[Optional[str], List[str]]:
 
 
 class RunBlock:
-    def __init__(self, path: Path, lines: List[Tuple[int, str]], shell: Optional[str]) -> None:
+    def __init__(self, path: Path, lines: List[Tuple[int, str]], shell: str) -> None:
         self.path, self.lines, self.shell = path, lines, shell
+
+
+class Step:
+    def __init__(self, lines: List[Tuple[int, str]], job_shell: str, runs_on: str) -> None:
+        self.lines, self.job_shell, self.runs_on = lines, job_shell, runs_on
 
 
 class Workflow:
@@ -266,17 +341,18 @@ class Workflow:
                 yield no, m.group(0)
 
     def run_blocks(self) -> Iterator[RunBlock]:
-        """Every `run:` scalar, with the `shell:` of the step it belongs to."""
-        steps = self._steps()
-        for step in steps:
-            shell = None
-            for no, code in step:
+        """Every `run:` scalar, with the shell that will execute it."""
+        for step in self._steps():
+            shell = step.job_shell
+            for _, code in step.lines:
                 m = re.match(r"^\s*-?\s*shell:\s*(.+?)\s*$", code)
                 if m:
                     shell = unquote(m.group(1)).lower()
+            if not shell:
+                shell = "pwsh" if step.runs_on.startswith("windows-") else "bash"
             idx = 0
-            while idx < len(step):
-                no, code = step[idx]
+            while idx < len(step.lines):
+                no, code = step.lines[idx]
                 m = re.match(r"^(\s*)-?\s*run:\s*(.*)$", code)
                 if not m:
                     idx += 1
@@ -284,51 +360,103 @@ class Workflow:
                 key_indent = indent_of(code)
                 value = m.group(2).strip()
                 if value in ("|", "|-", "|+", ">", ">-", ">+"):
+                    # YAML block scalar: the content indent is that of its first
+                    # non-blank line, and the block ends at the first non-blank
+                    # line indented less than that (a sibling key like
+                    # `working-directory:` is indented less, so it is not content).
                     block: List[Tuple[int, str]] = []
+                    content_indent: Optional[int] = None
                     idx += 1
-                    while idx < len(step):
-                        bno, bcode = step[idx]
+                    while idx < len(step.lines):
+                        bno, _ = step.lines[idx]
                         braw = self.raw[bno - 1]
-                        if braw.strip() and indent_of(braw) <= key_indent:
-                            break
+                        if braw.strip():
+                            ind = indent_of(braw)
+                            if content_indent is None:
+                                if ind <= key_indent:
+                                    break
+                                content_indent = ind
+                            elif ind < content_indent:
+                                break
                         block.append((bno, braw))
                         idx += 1
                     if value.startswith(">"):
-                        # Folded scalar: one logical command line, reported at its first line.
-                        joined = " ".join(strip_comment(t).strip() for _, t in block if t.strip())
-                        block = [(block[0][0], joined)] if block else []
+                        block = _fold(block)
                     yield RunBlock(self.path, block, shell)
                     continue
                 yield RunBlock(self.path, [(no, unquote(value))], shell)
                 idx += 1
 
-    def _steps(self) -> List[List[Tuple[int, str]]]:
-        """Group lines into steps: a step starts at a `- ` item under a `steps:` key."""
-        steps: List[List[Tuple[int, str]]] = []
+    def _steps(self) -> List[Step]:
+        """Group lines into steps under each `steps:` key, remembering the job's
+        `runs-on` and the effective `defaults.run.shell` (workflow or job level)."""
+        steps: List[Step] = []
+        workflow_shell = ""
+        job_shell = ""
+        runs_on = ""
+        jobs_indent: Optional[int] = None
+        job_indent: Optional[int] = None
+        defaults_indent: Optional[int] = None
+        steps_indent: Optional[int] = None
         step_indent: Optional[int] = None
         current: Optional[List[Tuple[int, str]]] = None
-        in_steps = False
-        steps_indent = 0
         for no, code in enumerate(self.code, 1):
             if not code.strip():
                 if current is not None:
                     current.append((no, code))
                 continue
             ind = indent_of(code)
-            if re.match(r"^\s*steps:\s*$", code):
-                in_steps, steps_indent, step_indent, current = True, ind, None, None
+            stripped = code.strip()
+            if steps_indent is not None and (ind < steps_indent or (ind == steps_indent and not stripped.startswith("- "))):
+                steps_indent, step_indent, current = None, None, None
+            if defaults_indent is not None and ind <= defaults_indent:
+                defaults_indent = None
+            if re.match(r"^jobs:\s*$", code):
+                jobs_indent = ind
                 continue
-            if in_steps and ind <= steps_indent:
-                in_steps, current = False, None
-            if not in_steps:
+            if jobs_indent is not None and ind == jobs_indent + 2 and re.match(r"^[A-Za-z0-9_-]+:\s*$", stripped):
+                job_indent, job_shell, runs_on = ind, "", ""
                 continue
-            if code.lstrip().startswith("- ") and (step_indent is None or ind == step_indent):
+            if job_indent is not None and ind == job_indent + 2:
+                m = re.match(r"^runs-on:\s*(.+)$", stripped)
+                if m:
+                    runs_on = unquote(m.group(1)).lower()
+            if re.match(r"^defaults:\s*$", stripped):
+                defaults_indent = ind
+                continue
+            if defaults_indent is not None:
+                m = re.match(r"^shell:\s*(.+)$", stripped)
+                if m:
+                    if job_indent is not None and defaults_indent > job_indent:
+                        job_shell = unquote(m.group(1)).lower()
+                    else:
+                        workflow_shell = unquote(m.group(1)).lower()
+                continue
+            if re.match(r"^steps:\s*$", stripped):
+                steps_indent, step_indent, current = ind, None, None
+                continue
+            if steps_indent is None:
+                continue
+            if stripped.startswith("- ") and (step_indent is None or ind == step_indent):
                 step_indent = ind
                 current = [(no, code)]
-                steps.append(current)
+                steps.append(Step(current, job_shell or workflow_shell, runs_on))
             elif current is not None:
                 current.append((no, code))
         return steps
+
+
+def _fold(block: List[Tuple[int, str]]) -> List[Tuple[int, str]]:
+    """A folded scalar (`>-`) joins lines with spaces, but a blank line is a newline."""
+    out: List[Tuple[int, str]] = []
+    para: List[Tuple[int, str]] = []
+    for no, text in block + [(0, "")]:
+        if text.strip():
+            para.append((no, strip_comment(text).strip()))
+        elif para:
+            out.append((para[0][0], " ".join(t for _, t in para)))
+            para = []
+    return out
 
 
 # --------------------------------------------------------------------------- manifest
@@ -364,6 +492,10 @@ class Manifest:
 # --------------------------------------------------------------------------- rules
 
 
+def _has_version_comment(comment: str) -> bool:
+    return comment.startswith("#") and bool(comment.lstrip("# ").strip())
+
+
 def check_uses(wf: Workflow) -> Iterator[Finding]:
     for no, value, comment in wf.uses():
         if value.startswith("./"):
@@ -372,7 +504,7 @@ def check_uses(wf: Workflow) -> Iterator[Finding]:
             if not DIGEST_RE.search(value):
                 yield Finding(wf.path, no, 1, f"uses: {value} has no digest",
                               "pin the image as docker://<image>@sha256:<digest>  # <tag>")
-            elif not comment.startswith("#") or len(comment) < 3:
+            elif not _has_version_comment(comment):
                 yield Finding(wf.path, no, 1, f"uses: {value} has no `# <version>` comment",
                               "append `# <tag>` so a reader knows what the digest is")
             continue
@@ -383,7 +515,7 @@ def check_uses(wf: Workflow) -> Iterator[Finding]:
             yield Finding(wf.path, no, 1, f"uses: {value} is not pinned to a commit SHA",
                           f"replace with {repo}@$(gh api repos/{repo}/commits/{tag} --jq .sha)  # {tag}")
             continue
-        if not comment.startswith("#") or len(comment.lstrip("# ")) == 0:
+        if not _has_version_comment(comment):
             yield Finding(wf.path, no, 1, f"uses: {value} has no `# <version>` comment",
                           "append `# <version>` after the SHA; Dependabot bumps the SHA by reading it")
 
@@ -392,16 +524,15 @@ def check_runner_labels(wf: Workflow, manifest: Manifest) -> Iterator[Finding]:
     for no, label in wf.latest_labels():
         if label in manifest.tracked_labels:
             continue
-        family = label.split("-")[0]
-        named = {"ubuntu": "ubuntu-24.04", "macos": "macos-26", "windows": "windows-2025"}[family]
         yield Finding(wf.path, no, 2, f"runner label {label} floats with GitHub's schedule",
-                      f"name the image (today {label} is {named}); or declare `runs-on={label}` in {MANIFEST} "
+                      f"name the image it resolves to today (the run log's \"Runner Image\" line, or "
+                      f"github.com/actions/runner-images); or declare `runs-on={label}` in {MANIFEST} "
                       f"if this repo deliberately tracks it, with every tool it uses from the image pinned")
 
 
 def check_service_images(wf: Workflow) -> Iterator[Finding]:
     for no, image in wf.images():
-        if DIGEST_RE.search(image):
+        if DIGEST_RE.search(image) or "${{" in image:
             continue
         name, sep, tag = image.rpartition(":")
         if not sep or "/" in tag:
@@ -411,28 +542,56 @@ def check_service_images(wf: Workflow) -> Iterator[Finding]:
                           "use an exact tag (e.g. postgres:17.9, neo4j:5.26.30-community) or an @sha256 digest")
 
 
-def _exact_findings(kind: str, args: Sequence[str]) -> List[str]:
-    """Names of package arguments that lack an exact version, for one install command."""
-    bad: List[str] = []
+def _positionals(kind: str, args: Sequence[str]) -> List[str]:
+    value_flags = VALUE_FLAGS.get(kind, set())
+    out: List[str] = []
     skip_next = False
-    positional: List[str] = []
     for a in args:
         if skip_next:
             skip_next = False
             continue
         if a.startswith("-"):
-            if a in INSTALL_VALUE_FLAGS:
-                skip_next = True
+            skip_next = a in value_flags
             continue
-        positional.append(unquote(a))
+        out.append(unquote(a))
+    return out
+
+
+def _flag_value(args: Sequence[str], names: Sequence[str]) -> Optional[str]:
+    for i, a in enumerate(args):
+        for name in names:
+            if a == name and i + 1 < len(args):
+                return unquote(args[i + 1])
+            if a.startswith(name + "="):
+                return unquote(a[len(name) + 1 :])
+    return None
+
+
+def _exact_findings(kind: str, args: Sequence[str]) -> List[str]:
+    """Names of package arguments that lack an exact version, for one install command."""
     if kind == "cargo":
-        has_version = any(a in ("--version", "--vers") for a in args) or any(
-            a.startswith("--version=") or a.startswith("--vers=") for a in args
-        )
-        has_git = any(a in ("--git", "--path") or a.startswith("--git=") or a.startswith("--path=") for a in args)
-        return [] if has_version or has_git else [p for p in positional if not is_path_like(p)]
-    for p in positional:
-        if is_path_like(p) or p.endswith((".txt", ".toml", ".json", ".whl", ".tar.gz")):
+        version = _flag_value(args, ("--version", "--vers"))
+        if _flag_value(args, ("--path",)) is not None:
+            return []
+        if _flag_value(args, ("--git",)) is not None:
+            pinned = _flag_value(args, ("--rev", "--tag")) is not None
+            return [] if pinned else [_flag_value(args, ("--git",)) or "--git"]
+        if version is not None:
+            return [] if EXACT_CARGO_VERSION_RE.match(version) else [f"--version {version}"]
+        return [p for p in _positionals(kind, args) if not is_path_like(p)]
+    if kind == "uvx":
+        spec = _flag_value(args, ("--from",))
+        if spec is not None:
+            return [] if (EXACT_PY_RE.match(spec) or EXACT_UVX_RE.match(spec)) else [spec]
+        first = _positionals(kind, args)[:1]
+        return [p for p in first if not (EXACT_PY_RE.match(p) or EXACT_UVX_RE.match(p))]
+    bad: List[str] = []
+    for p in _positionals(kind, args):
+        if kind == "go":
+            if not EXACT_GO_RE.search(p):
+                bad.append(p)
+            continue
+        if is_path_like(p) or p.endswith((".txt", ".toml", ".json", ".whl", ".tar.gz", ".deb", ".gem")):
             continue
         if not PACKAGE_LIKE_RE.match(p) or p[0].isdigit():
             continue
@@ -442,98 +601,89 @@ def _exact_findings(kind: str, args: Sequence[str]) -> List[str]:
             bad.append(p)
         elif kind == "apt" and not EXACT_APT_RE.match(p):
             bad.append(p)
-        elif kind == "go" and not EXACT_GO_RE.search(p):
-            bad.append(p)
-        elif kind == "none":
+        elif kind in ("brew", "gem", "choco"):
             bad.append(p)
     return bad
 
 
+def _after(args: Sequence[str], word: str) -> List[str]:
+    return list(args[list(args).index(word) + 1 :])
+
+
 def install_kind(cmd: str, args: Sequence[str]) -> Tuple[Optional[str], List[str], str]:
-    """Classify an install command. Returns (kind, package args, human name)."""
+    """Classify an install command. Returns (kind, args after the subcommand, human name)."""
     a = list(args)
     sub = [w for w in a if not w.startswith("-")]
     if cmd in ("pip", "pip3") and sub[:1] == ["install"]:
-        return "py", a[a.index("install") + 1 :], "pip install"
-    if cmd in ("python", "python3") and a[:3] == ["-m", "pip", "install"]:
-        return "py", a[3:], "pip install"
+        return "py", _after(a, "install"), "pip install"
+    if cmd in ("python", "python3") and a[:2] == ["-m", "pip"] and "install" in sub:
+        return "py", _after(a, "install"), "pip install"
     if cmd == "uv" and sub[:2] in (["pip", "install"], ["tool", "install"]):
-        idx = a.index("install")
-        return "py", a[idx + 1 :], "uv " + sub[0] + " install"
-    if cmd == "uvx":
-        return "py", a[:1] if a and not a[0].startswith("-") else _first_positional(a), "uvx"
+        return "py", _after(a, "install"), "uv " + sub[0] + " install"
+    if cmd == "uvx" or (cmd == "uv" and sub[:2] == ["tool", "run"]):
+        rest = a if cmd == "uvx" else _after(a, "run")
+        return "uvx", rest, "uvx"
     if cmd == "pipx" and sub[:1] in (["install"], ["run"]):
-        return "py", _first_positional(a[a.index(sub[0]) + 1 :]), "pipx " + sub[0]
+        return "py", _positionals("py", _after(a, sub[0]))[:1], "pipx " + sub[0]
     if cmd == "npm" and sub[:1] in (["install"], ["i"], ["add"]):
-        rest = a[a.index(sub[0]) + 1 :]
-        pkgs = [w for w in rest if not w.startswith("-")]
-        if not pkgs:
+        rest = _after(a, sub[0])
+        if not [w for w in rest if not w.startswith("-")]:
             return None, [], ""  # bare `npm install` is governed by package-lock.json
         return "npm", rest, "npm install"
     if cmd == "npx":
-        return "npm", _first_positional(a), "npx"
+        return "npm", _positionals("npm", a)[:1], "npx"
     if cmd == "yarn" and (sub[:1] == ["add"] or sub[:2] == ["global", "add"]):
-        return "npm", a[a.index("add") + 1 :], "yarn add"
+        return "npm", _after(a, "add"), "yarn add"
     if cmd == "pnpm" and sub[:1] in (["add"], ["dlx"]):
-        return "npm", a[a.index(sub[0]) + 1 :], "pnpm " + sub[0]
+        return "npm", _after(a, sub[0]), "pnpm " + sub[0]
     if cmd == "cargo" and sub[:1] == ["install"]:
-        return "cargo", a[a.index("install") + 1 :], "cargo install"
+        return "cargo", _after(a, "install"), "cargo install"
     if cmd == "go" and sub[:1] == ["install"]:
-        return "go", a[a.index("install") + 1 :], "go install"
+        return "go", _after(a, "install"), "go install"
     if cmd == "gem" and sub[:1] == ["install"]:
-        has_v = any(w in ("-v", "--version") or w.startswith("--version=") for w in a)
-        return (None if has_v else "none"), a[a.index("install") + 1 :], "gem install"
+        has_v = _flag_value(a, ("-v", "--version")) is not None
+        return (None if has_v else "gem"), _after(a, "install"), "gem install"
     if cmd == "brew" and sub[:1] == ["install"]:
-        return "none", a[a.index("install") + 1 :], "brew install"
+        return "brew", _after(a, "install"), "brew install"
     if cmd in ("apt-get", "apt") and sub[:1] == ["install"]:
-        return "apt", a[a.index("install") + 1 :], f"{cmd} install"
+        return "apt", _after(a, "install"), f"{cmd} install"
     if cmd == "choco" and sub[:1] == ["install"]:
-        has_v = any(w in ("--version",) or w.startswith("--version=") for w in a)
-        return (None if has_v else "none"), a[a.index("install") + 1 :], "choco install"
+        has_v = _flag_value(a, ("--version",)) is not None
+        return (None if has_v else "choco"), _after(a, "install"), "choco install"
     return None, [], ""
-
-
-def _first_positional(args: Sequence[str]) -> List[str]:
-    skip = False
-    for w in args:
-        if skip:
-            skip = False
-            continue
-        if w.startswith("-"):
-            skip = w in INSTALL_VALUE_FLAGS
-            continue
-        return [w]
-    return []
 
 
 FIX_BY_KIND = {
     "py": "name an exact version, e.g. name==1.2.3 (or install from the lockfile: uv sync --frozen)",
+    "uvx": "name an exact version, e.g. uvx name@1.2.3 or uvx --from 'name==1.2.3' name",
     "npm": "name an exact version, e.g. name@1.2.3 (or install from the lockfile: npm ci)",
-    "cargo": "pass --version x.y.z --locked",
+    "cargo": "pass --version x.y.z --locked (or --git with --rev/--tag)",
     "go": "name an exact version, e.g. module@v1.2.3",
     "apt": "pin the package as name=version, or fetch a pinned build yourself (see hive-client tests/shellcheck.sh)",
-    "none": "this installer cannot pin a version; fetch a pinned build yourself (see hive-client tests/shellcheck.sh)",
+    "brew": "brew cannot pin a version; fetch a pinned build yourself (see hive-client tests/shellcheck.sh)",
+    "gem": "pass -v x.y.z",
+    "choco": "pass --version x.y.z",
 }
 
 
 def sh_commands(block: RunBlock) -> Iterator[Tuple[int, str, List[str]]]:
     """(line, command, args) for every command a run block executes."""
-    lines = [(no, text) for no, text in block.lines]
     joined: List[Tuple[int, str]] = []
     pending: Optional[Tuple[int, str]] = None
-    for no, text in lines:
-        text = text.rstrip("\n")
+    for no, text in block.lines:
+        code = strip_comment(text.rstrip("\n")).rstrip()
         if pending is not None:
-            pending = (pending[0], pending[1][:-1] + " " + text.strip())
+            pending = (pending[0], pending[1][:-1] + " " + code.strip())
         else:
-            pending = (no, text)
-        if pending[1].rstrip().endswith("\\"):
+            pending = (no, code)
+        if pending[1].endswith("\\"):
             continue
         joined.append(pending)
         pending = None
     if pending is not None:
         joined.append(pending)
 
+    defined = {m.group(1) for _, text in joined for m in [FUNCTION_DEF_RE.match(text)] if m}
     heredoc: Optional[str] = None
     for no, text in joined:
         stripped = text.strip()
@@ -541,23 +691,23 @@ def sh_commands(block: RunBlock) -> Iterator[Tuple[int, str, List[str]]]:
             if stripped == heredoc:
                 heredoc = None
             continue
-        code = strip_comment(text).strip()
-        if not code:
+        if not stripped:
             continue
-        m = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", code)
+        code = FUNCTION_DEF_RE.sub("", stripped, count=1)
+        m = HEREDOC_RE.search(code)
         if m:
             heredoc = m.group(1)
             code = code[: m.start()]
         for seg in split_segments(code):
             cmd, args = command_words(seg)
-            if cmd is None:
+            if cmd is None or cmd in defined:
                 continue
             yield no, cmd, args
 
 
 def check_run_blocks(wf: Workflow, manifest: Manifest) -> Iterator[Finding]:
     for block in wf.run_blocks():
-        if block.shell and block.shell.split()[0] in ("pwsh", "powershell", "cmd"):
+        if block.shell.split()[0] not in ("bash", "sh"):
             continue
         for no, cmd, args in sh_commands(block):
             kind, pkgs, human = install_kind(cmd, args)
@@ -571,12 +721,15 @@ def check_run_blocks(wf: Workflow, manifest: Manifest) -> Iterator[Finding]:
                           f"pinned fetch script, or the named runner image if it deliberately floats)")
 
 
+NOX_CALL_RE = re.compile(r"session\.(install|run_install)\s*(\((?:[^()]|\([^()]*\))*\))")
+
+
 def check_noxfile(root: Path) -> Iterator[Finding]:
     nox = root / "noxfile.py"
     if not nox.is_file():
         return
     text = nox.read_text(encoding="utf-8")
-    for m in re.finditer(r"session\.(install|run_install)\s*\((.*?)\)\s*$", text, re.S | re.M):
+    for m in NOX_CALL_RE.finditer(text):
         line = text.count("\n", 0, m.start()) + 1
         strings = [unquote(s) for s in re.findall(r"""("[^"]*"|'[^']*')""", m.group(2))]
         if m.group(1) == "install":
@@ -595,19 +748,28 @@ def check_noxfile(root: Path) -> Iterator[Finding]:
 # --------------------------------------------------------------------------- driver
 
 
+def workflow_files(root: Path) -> List[Path]:
+    files: List[Path] = []
+    if (root / WORKFLOWS).is_dir():
+        files.extend((root / WORKFLOWS).glob("*.y*ml"))
+    if (root / ACTIONS).is_dir():
+        files.extend((root / ACTIONS).rglob("action.y*ml"))
+    return sorted(files)
+
+
 def run(root: Path) -> List[Finding]:
     findings: List[Finding] = []
     manifest = Manifest(root / MANIFEST)
     findings.extend(manifest.errors)
-    workflows = sorted(p for p in (root / WORKFLOWS).glob("*.y*ml")) if (root / WORKFLOWS).is_dir() else []
-    for path in workflows:
+    files = workflow_files(root)
+    for path in files:
         wf = Workflow(path)
         findings.extend(check_uses(wf))
         findings.extend(check_runner_labels(wf, manifest))
         findings.extend(check_service_images(wf))
         findings.extend(check_run_blocks(wf, manifest))
     findings.extend(check_noxfile(root))
-    if workflows and not manifest.present and any(f.rule == 4 for f in findings):
+    if files and not manifest.present and any(f.rule == 4 for f in findings):
         findings.insert(0, Finding(root / MANIFEST, 0, 4, "manifest is missing",
                                    f"create {MANIFEST} with one `name=<what governs its version>` line per tool listed below"))
     return findings
