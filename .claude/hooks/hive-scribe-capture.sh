@@ -1,5 +1,5 @@
 #!/bin/sh
-# Stop hook: launches the hive-scribe capture session (.claude/agents/hive-scribe.md).
+# Stop hook: launches the hive-scribe capture session (hive-scribe.prompt.md).
 # POSIX sibling of hive-scribe-capture.ps1. Hook mode reads the Stop-hook JSON on
 # stdin, debounces on transcript growth, claims a per-session lock, and spawns
 # capture mode detached so the user's session never waits. Capture mode runs
@@ -11,7 +11,7 @@
 # successful pass (cut on a record boundary), never the whole transcript, so a
 # long session that crosses the debounce threshold several times does not
 # re-record the same decisions and tickets on every pass. The scribe merges each
-# delta into the one session memory it upserts (see hive-scribe.md).
+# delta into the one session memory it upserts (see hive-scribe.prompt.md).
 #
 # Exactly-once rules, so no slice of transcript is ever skipped:
 #   - the offset advances only after `claude` exits 0 for that slice; a failed
@@ -29,18 +29,21 @@
 #
 # TEMPLATE: this file is installed by init_repo.py into a target repo's
 # .claude/hooks/. The slug placeholder below is replaced by init_repo.py at
-# install time with the target hive project's slug. The agent definition is read
-# from the installed repo itself (.claude/agents/hive-scribe.md, next to where
+# install time with the target hive project's slug. The capture prompt is read
+# from the installed repo itself (.claude/hooks/hive-scribe.prompt.md, next to where
 # this script lives once installed).
 #
 # Usage:  hive-scribe-capture.sh                                 (hook mode)
 #         hive-scribe-capture.sh __capture <sid> <transcript>    (internal)
 #
-# Environment from hook mode to capture mode: CLAUDE_BIN (resolved binary).
-# HIVE_CLAUDE_BIN, if set, overrides the binary lookup everywhere.
+# Environment from hook mode to capture mode: CLAUDE_BIN (resolved binary),
+# re-validated on arrival because the variable may equally come from the
+# ambient environment. HIVE_CLAUDE_BIN, if set, overrides every find_claude
+# lookup; it must be an absolute path to an executable file, and a value that
+# is not is reported rather than silently ignored. Note it is NOT consulted
+# when CLAUDE_BIN is already set -- capture mode then never calls find_claude.
 #
 # `here` is the logical path of this script's directory (pwd keeps symlinks),
-# so `${here%/*}` is the .claude directory even when .claude/hooks is a
 # symlink into a dotfiles repo; `$here/..` would resolve physically and miss.
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$here/_lib.sh"
@@ -49,6 +52,20 @@ PROJECT_SLUG='cog-worx'   # replaced by init_repo.py at install time
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hive-scribe"
 DEBOUNCE=30000        # bytes of new transcript before another pass is worth running
 MAX_PASSES_PER_RUN=8  # bound on the catch-up loop inside one capture process
+
+# log_setup_once <sid> <message> -- a setup diagnostic that must appear exactly
+# once per session. Deduped through a MARKER FILE, not by grepping the session
+# log: that log is also where every scribe pass's stdout and stderr is appended,
+# so a key matched against its contents can be satisfied by a pass that merely
+# MENTIONED the phrase -- and the scribe summarises sessions working on this
+# very repo. The one diagnostic that exists to make a "connected but silent"
+# repo diagnosable would then be the one thing suppressed.
+log_setup_once() {
+    _lso_marker="$STATE_DIR/$1.setup-logged"
+    [ -f "$_lso_marker" ] && return 0
+    hive_log "$STATE_DIR/$1.log" "$2"
+    : > "$_lso_marker" 2>/dev/null || :
+}
 
 if [ "$1" = "__capture" ]; then
     # ---- capture mode: the scribe session itself ----
@@ -65,12 +82,31 @@ if [ "$1" = "__capture" ]; then
     work_dir="$STATE_DIR/work"
     mkdir -p "$work_dir" || exit 0
     cd "$work_dir" || exit 0
-    # The agent definition lives next to this hook's directory, the same way
+    # The capture prompt sits in this hook's own directory, the same way
     # the PowerShell variant finds it, so no project-dir argument is needed.
-    agent_path="${here%/*}/agents/hive-scribe.md"
-    agent_def=$(cat "$agent_path" 2>/dev/null) || { log "agent definition missing at $agent_path"; exit 0; }
-    [ -n "$agent_def" ] || { log "agent definition is empty at $agent_path"; exit 0; }
-    [ -n "$CLAUDE_BIN" ] || CLAUDE_BIN=$(find_claude) || { log "claude binary not found"; exit 0; }
+    agent_path="$here/hive-scribe.prompt.md"
+    agent_def=$(cat "$agent_path" 2>/dev/null) || { log "capture prompt missing at $agent_path"; exit 0; }
+    [ -n "$agent_def" ] || { log "capture prompt is empty at $agent_path"; exit 0; }
+    # An inherited CLAUDE_BIN is RE-VALIDATED, not trusted. Hook mode exports one
+    # it resolved through find_claude, so through the shipped flow this value is
+    # always already checked -- but capture mode re-enters as a fresh /bin/sh and
+    # cannot tell that apart from a value the ambient environment supplied, and
+    # `__capture` is directly invocable. Defence in depth rather than a live hole.
+    #
+    # A relative value is rejected even though the `cd "$work_dir"` above has
+    # moved OUT of the repo: it would resolve under $STATE_DIR/work, which is
+    # not the repo but is not a location anyone chose either. The repo-cwd
+    # exposure is hook mode's, not this branch's -- see find_claude's own
+    # comment. `${CLAUDE_BIN:-}` for symmetry with the guarded expansions in
+    # _lib.sh, not because any template sets `set -u` today.
+    if [ -n "${CLAUDE_BIN:-}" ]; then
+        usable_claude_bin "$CLAUDE_BIN" || {
+            log_setup_once "$sid" "CLAUDE_BIN is set but is not an absolute path to an executable file: $CLAUDE_BIN; capture skipped"
+            exit 0
+        }
+    else
+        CLAUDE_BIN=$(find_claude) || { log "claude binary not found"; exit 0; }
+    fi
 
     n=0
     while [ "$n" -lt "$MAX_PASSES_PER_RUN" ]; do
@@ -96,7 +132,7 @@ if [ "$1" = "__capture" ]; then
             --append-system-prompt "$agent_def" \
             --model sonnet \
             --max-turns 30 \
-            --allowedTools 'Read,mcp__hive-scribe__*' >>"$log_file" 2>&1
+            --allowedTools 'Read,mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' >>"$log_file" 2>&1
         rc=$?
         if [ "$rc" -eq 0 ]; then
             printf '%s\n' "$end" > "$marker"
@@ -158,8 +194,16 @@ fi
 # be diagnosed from the state dir. Resolved here, after the debounce and lock
 # checks, because it is only needed at spawn time.
 CLAUDE_BIN=$(find_claude) || {
-    grep -qsF "claude binary not found" "$STATE_DIR/$sid.log" \
-        || hive_log "$STATE_DIR/$sid.log" "claude binary not found on PATH or in the known install locations (set HIVE_CLAUDE_BIN to override); capture skipped"
+    # Distinguish "nothing found" from "your override was rejected". Reporting
+    # the second as the first told an operator who had just set
+    # HIVE_CLAUDE_BIN to a path that plainly exists to set HIVE_CLAUDE_BIN --
+    # and this line is deduped per session, so there was no other signal.
+    if [ -n "${HIVE_CLAUDE_BIN:-}" ]; then
+        why="HIVE_CLAUDE_BIN is set but is not an absolute path to an executable file: $HIVE_CLAUDE_BIN; capture skipped"
+    else
+        why="claude binary not found on PATH or in the known install locations (set HIVE_CLAUDE_BIN to override); capture skipped"
+    fi
+    log_setup_once "$sid" "$why"
     exit 0
 }
 export CLAUDE_BIN

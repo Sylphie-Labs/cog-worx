@@ -1,4 +1,4 @@
-# Stop hook: launches the hive-scribe capture session (see .claude/agents/hive-scribe.md).
+# Stop hook: launches the hive-scribe capture session (see hive-scribe.prompt.md).
 # Hook mode reads the Stop-hook JSON on stdin, debounces on transcript growth, claims a
 # per-session lock, and spawns capture mode detached so the user's session never waits.
 # Capture mode runs `claude -p` from a neutral working directory OUTSIDE the repo --
@@ -9,7 +9,7 @@
 # successful pass (cut on a record boundary), never the whole transcript, so a long
 # session that crosses the debounce threshold several times does not re-record the
 # same decisions and tickets on every pass. The scribe merges each delta into the one
-# session memory it upserts (see hive-scribe.md).
+# session memory it upserts (see hive-scribe.prompt.md).
 #
 # Exactly-once rules, so no slice of transcript is ever skipped:
 #   - the offset advances only after `claude` exits 0 for that slice; a failed pass
@@ -27,8 +27,8 @@
 #
 # TEMPLATE: this file is installed by init_repo.py into a target repo's
 # .claude/hooks/. The slug placeholder below is replaced by init_repo.py at
-# install time with the target hive project's slug. The agent definition is read
-# from the installed repo itself (.claude/agents/hive-scribe.md, next to where this
+# install time with the target hive project's slug. The capture prompt is read
+# from the installed repo itself (.claude/hooks/hive-scribe.prompt.md, next to where this
 # script lives once installed).
 param(
     [switch]$Capture,
@@ -105,7 +105,14 @@ if ($Capture) {
         $workDir = Join-Path $stateDir 'work'
         if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Force $workDir | Out-Null }
         Set-Location $workDir
-        $agentDef = Get-Content (Join-Path (Split-Path $PSScriptRoot) 'agents\hive-scribe.md') -Raw -ErrorAction SilentlyContinue
+        $promptPath = Join-Path $PSScriptRoot 'hive-scribe.prompt.md'
+        $agentDef = Get-Content $promptPath -Raw -ErrorAction SilentlyContinue
+        if (-not $agentDef) {
+            # The POSIX sibling logs this; without it a Windows box captures nothing
+            # and leaves no trace of why. Newly reachable until every repo has been
+            # re-run through the installer after the prompt moved out of agents/.
+            Write-Log "capture prompt missing or empty at $promptPath"
+        }
         if ($agentDef) {
             for ($n = 1; $n -le $maxPassesPerRun; $n++) {
                 if (-not (Test-Path $TranscriptPath)) { break }
@@ -128,7 +135,7 @@ if ($Capture) {
                     --append-system-prompt $agentDef `
                     --model sonnet `
                     --max-turns 30 `
-                    --allowedTools 'Read,mcp__hive-scribe__*' *>> $logFile
+                    --allowedTools 'Read,mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' *>> $logFile
                 if ($LASTEXITCODE -eq 0) {
                     Set-Content -Path $marker -Value $end -Encoding ascii
                     Write-Log "pass ok: offset now $end"
