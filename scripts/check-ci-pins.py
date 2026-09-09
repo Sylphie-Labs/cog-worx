@@ -48,7 +48,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Set, Tuple
 
-MANIFEST = Path(".github") / "pinned-tools.txt"
+MANIFEST = ".github/pinned-tools.txt"  # a string so messages read the same on Windows
 WORKFLOWS = Path(".github") / "workflows"
 ACTIONS = Path(".github") / "actions"
 
@@ -125,7 +125,7 @@ class Finding:
             rel = self.path.relative_to(root)
         except ValueError:
             rel = self.path
-        return f"{rel}:{self.line}: rule {self.rule}: {self.text}\n    fix: {self.fix}"
+        return f"{rel.as_posix()}:{self.line}: rule {self.rule}: {self.text}\n    fix: {self.fix}"
 
 
 # --------------------------------------------------------------------------- text helpers
