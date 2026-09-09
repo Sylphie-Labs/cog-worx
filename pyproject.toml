@@ -51,10 +51,13 @@ sizing = ["numpy>=1.26"]
 
 [dependency-groups]
 dev = [
+    # The caps mark the validated majors (ruff 0.16.x, mypy 2.x as of 2026-09-09); the committed
+    # uv.lock pins the exact versions and CI installs with --locked, so nothing drifts inside them.
+    # Moving past a cap is a deliberate change: bump it, relock, and fix whatever the new major
+    # reports in the same PR. History: an uncapped mypy floor once let the lock drift onto 2.x and
+    # light up ~155 strict-mode diagnostics; the <2 cap was lifted once `mypy --strict` was clean
+    # on 2.3.1 across the whole tree.
     "ruff>=0.15.16,<0.17",
-    # Cap the major: an uncapped floor let `uv lock` drift mypy across a major (1.x -> 2.1.0),
-    # lighting up ~155 pre-existing 2.x-only diagnostics. Pin to the validated 1.x baseline, the
-    # same way ruff is capped above. Lift deliberately when migrating to mypy 2.x.
     "mypy>=1.13.0,<3",
     "pytest>=8.3.0",
     "pytest-asyncio>=1.4.0",
