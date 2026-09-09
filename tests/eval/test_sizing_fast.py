@@ -35,10 +35,14 @@ from random import Random
 
 import pytest
 
-# numpy ships in the optional `sizing` extra, and the deterministic nox session deliberately does
-# not install it (CANON S2: numpy is the adopter's burden, and `import cogworx.eval` must work
-# without it). Without this guard the missing import is a collection ERROR, which aborts the whole
-# pytest run — every other test in the suite included — rather than skipping this module.
+# numpy ships in the optional `sizing` extra, which the `test` nox session deliberately does not
+# install (CANON S2: numpy is the adopter's burden, and `import cogworx.eval` must work without
+# it). Without this guard the missing import is a collection ERROR, aborting the whole pytest run
+# rather than skipping this module.
+#
+# This module therefore does NOT run under `nox -s test`. It runs under `nox -s sizing`, which
+# installs the extra, asserts numpy is importable so this guard cannot silently skip everything,
+# and type-checks the numpy-present environment too.
 pytest.importorskip("numpy", reason="requires the optional `sizing` extra")
 
 import numpy as np

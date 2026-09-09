@@ -362,7 +362,7 @@ def _tuning(item_id: int, **overrides: object) -> CorpusItem:
 
 def test_contamination_clean_partition_passes() -> None:
     """Disjoint item_ids + no measurement hash in the tuning log -> the lock precondition holds
-    (returns None, raises nothing)."""
+    (raises nothing)."""
     items = [_tuning(1), _tuning(2), _measurement(10), _measurement(11)]
     assert_no_contamination(items, tuning_run_hashes=["unrelated-hash"])  # must not raise
 

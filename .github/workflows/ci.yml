@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   deterministic:
-    name: lint · typecheck · test (no Docker)
+    name: lint · typecheck · test · sizing (no Docker)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,10 +25,10 @@ jobs:
         run: uv run nox -s typecheck
       - name: Test (unit + invariant suites)
         run: uv run nox -s test
-      # Same suite with the optional `sizing` extra installed. `test` runs without numpy on
-      # purpose (CANON S2), which makes tests/eval/test_sizing_fast.py skip there — and that
-      # module is the only coverage of the numpy fast kernel and its mutation kill-set.
-      - name: Test (numpy fast kernel)
+      # The eval tier with numpy present. `test` and `typecheck` both run without it on purpose
+      # (CANON S2, and pyproject's "must still type-check without the extra"), which leaves the
+      # fast kernel skipped by pytest AND unchecked by mypy. This session covers both.
+      - name: Typecheck + test (numpy present)
         run: uv run nox -s sizing
 
   integration:
