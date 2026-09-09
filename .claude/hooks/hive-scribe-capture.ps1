@@ -30,6 +30,22 @@
 # install time with the target hive project's slug. The capture prompt is read
 # from the installed repo itself (.claude/hooks/hive-scribe.prompt.md, next to where this
 # script lives once installed).
+# Requires Claude Code 2.1.69 or later: the capture prompt is passed with
+# --append-system-prompt-file (documented from that release), never inline.
+# Through the npm claude.cmd shim the command line goes via cmd.exe, which caps
+# it at 8191 characters; the prompt is most of that on its own, and every pass failed
+# with "The command line is too long" until the first automated run of this
+# script found it (tik_01M23QQK56K6R43CYTYSWF4R8V). An older CLI fails the
+# pass with "unknown option", which the pass log records.
+#
+# Which `claude` runs: hook mode resolves it with Resolve-Claude (same rules
+# as find_claude in _lib.sh and claude_lookup.py: HIVE_CLAUDE_BIN wins but
+# must be an absolute path to an existing file, then only ABSOLUTE PATH
+# entries, then the known install locations) and hands it to capture mode in
+# CLAUDE_BIN. Capture mode re-validates CLAUDE_BIN because the variable may
+# equally come from the ambient environment. A bare `& claude` is never used:
+# PowerShell's own command discovery would accept a claude.cmd sitting in the
+# repo, and hook mode runs with the repo as cwd (tik_01M2218J1Q7YXJTVD9EK5348GE).
 param(
     [switch]$Capture,
     [string]$SessionId,
@@ -37,6 +53,14 @@ param(
 )
 
 $projectSlug = 'cog-worx'   # replaced by init_repo.py at install time
+# Every line this script writes to a session log goes through Write-LogLine,
+# as UTF-8 without a BOM. Windows PowerShell 5.1's Add-Content defaults to the
+# ANSI codepage and its file redirection (*>>) to UTF-16LE, so a log written
+# with both was two encodings in one file and unreadable as either.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+function Write-LogLine([string]$path, [string]$line) {
+    [System.IO.File]::AppendAllText($path, $line + "`n", $utf8NoBom)
+}
 $stateDir = Join-Path $env:LOCALAPPDATA 'hive-scribe'
 $debounce = 30000        # bytes of new transcript before another pass is worth running
 $maxPassesPerRun = 8     # bound on the catch-up loop inside one capture process
@@ -89,6 +113,64 @@ function Test-BusyLive([string]$busy) {
     return ((Get-Item $busy).LastWriteTime -gt (Get-Date).AddHours(-1))
 }
 
+# True only for a path that names one place regardless of the cwd or the
+# current drive: drive-qualified (C:\...) or UNC (\\server\...). A rooted path
+# without a drive (\foo) still depends on the current drive, so it does not
+# count, and neither does anything relative.
+function Test-AbsolutePath([string]$p) {
+    if (-not $p) { return $false }
+    return ($p -match '^[A-Za-z]:[\\/]' -or $p -match '^\\\\[^\\]')
+}
+
+# The contract Resolve-Claude returns and capture mode holds an inherited
+# CLAUDE_BIN to: an ABSOLUTE path to an existing regular file.
+function Test-UsableClaude([string]$p) {
+    if (-not (Test-AbsolutePath $p)) { return $false }
+    try { return (Test-Path -LiteralPath $p -PathType Leaf) } catch { return $false }
+}
+
+# Resolve-Claude -- @{ Path = <absolute path> } or @{ Path = $null; Error = <why> }.
+# HIVE_CLAUDE_BIN is the one lookup an operator sets by hand, so a value that
+# fails the rules is REPORTED, never skipped: told "not found", that operator
+# would be told to set the variable they had just set.
+function Resolve-Claude {
+    $override = $env:HIVE_CLAUDE_BIN
+    if ($override) {
+        if (Test-UsableClaude $override) { return @{ Path = $override; Error = $null } }
+        return @{ Path = $null; Error = "HIVE_CLAUDE_BIN is set but is not an absolute path to an executable file: $override; capture skipped" }
+    }
+    foreach ($dir in (([string]$env:PATH) -split ';')) {
+        # Only absolute entries are trusted; an empty entry (";;") means the cwd.
+        if (-not (Test-AbsolutePath $dir)) { continue }
+        foreach ($name in @('claude.exe', 'claude.cmd')) {
+            # String concatenation, not Join-Path: in Windows PowerShell 5.1
+            # Join-Path validates the drive and throws on a dead mapped drive,
+            # which a corporate PATH routinely carries. The walk must be as
+            # unthrowable as the POSIX one, or hook mode's outer catch turns a
+            # stale PATH entry into silent no-capture with nothing in the log.
+            $candidate = $dir.TrimEnd('\', '/') + '\' + $name
+            if (Test-UsableClaude $candidate) { return @{ Path = $candidate; Error = $null } }
+        }
+    }
+    $fallbacks = @()
+    if ($env:USERPROFILE) { $fallbacks += ($env:USERPROFILE.TrimEnd('\') + '\.local\bin\claude.exe') }
+    if ($env:APPDATA) { $fallbacks += ($env:APPDATA.TrimEnd('\') + '\npm\claude.cmd') }
+    foreach ($candidate in $fallbacks) {
+        if (Test-UsableClaude $candidate) { return @{ Path = $candidate; Error = $null } }
+    }
+    return @{ Path = $null; Error = 'claude binary not found on PATH or in the known install locations (set HIVE_CLAUDE_BIN to override); capture skipped' }
+}
+
+# Write-SetupOnce <sid> <message> -- a setup diagnostic that must appear exactly
+# once per session, deduped by a marker file (not by grepping the log, which
+# also receives every pass's output; see the POSIX sibling's log_setup_once).
+function Write-SetupOnce([string]$sid, [string]$msg) {
+    $m = Join-Path $stateDir ($sid + '.setup-logged')
+    if (Test-Path -LiteralPath $m) { return }
+    Write-LogLine (Join-Path $stateDir ($sid + '.log')) ('[{0}] {1}' -f (Get-Date -Format 'o'), $msg)
+    Set-Content -Path $m -Value '' -Encoding ascii
+}
+
 if ($Capture) {
     # ---- capture mode: the scribe session itself ----
     if (-not $SessionId -or $SessionId -notmatch '^[0-9A-Za-z_-]+$') { exit 0 }
@@ -98,22 +180,35 @@ if ($Capture) {
     $busy = Join-Path $stateDir ($SessionId + '.busy')
     $marker = Join-Path $stateDir ($SessionId + '.last')
     $delta = Join-Path $stateDir ($SessionId + '.delta.jsonl')
-    function Write-Log([string]$msg) { Add-Content -Path $logFile -Value ('[{0}] {1}' -f (Get-Date -Format 'o'), $msg) }
+    function Write-Log([string]$msg) { Write-LogLine $logFile ('[{0}] {1}' -f (Get-Date -Format 'o'), $msg) }
 
     try {
         $env:HIVE_SCRIBE = '1'
         $workDir = Join-Path $stateDir 'work'
         if (-not (Test-Path $workDir)) { New-Item -ItemType Directory -Force $workDir | Out-Null }
         Set-Location $workDir
+        # An inherited CLAUDE_BIN is RE-VALIDATED, not trusted: this process cannot
+        # tell hook mode's value from one the ambient environment supplied.
+        $claudeBin = $env:CLAUDE_BIN
+        if (-not (Test-UsableClaude $claudeBin)) {
+            Write-SetupOnce $SessionId "CLAUDE_BIN is set but is not an absolute path to an executable file: $claudeBin; capture skipped"
+            $claudeBin = $null
+        }
+        # The prompt goes to claude as a FILE PATH, never as an argument: through
+        # the npm claude.cmd shim the command line passes through cmd.exe, which
+        # caps it at 8191 characters, and the prompt is most of that on its own -- every
+        # pass failed with "The command line is too long" until this was found
+        # (tik_01M23QQK56K6R43CYTYSWF4R8V). The CLI reads the file itself, as
+        # UTF-8, so this script never reads it and cannot get its encoding wrong
+        # (tik_01M21Z6G3DP2R8JKQB52ECEE49). Only presence and size are checked.
         $promptPath = Join-Path $PSScriptRoot 'hive-scribe.prompt.md'
-        $agentDef = Get-Content $promptPath -Raw -ErrorAction SilentlyContinue
-        if (-not $agentDef) {
+        $havePrompt = (Test-Path -LiteralPath $promptPath -PathType Leaf) -and ((Get-Item -LiteralPath $promptPath).Length -gt 0)
+        if (-not $havePrompt) {
             # The POSIX sibling logs this; without it a Windows box captures nothing
-            # and leaves no trace of why. Newly reachable until every repo has been
-            # re-run through the installer after the prompt moved out of agents/.
+            # and leaves no trace of why.
             Write-Log "capture prompt missing or empty at $promptPath"
         }
-        if ($agentDef) {
+        if ($havePrompt -and $claudeBin) {
             for ($n = 1; $n -le $maxPassesPerRun; $n++) {
                 if (-not (Test-Path $TranscriptPath)) { break }
                 [int64]$last = Read-Offset $marker
@@ -131,11 +226,15 @@ if ($Capture) {
                 }
                 $prompt = "Capture this session into the hive. Session id: $SessionId. Transcript file to read: $delta. $scope The session memory's external_ref is session:$SessionId and its tag is session-$SessionId. This session belongs to hive project '$projectSlug'. Pass project: '$projectSlug' on every memory_write, ticket_create, decision_record, ticket_list, decision_list and memory_query call."
                 Write-Log "pass start: bytes [$last,$end)"
-                & claude -p $prompt `
-                    --append-system-prompt $agentDef `
+                # stdout and stderr both land in the log through Write-LogLine, one
+                # line at a time (streaming, one encoding). Native stderr arrives as
+                # ErrorRecords under 2>&1; "$_" is the text of either kind.
+                & $claudeBin -p $prompt `
+                    --append-system-prompt-file $promptPath `
                     --model sonnet `
                     --max-turns 30 `
-                    --allowedTools 'Read,mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' *>> $logFile
+                    --allowedTools 'Read,mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' 2>&1 |
+                    ForEach-Object { Write-LogLine $logFile "$_" }
                 if ($LASTEXITCODE -eq 0) {
                     Set-Content -Path $marker -Value $end -Encoding ascii
                     Write-Log "pass ok: offset now $end"
@@ -185,6 +284,15 @@ try {
         if (Test-BusyLive $busy) { exit 0 }
         Remove-Item -Path $busy -ErrorAction SilentlyContinue
     }
+    # Resolved here, after the debounce and lock checks, because it is only
+    # needed at spawn time. A missing or rejected binary is logged once per
+    # session so a "connected but silent" box can be diagnosed from the state dir.
+    $found = Resolve-Claude
+    if (-not $found.Path) {
+        Write-SetupOnce $sid $found.Error
+        exit 0
+    }
+    $env:CLAUDE_BIN = $found.Path
     Set-Content -Path $busy -Value $PID -Encoding ascii   # claim before spawning so a racing Stop backs off
 
     $self = $MyInvocation.MyCommand.Path
