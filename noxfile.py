@@ -6,10 +6,12 @@
 The deterministic sessions (lint/typecheck/test/sizing) must stay green on every change — they are
 the bet that makes cog-worx heavily testable (CANON §0.4).
 
-Every session installs from the committed uv.lock (`uv sync --frozen`), never by resolving
+Every session installs from the committed uv.lock (`uv sync --locked`), never by resolving
 pyproject.toml afresh: `session.install(...)` ignores the lock, which is how an unpinned floor once
-shipped a broken adapter (tik_01M21N04476MK11P498303MZ0Q). To move a version, `uv lock --upgrade-package
-<name>` and commit the lock with whatever the new version reports.
+shipped a broken adapter (tik_01M21N04476MK11P498303MZ0Q). `--locked` rather than `--frozen` so a
+pyproject.toml edit without a matching `uv lock` fails the session instead of silently installing the
+stale lock. To move a version, `uv lock --upgrade-package <name>` and commit the lock with whatever the
+new version reports.
 """
 
 from __future__ import annotations
@@ -23,9 +25,12 @@ PYTHON_VERSIONS = ["3.13"]
 
 
 def _sync(session: nox.Session, *args: str) -> None:
-    """Install the project and the dev group from uv.lock into this session's venv, exactly."""
+    """Install the project and the dev group from uv.lock into this session's venv, exactly.
+
+    Fails if uv.lock does not match pyproject.toml, so the lock cannot go stale unnoticed.
+    """
     session.run_install(
-        "uv", "sync", "--frozen", "--group", "dev", *args,
+        "uv", "sync", "--locked", "--group", "dev", *args,
         env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
     )
 
