@@ -5,6 +5,11 @@
 
 The deterministic sessions (lint/typecheck/test/sizing) must stay green on every change — they are
 the bet that makes cog-worx heavily testable (CANON §0.4).
+
+Every session installs from the committed uv.lock (`uv sync --frozen`), never by resolving
+pyproject.toml afresh: `session.install(...)` ignores the lock, which is how an unpinned floor once
+shipped a broken adapter (tik_01M21N04476MK11P498303MZ0Q). To move a version, `uv lock --upgrade-package
+<name>` and commit the lock with whatever the new version reports.
 """
 
 from __future__ import annotations
@@ -17,9 +22,17 @@ nox.options.sessions = ["lint", "typecheck", "test", "sizing"]
 PYTHON_VERSIONS = ["3.13"]
 
 
+def _sync(session: nox.Session, *args: str) -> None:
+    """Install the project and the dev group from uv.lock into this session's venv, exactly."""
+    session.run_install(
+        "uv", "sync", "--frozen", "--group", "dev", *args,
+        env={"UV_PROJECT_ENVIRONMENT": session.virtualenv.location},
+    )
+
+
 @nox.session(python=PYTHON_VERSIONS)
 def lint(session: nox.Session) -> None:
-    session.install("ruff>=0.15.16,<0.16")
+    _sync(session)
     session.run("ruff", "check", "src", "tests")
     session.run("ruff", "format", "--check", "src", "tests")
 
@@ -29,7 +42,7 @@ def typecheck(session: nox.Session) -> None:
     # Deliberately WITHOUT the `sizing` extra, per the invariant in pyproject.toml: a checkout
     # without it must still type-check. The two numpy-dependent lines that mypy reads differently
     # with and without numpy carry `[..., unused-ignore]`, so both environments are clean.
-    session.install("-e", ".", "--group", "dev")
+    _sync(session)
     session.run("mypy")
 
 
@@ -41,7 +54,7 @@ def _run_pytest(session: nox.Session, *paths: str) -> None:
 @nox.session(python=PYTHON_VERSIONS)
 def test(session: nox.Session) -> None:
     """Deterministic tiers only — unit + invariant suites on in-memory doubles."""
-    session.install("-e", ".", "--group", "dev")
+    _sync(session)
     _run_pytest(session)
 
 
@@ -67,7 +80,7 @@ def sizing(session: nox.Session) -> None:
     before. Scoping saves little wall-clock; what it buys is a session whose name matches what it
     runs, so a failure here points at the eval tier rather than at 2000 unrelated tests.
     """
-    session.install("-e", ".[sizing]", "--group", "dev")
+    _sync(session, "--extra", "sizing")
     # Fail loudly if the extra did not actually deliver an importable numpy — a renamed or
     # emptied extra, or a wheel/ABI mismatch, would otherwise leave `importorskip` silently
     # skipping the only coverage of the fast kernel while this session still reported green.
@@ -79,5 +92,5 @@ def sizing(session: nox.Session) -> None:
 @nox.session(python=PYTHON_VERSIONS)
 def integration(session: nox.Session) -> None:
     """Integration + Spike Suite 1 — requires the substrate (docker compose up -d)."""
-    session.install("-e", ".", "--group", "dev")
+    _sync(session)
     session.run("pytest", "-m", "integration or spike", *session.posargs)

@@ -1,0 +1,19 @@
+# Pinning by commit SHA (ci.yml) and by lockfile (uv.lock) means nothing
+# updates itself. Dependabot is the other half: it opens PRs that move the
+# pins, and those PRs have to pass ci.yml like any other.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
