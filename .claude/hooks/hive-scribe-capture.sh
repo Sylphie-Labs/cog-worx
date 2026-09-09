@@ -33,6 +33,11 @@
 # from the installed repo itself (.claude/hooks/hive-scribe.prompt.md, next to where
 # this script lives once installed).
 #
+# Requires Claude Code 2.1.69 or later: the capture prompt is passed with
+# --append-system-prompt-file (documented from that release), never inline,
+# so the .ps1 sibling can do the same under cmd.exe's command-line cap. An
+# older CLI fails the pass with "unknown option", which the pass log records.
+#
 # Usage:  hive-scribe-capture.sh                                 (hook mode)
 #         hive-scribe-capture.sh __capture <sid> <transcript>    (internal)
 #
@@ -85,8 +90,13 @@ if [ "$1" = "__capture" ]; then
     # The capture prompt sits in this hook's own directory, the same way
     # the PowerShell variant finds it, so no project-dir argument is needed.
     agent_path="$here/hive-scribe.prompt.md"
-    agent_def=$(cat "$agent_path" 2>/dev/null) || { log "capture prompt missing at $agent_path"; exit 0; }
-    [ -n "$agent_def" ] || { log "capture prompt is empty at $agent_path"; exit 0; }
+    # Checked for presence and size only; the prompt itself goes to claude as
+    # a FILE PATH, never as an argument, so the .ps1 sibling can do the same --
+    # through the npm claude.cmd shim the command line passes through cmd.exe,
+    # which caps it at 8191 characters, and the prompt is most of that on its
+    # own (tik_01M23QQK56K6R43CYTYSWF4R8V). Needs Claude Code with
+    # --append-system-prompt-file; see the version note in the header.
+    [ -s "$agent_path" ] || { log "capture prompt missing or empty at $agent_path"; exit 0; }
     # An inherited CLAUDE_BIN is RE-VALIDATED, not trusted. Hook mode exports one
     # it resolved through find_claude, so through the shipped flow this value is
     # always already checked -- but capture mode re-enters as a fresh /bin/sh and
@@ -129,7 +139,7 @@ if [ "$1" = "__capture" ]; then
         prompt="Capture this session into the hive. Session id: $sid. Transcript file to read: $delta. $scope The session memory's external_ref is session:$sid and its tag is session-$sid. This session belongs to hive project '$PROJECT_SLUG'. Pass project: '$PROJECT_SLUG' on every memory_write, ticket_create, decision_record, ticket_list, decision_list and memory_query call."
         log "pass start: bytes [$last,$end)"
         "$CLAUDE_BIN" -p "$prompt" \
-            --append-system-prompt "$agent_def" \
+            --append-system-prompt-file "$agent_path" \
             --model sonnet \
             --max-turns 30 \
             --allowedTools 'Read,mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' >>"$log_file" 2>&1
