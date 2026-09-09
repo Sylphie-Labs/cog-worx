@@ -1,5 +1,13 @@
 name: CI
 
+# Everything here is pinned: actions by commit SHA (the `# vX.Y.Z` comment is
+# what Dependabot reads to bump them), the runner image by name, uv and Python
+# by exact version, service images by exact tag, and every program a step runs
+# is declared in .github/pinned-tools.txt. scripts/check-ci-pins.py enforces
+# that on every PR. Python packages come from the committed uv.lock: the nox
+# sessions install with `uv sync --frozen`, so CI and a laptop resolve the
+# same set. Canonical copy of the guard: Sylphie-Labs/hive-client.
+
 on:
   push:
     branches: [main]
@@ -12,13 +20,18 @@ concurrency:
 jobs:
   deterministic:
     name: lint · typecheck · test · sizing (no Docker)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          python-version: "3.13"
+          version: "0.12.12"
+          python-version: "3.13.15"
+      # Guards this file, noxfile.py and .github/pinned-tools.txt: see the
+      # header comment. Standard library only, so the image's python3 is fine.
+      - name: CI pins are exact and every tool is declared
+        run: python3 scripts/check-ci-pins.py
       - name: Lint
         run: uv run nox -s lint
       - name: Typecheck (mypy --strict)
@@ -33,28 +46,29 @@ jobs:
 
   integration:
     name: integration + Spike Suite 1 (polyglot substrate)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The substrate job is heavier; keep it off every PR push until the
     # compose stack is wired. Enabled for main and release tags.
     if: github.ref == 'refs/heads/main'
     services:
       neo4j:
-        image: neo4j:5
+        image: neo4j:5.26.30
         env:
           NEO4J_AUTH: neo4j/cogworx-test
         ports: ["7687:7687"]
       postgres:
-        image: timescale/timescaledb-ha:pg16
+        image: timescale/timescaledb-ha:pg16.15-ts2.30.0
         env:
           POSTGRES_PASSWORD: cogworx-test
           POSTGRES_DB: cogworx
         ports: ["5432:5432"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
         with:
-          python-version: "3.13"
+          version: "0.12.12"
+          python-version: "3.13.15"
       - name: Integration + spike
         env:
           COGWORX_NEO4J_URI: bolt://localhost:7687

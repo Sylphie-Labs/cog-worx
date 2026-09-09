@@ -1,0 +1,10 @@
+# Every program a workflow `run:` step invokes, and what governs its version.
+# scripts/check-ci-pins.py fails the build on a program that is not listed
+# here, so adding a tool to CI means adding a line that says how it is pinned.
+# Shell builtins and POSIX utilities (grep, sed, xargs, ...) need no entry.
+#
+# Format: name=<what governs its version>. Comments and blank lines are fine.
+# `runs-on=<label>` declares a floating runner label the repo tracks on purpose.
+
+uv=astral-sh/setup-uv `version:` input in ci.yml (0.12.12); packages from the committed uv.lock
+python3=runner image (ubuntu-24.04); runs only scripts/check-ci-pins.py, which is standard library. The project's Python is the 3.13.15 setup-uv installs
