@@ -4,9 +4,11 @@ name: CI
 # what Dependabot reads to bump them), the runner image by name, uv and Python
 # by exact version, service images by exact tag, and every program a step runs
 # is declared in .github/pinned-tools.txt. scripts/check-ci-pins.py enforces
-# that on every PR. Python packages come from the committed uv.lock: the nox
-# sessions install with `uv sync --frozen`, so CI and a laptop resolve the
-# same set. Canonical copy of the guard: Sylphie-Labs/hive-client.
+# that on every PR. Python packages come from the committed uv.lock, and it
+# has to match pyproject.toml: `uv run --locked` here refuses to run on a
+# stale lock (a bare `uv run` would quietly relock and resolve fresh), and
+# the nox sessions install with `uv sync --locked` for the same reason.
+# Canonical copy of the guard: Sylphie-Labs/hive-client.
 
 on:
   push:
@@ -33,16 +35,16 @@ jobs:
       - name: CI pins are exact and every tool is declared
         run: python3 scripts/check-ci-pins.py
       - name: Lint
-        run: uv run nox -s lint
+        run: uv run --locked nox -s lint
       - name: Typecheck (mypy --strict)
-        run: uv run nox -s typecheck
+        run: uv run --locked nox -s typecheck
       - name: Test (unit + invariant suites)
-        run: uv run nox -s test
+        run: uv run --locked nox -s test
       # The eval tier with numpy present. `test` and `typecheck` both run without it on purpose
       # (CANON S2, and pyproject's "must still type-check without the extra"), which leaves the
       # fast kernel skipped by pytest AND unchecked by mypy. This session covers both.
       - name: Typecheck + test (numpy present)
-        run: uv run nox -s sizing
+        run: uv run --locked nox -s sizing
 
   integration:
     name: integration + Spike Suite 1 (polyglot substrate)
@@ -75,4 +77,4 @@ jobs:
           COGWORX_NEO4J_USER: neo4j
           COGWORX_NEO4J_PASSWORD: cogworx-test
           COGWORX_PG_DSN: postgresql://postgres:cogworx-test@localhost:5432/cogworx
-        run: uv run nox -s integration
+        run: uv run --locked nox -s integration
