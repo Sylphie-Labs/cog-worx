@@ -4,10 +4,11 @@
 # settings.json invokes every hook through this one entry point:
 #     sh "$CLAUDE_PROJECT_DIR/.claude/hooks/hook.sh" <name> [args...]
 #
-# On Windows (Git Bash / MSYS, which Claude Code already relies on) it hands
-# off to the PowerShell implementation. Everywhere else it runs the POSIX
-# sibling. Arguments are forwarded verbatim on both branches; each script owns
-# its own parameter contract.
+# A Python implementation (<name>.py) runs first, on every platform. Failing
+# that, on Windows (Git Bash / MSYS, which Claude Code already relies on) it
+# hands off to the PowerShell implementation, and everywhere else it runs the
+# POSIX sibling. Arguments and stdin are forwarded verbatim on every branch;
+# each script owns its own parameter contract.
 #
 # EXIT STATUS. The dispatcher is transparent: the implementation's status is
 # returned unchanged. Connected repos route their own blocking guards through
@@ -41,6 +42,26 @@ finish() {
 }
 
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
+
+# A Python implementation, when present, is the one that runs -- on every
+# platform, before the .sh/.ps1 split. New hooks are written in Python with
+# no hand-synced pair (dec_01M21SWDC62XZVBVBMZ745R64K). Under Git Bash on
+# Windows the interpreter is usually `python`, not `python3`. No interpreter
+# at all is reported (exit 1: Claude Code shows the line, does not block)
+# rather than silently skipped, because a guard that is not running should
+# not look like a guard that found nothing.
+py="$dir/$name.py"
+if [ -f "$py" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+        python3 "$py" "$@"
+    elif command -v python >/dev/null 2>&1; then
+        python "$py" "$@"
+    else
+        echo "hook.sh: $name.py needs python3 (or python), and neither is on PATH; hook not run" >&2
+        finish 1
+    fi
+    finish $?
+fi
 
 case "$(uname -s 2>/dev/null)" in
     MINGW* | MSYS* | CYGWIN*)
