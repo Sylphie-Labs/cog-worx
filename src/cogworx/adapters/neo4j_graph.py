@@ -72,9 +72,14 @@ MERGE (c)-[:DERIVED_FROM]->(e)
 # All persisted properties, parameterized on the bound variable so get_claim (anchor `c`) and
 # neighbors (neighbor `n`) share one projection shape + one rebuild path. Each is rendered against
 # its own variable: a missing/optional property projects as null and rebuilds cleanly as None.
+# `scope` is written by the entity KG (Pod 2.4) and read by its scoped views; this store never
+# writes it, so it projects as null here and the rebuild falls back to the default scope. Without
+# it in the projection an inherited get_claim/neighbors rebuilt every entity-KG claim as
+# scope='agent', and a world/user-model view then filtered its own claim out.
 def _claim_return(var: str) -> str:
     return f"""
        {var}.id              AS id,
+       {var}.scope           AS scope,
        {var}.subject         AS subject,
        {var}.predicate       AS predicate,
        {var}.payload         AS payload,

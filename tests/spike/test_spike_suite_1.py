@@ -400,7 +400,8 @@ class LesionableRecallStage:
 
     async def run(self, ctx: StageContext) -> StageResult:
         try:
-            await ctx.dispatch("latent_recall", {"query": (1.0, 0.0, 0.0, 0.0)})
+            # A list, not a tuple: the args are validated as JSON (S9), and JSON has no tuple.
+            await ctx.dispatch("latent_recall", {"query": [1.0, 0.0, 0.0, 0.0]})
         except CapabilityUnavailable:
             return Degraded(
                 reason="latent_recall lesioned",

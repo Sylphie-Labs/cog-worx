@@ -28,15 +28,12 @@ CONCLUSION (recorded after running):
           Every FusedResult has >=1 ChannelHit with rank>=1 and a registered channel name
           Mutant FusedResult with hits=() correctly caught by the S5 checker;
           assemble() propagates empty hits to chunks so downstream checks can detect it
-  SC-5 — S1 import-level invariant: PARTIALLY VERIFIED (CF-1 documented)
-          VERIFIED: no recall/*.py file directly imports cogworx.model or cogworx.runtime
-          KNOWN GAP CF-1: cogworx.recall transitively imports cogworx.model.base via
-          the chain: recall.stack -> substrate.entity_kg -> substrate.journal ->
-          loop.result (triggers loop.__init__) -> loop.stage -> model.base.
-          Resolution: move StageResult OUTSIDE cogworx.loop entirely (e.g.
-          cogworx.types.stage_result) OR stop loop/__init__.py eagerly importing stage.py.
-          Moving within cogworx.loop is insufficient — any 'from cogworx.loop.X import Y'
-          still triggers loop/__init__.py first (red-team finding, 2026-06-10).
+  SC-5 — S1 import-level invariant: VERIFIED
+          No recall/*.py file directly imports cogworx.model or cogworx.runtime, and
+          importing cogworx.recall in a fresh interpreter loads no cogworx.model module.
+          (CF-1, the transitive chain through the journal seam, was closed upstream; the
+          known-gap test that documented it fired as designed and was promoted to the hard
+          assertion on 2026-09-09.)
           Spike file itself has zero direct import statements for model/runtime namespaces.
   SC-6 — Assembly U-fold + budget: VERIFIED
           100 seeded random fixtures: budget never exceeded, U-fold ordering correct,
@@ -733,29 +730,15 @@ async def test_sc4_negative_control_no_hits_detected() -> None:
 # SC-5 — S1 import-level invariant
 # ---------------------------------------------------------------------------
 
-# KNOWN GAP CF-1 (S1 transitive violation via journal seam):
-# cogworx.recall.stack imports cogworx.substrate.entity_kg, which imports
-# cogworx.substrate.journal, which imports cogworx.loop.result. Importing
-# cogworx.loop.result triggers cogworx.loop.__init__, which exports loop.stage,
-# which imports cogworx.model.base. The chain is:
-#   recall.stack -> substrate.entity_kg -> substrate.journal
-#     -> loop.result (triggers loop.__init__) -> loop.stage -> model.base
-# This is an architectural S1 violation in the journal-seam design: the journal
-# should import StageResult from a module that does not trigger loop/__init__.py.
-# Resolution: move StageResult OUTSIDE cogworx.loop entirely (e.g. cogworx.types).
-# Moving within cogworx.loop is insufficient — any 'from cogworx.loop.X import Y'
-# triggers loop/__init__.py first (red-team confirmed 2026-06-10). Deferred
-# as CF-1 (architect + python-expert scope). What CAN be verified now: the recall
-# submodules themselves have NO direct model imports in their source text.
+# Two checks: the recall submodules' source text has no direct model/runtime imports, and
+# importing cogworx.recall in a fresh interpreter loads no cogworx.model module (the former
+# CF-1 transitive gap through the journal seam, now closed).
 
 
 def test_sc5_recall_submodules_have_no_direct_model_imports() -> None:
     """The recall-layer source files have zero direct imports from cogworx.model (S1).
 
-    The transitive violation (CF-1: journal -> loop.__init__ -> stage -> model) is a
-    pre-existing architectural gap in the journal seam, not in the recall layer. This
-    test verifies what IS in the recall layer's control: no direct model imports in any
-    recall/*.py file. CF-1 is documented below; it is the architect's scope to fix.
+    Source-text check; the transitive check runs in a fresh interpreter in the test below.
     """
     import pathlib
 
@@ -782,17 +765,14 @@ def test_sc5_recall_submodules_have_no_direct_model_imports() -> None:
     )
 
 
-def test_sc5_known_gap_cf1_transitive_model_via_journal(capsys: pytest.CaptureFixture[str]) -> None:
-    """KNOWN GAP CF-1: cogworx.recall transitively imports cogworx.model.base via the
-    journal -> loop.__init__ -> stage chain.
+def test_sc5_recall_does_not_transitively_import_model() -> None:
+    """SC-5 hard assertion: importing cogworx.recall must not pull in cogworx.model.
 
-    This test documents the gap explicitly — it passes to prove the bypass is real.
-    The transitive import is confirmed by subprocess and is an architectural issue
-    in the journal seam, NOT in the recall layer itself.
-
-    Resolution: move StageResult OUTSIDE cogworx.loop entirely so journal.py can import
-    it without triggering loop/__init__.py (which eagerly imports stage.py -> model.base).
-    Moving within cogworx.loop is insufficient. Architect + python-expert scope.
+    Checked in a fresh interpreter so nothing already imported by the test process can mask
+    a transitive chain. This was the CF-1 known gap (recall.stack -> substrate.entity_kg ->
+    substrate.journal -> loop.result -> loop.__init__ -> loop.stage -> model.base); the gap is
+    closed, and the self-retiring known-gap test that documented it fired as designed and has
+    been replaced by this assertion.
     """
     result = subprocess.run(
         [
@@ -800,8 +780,8 @@ def test_sc5_known_gap_cf1_transitive_model_via_journal(capsys: pytest.CaptureFi
             "-c",
             (
                 "import cogworx.recall; import sys; "
-                "model_mods = [m for m in sys.modules if m.startswith('cogworx.model')]; "
-                "print(bool(model_mods))"
+                "print(sorted(m for m in sys.modules "
+                "if m == 'cogworx.model' or m.startswith('cogworx.model.')))"
             ),
         ],
         capture_output=True,
@@ -809,13 +789,10 @@ def test_sc5_known_gap_cf1_transitive_model_via_journal(capsys: pytest.CaptureFi
         timeout=30,
     )
     assert result.returncode == 0, f"subprocess failed: {result.stderr}"
-    has_model = result.stdout.strip() == "True"
-    assert has_model, (
-        "CF-1 gap no longer present: cogworx.recall no longer transitively imports "
-        "cogworx.model. Remove this known-gap test and promote SC-5 to the hard assertion."
+    assert result.stdout.strip() == "[]", (
+        "SC-5 FAIL: importing cogworx.recall transitively imported cogworx.model: "
+        + result.stdout.strip()
     )
-    # The presence of the transitive import is confirmed. This passes to document the gap.
-    # The positive recall-layer tests above verify what IS in the recall layer's control.
 
 
 def test_sc5_spike_file_has_no_direct_model_imports() -> None:
