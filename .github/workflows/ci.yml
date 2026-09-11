@@ -9,6 +9,14 @@ name: CI
 # stale lock (a bare `uv run` would quietly relock and resolve fresh), and
 # the nox sessions install with `uv sync --locked` for the same reason.
 # Canonical copy of the guard: Sylphie-Labs/hive-client.
+#
+# Pull requests run only the lint job (ruff check + format, no typecheck, no
+# tests): a minute or so. Everything else — mypy, the unit and invariant
+# suites, the numpy sizing tier, and the Docker-backed integration job —
+# runs on pushes to `main`, i.e. once per merge. The trade: a PR that lints
+# clean but fails a test lands on main and is caught there, loudly, after
+# the merge; the fix is a follow-up PR. Mirrors hive-mind's lint-on-PR /
+# full-gate-on-ship split (2026-09-10).
 
 on:
   push:
@@ -20,8 +28,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deterministic:
-    name: lint · typecheck · test · sizing (no Docker)
+  lint:
+    name: lint (ruff check + format) — PRs and main
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -36,6 +44,19 @@ jobs:
         run: python3 scripts/check-ci-pins.py
       - name: Lint
         run: uv run --locked nox -s lint
+
+  check:
+    name: typecheck · test · sizing (no Docker) — main pushes only
+    # See the header: pull requests stop at `lint`.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
+        with:
+          version: "0.12.12"
+          python-version: "3.13.15"
       - name: Typecheck (mypy --strict)
         run: uv run --locked nox -s typecheck
       - name: Test (unit + invariant suites)
