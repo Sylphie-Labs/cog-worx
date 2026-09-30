@@ -415,9 +415,18 @@ async def run_tool_loop(
         if not response.tool_calls:
             return response
 
-        # Append the assistant's turn (with tool_calls) to the transcript.
+        # Append the assistant's turn — WITH its tool_calls. Dropping them leaves the following
+        # role="tool" results referring to a request that is no longer in the transcript, which
+        # every provider rejects (OpenAI-compat 400s; Anthropic requires each tool_result to match
+        # a tool_use in the preceding assistant turn).
         assistant_text = response.text or ""
-        messages.append(ChatMessage(role="assistant", content=assistant_text))
+        messages.append(
+            ChatMessage(
+                role="assistant",
+                content=assistant_text,
+                tool_calls=response.tool_calls,
+            )
+        )
 
         # Route tool calls and feed results back.
         results = await route_tool_calls(gate, registry, response.tool_calls)

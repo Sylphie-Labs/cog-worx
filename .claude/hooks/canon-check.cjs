@@ -2,6 +2,17 @@
 // Runs on Stop — spawns claude (Sonnet) to verify Python changes in src/
 // comply with cog-worx's CANON (the Immutable Standards S1–S12).
 // Blocks completion if violations are found.
+//
+// Output contract: JSON on stdout, always exit(0) — never exit(2)/raw stderr,
+// which dumps unformatted text into the user's terminal. A FAIL verdict uses
+// {"decision":"block","reason":...} to feed the violation list back to the
+// model exactly as before; "suppressOutput":true keeps the raw JSON blob out
+// of the user-facing transcript. Non-blocking diagnostics (CLI error /
+// unexpected checker output) are surfaced via
+// hookSpecificOutput.additionalContext instead of block, so Stop is not
+// prevented but the model still sees the note. A PASS verdict and any
+// internal hook failure exit(0) with no output — this hook must never wedge
+// a session.
 
 const { execSync } = require("child_process");
 
@@ -111,32 +122,49 @@ ${truncatedDiff}`;
         }
       ).trim();
     } catch (e) {
-      process.stderr.write(
-        "CANON CHECK: Could not run compliance check (claude CLI error). Proceeding with warning.\n"
+      const detail = e && e.stderr ? e.stderr.toString() : "";
+      process.stdout.write(
+        JSON.stringify({
+          suppressOutput: true,
+          hookSpecificOutput: {
+            hookEventName: "Stop",
+            additionalContext:
+              "CANON CHECK: Could not run compliance check (claude CLI error). Proceeding " +
+              "without blocking.\n" + detail,
+          },
+        }),
       );
-      if (e.stderr) process.stderr.write(e.stderr.toString());
       process.exit(0);
     }
 
     if (result.includes("CANON_CHECK: FAIL")) {
-      process.stderr.write(
+      const reason =
         "CANON COMPLIANCE VIOLATION DETECTED\n\n" +
-          result +
-          "\n\nFix the violations above before completing. The CANON is the single source of truth.\n"
+        result +
+        "\n\nFix the violations above before completing. The CANON is the single source of truth.";
+      process.stdout.write(
+        JSON.stringify({ decision: "block", reason, suppressOutput: true }),
       );
-      process.exit(2);
+      process.exit(0);
     }
 
     if (result.includes("CANON_CHECK: PASS")) {
       process.exit(0);
     }
 
-    process.stderr.write(
-      "CANON CHECK: Unexpected response from compliance checker:\n" + result.slice(0, 500) + "\n"
+    process.stdout.write(
+      JSON.stringify({
+        suppressOutput: true,
+        hookSpecificOutput: {
+          hookEventName: "Stop",
+          additionalContext:
+            "CANON CHECK: Unexpected response from compliance checker:\n" + result.slice(0, 500),
+        },
+      }),
     );
     process.exit(0);
-  } catch (e) {
-    process.stderr.write("CANON CHECK: Hook error — " + e.message + "\n");
+  } catch {
+    // Never let this hook fail a session close.
     process.exit(0);
   }
 });

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "api-no-direct-db-001",
+    "description": "API handlers must not access the database directly. All persistence goes through the repository layer so queries stay testable and access rules live in one place.",
+    "scope": "src/api",
+    "scopeType": "module",
+    "source": "Architecture guidelines",
+    "severity": "must",
+    "tags": ["architecture", "layering"]
+  },
+  {
+    "id": "payments-explicit-return-types-001",
+    "description": "All exported functions in src/payments require an explicit return type annotation. Money-handling code must never rely on inferred types.",
+    "scope": "src/payments",
+    "scopeType": "module",
+    "source": "Code review checklist",
+    "severity": "should",
+    "tags": ["type-safety", "code-quality"]
+  },
+  {
+    "id": "no-credential-logging-001",
+    "description": "Never log credentials, API keys, session tokens, or other secrets at any log level. Redact sensitive fields before passing objects to the logger.",
+    "scope": "app",
+    "scopeType": "service",
+    "source": "Security policy",
+    "severity": "must",
+    "tags": ["security", "logging"]
+  },
+  {
+    "id": "prefer-async-fs-001",
+    "description": "Prefer the async fs/promises APIs over synchronous fs calls in request-handling code paths to avoid blocking the event loop.",
+    "scope": "app",
+    "scopeType": "service",
+    "source": "Performance guidelines",
+    "severity": "prefer",
+    "tags": ["performance"]
+  }
+]

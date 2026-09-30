@@ -652,3 +652,64 @@ async def test_persist_taint_raises_invoke_never_called_dispatch_one() -> None:
     assert _invoke_counter.get("ext_clean", 0) == 0, (
         "cap.invoke must NOT be called when persist_taint raises in dispatch_one (fail-closed)"
     )
+
+
+# ---------------------------------------------------------------------------
+# R16 — the assistant turn keeps its tool_calls, so the transcript stays wire-valid
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_tool_loop_assistant_turn_carries_tool_calls() -> None:
+    """The appended assistant turn must carry the tool_calls it requested.
+
+    Dropping them leaves the following role="tool" results answering a request that is no longer
+    in the transcript, which every provider rejects: OpenAI-compatible endpoints 400 with
+    "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'", and
+    Anthropic requires each tool_result to match a tool_use in the preceding assistant turn.
+
+    This is asserted on the transcript rather than on a provider round-trip because ``ReplayModel``
+    does not validate the messages it is handed — the reason the defect survived the suite.
+    """
+    gate, reg = _make_gate_and_registry()
+    requested = ToolCall(id="tc-1", name="echo", arguments={"x": "v"})
+
+    model = ReplayModel(
+        [
+            ModelResponse(
+                text=None,
+                tool_calls=(requested,),
+                model_id="fake",
+                finish_reason="tool_calls",
+            ),
+            ModelResponse(text="done", model_id="fake", finish_reason="stop"),
+        ],
+        capabilities=ModelCapabilities(tools=True),
+    )
+
+    await run_tool_loop(gate, reg, model, [ChatMessage(role="user", content="go")], max_rounds=3)
+
+    # The second model call sees the full transcript: user, assistant(+tool_calls), tool.
+    second_call = model.calls[1]
+    roles = [m.role for m in second_call.messages]
+    assert roles == ["user", "assistant", "tool"], f"unexpected transcript shape: {roles}"
+
+    assistant = second_call.messages[1]
+    assert assistant.tool_calls == (requested,), (
+        "the assistant turn must carry the tool_calls it requested; dropping them makes the "
+        "following tool result refer to a request absent from the transcript"
+    )
+
+    # Every tool result answers a call present on that assistant turn.
+    answered = {call.id for call in assistant.tool_calls}
+    for msg in second_call.messages:
+        if msg.role == "tool":
+            assert msg.tool_call_id in answered, (
+                f"tool result {msg.tool_call_id!r} answers no call in the preceding assistant turn"
+            )
+
+
+def test_non_assistant_messages_carry_no_tool_calls() -> None:
+    """``tool_calls`` defaults empty, so the additive field changes nothing for other roles."""
+    assert ChatMessage(role="user", content="hi").tool_calls == ()
+    assert ChatMessage(role="tool", content="{}", tool_call_id="tc-1").tool_calls == ()

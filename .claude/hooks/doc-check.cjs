@@ -1,8 +1,24 @@
 // Hook: Documentation compliance check before session completion.
 // Runs on Stop — reminds the agent to keep cog-worx's docs in step with code.
 // Warn-only (never blocks).
+//
+// Output contract: this hook is non-blocking by design, so it never uses
+// {"decision":"block"}. The reminder is still delivered to the model via
+// hookSpecificOutput.additionalContext (Stop/SubagentStop support
+// non-blocking additionalContext injection — the conversation continues,
+// Claude can act on the note) while "suppressOutput":true keeps the raw JSON
+// out of the user-facing terminal. Always exit(0); no warnings -> no output.
+//
+// Loop guard: injecting additionalContext on Stop re-invokes the model, whose
+// reply triggers another Stop — so an unchanged warning set must fire at most
+// once per session (tmpdir marker keyed by session + warning hash) or the
+// hook loops forever on a persistent working-tree condition.
 
 const { execSync } = require("child_process");
+const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const gitOpts = { encoding: "utf-8", timeout: 5000, cwd: projectDir };
@@ -74,12 +90,35 @@ process.stdin.on("end", () => {
         "DOCUMENTATION CHECK — before completing, address these items:\n\n" +
         warnings.map((w, i) => `  ${i + 1}. ${w}`).join("\n") +
         "\n\nResolve these, then confirm completion. If an item doesn't apply, explain why.";
-      process.stderr.write(message);
-      process.exit(0); // Warn only
+
+      // Fire at most once per session for the same warning set (see loop guard note).
+      let sessionId = "unknown";
+      try {
+        sessionId = JSON.parse(data).session_id || "unknown";
+      } catch {}
+      const hash = crypto.createHash("sha256").update(message).digest("hex").slice(0, 16);
+      const marker = path.join(os.tmpdir(), `cogworx-doc-check-${sessionId}`);
+      try {
+        if (fs.existsSync(marker) && fs.readFileSync(marker, "utf-8") === hash) {
+          process.exit(0); // already warned this session, warnings unchanged
+        }
+        fs.writeFileSync(marker, hash);
+      } catch {}
+
+      process.stdout.write(
+        JSON.stringify({
+          suppressOutput: true,
+          hookSpecificOutput: {
+            hookEventName: "Stop",
+            additionalContext: message,
+          },
+        }),
+      );
+      process.exit(0); // Warn only — non-blocking
     }
 
     process.exit(0);
-  } catch (e) {
+  } catch {
     process.exit(0);
   }
 });

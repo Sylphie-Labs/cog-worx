@@ -1,55 +1,86 @@
 {
-  "permissions": {
-    "allow": [
-      "Read",
-      "Edit",
-      "Write",
-      "Glob",
-      "Grep",
-      "WebSearch",
-      "WebFetch",
-      "Agent",
-      "Bash(*)",
-      "PowerShell(Get-ChildItem *)",
-      "PowerShell(railway *)",
-      "Skill(update-config)",
-      "mcp__playwright__*",
-      "mcp__smart-terminal__*",
-      "mcp__railway-mcp-server__*",
-      "mcp__sylphie-pkg__*",
-      "mcp__codebase-pkg__*"
-    ],
-    "deny": []
-  },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const cmd=(JSON.parse(d).tool_input.command)||'';if(/CANON\\.md/.test(cmd)&&/(\\brm\\b|\\bmv\\b|\\bdel\\b|Remove-Item|Move-Item|Clear-Content|>\\s*[^|]*CANON)/i.test(cmd)){console.log(JSON.stringify({decision:'block',reason:'wiki/CANON.md is immutable law (CANON \\u00a76) \\u2014 change it only via the /update-canon skill with Jim\\u2019s approval, never raw rm/mv/redirect.'}));process.exit(2)}});\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/doc-check.cjs",
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/canon-check.cjs",
-            "timeout": 120
-          }
-        ]
-      }
-    ]
-  }
+    "permissions":  {
+                        "allow":  [
+                                      "Read",
+                                      "Edit",
+                                      "Write",
+                                      "Glob",
+                                      "Grep",
+                                      "WebSearch",
+                                      "WebFetch",
+                                      "Agent",
+                                      "Bash(*)",
+                                      "PowerShell(Get-ChildItem *)",
+                                      "PowerShell(railway *)",
+                                      "Skill(update-config)",
+                                      "mcp__playwright__*",
+                                      "mcp__smart-terminal__*",
+                                      "mcp__railway-mcp-server__*",
+                                      "mcp__sylphie-pkg__*",
+                                      "mcp__codebase-pkg__*"
+                                  ],
+                        "deny":  [
+
+                                 ]
+                    },
+    "hooks":  {
+                  "PreToolUse":  [
+                                     {
+                                         "matcher":  "Bash",
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "node -e \"let d=\u0027\u0027;process.stdin.on(\u0027data\u0027,c=\u003ed+=c);process.stdin.on(\u0027end\u0027,()=\u003e{try{const input=JSON.parse(d);const cmd=(input.tool_input\u0026\u0026input.tool_input.command)||\u0027\u0027;if(/CANON\\.md/.test(cmd)\u0026\u0026/(\\brm\\b|\\bmv\\b|\\bdel\\b|Remove-Item|Move-Item|Clear-Content|\u003e\\s*[^|]*CANON)/i.test(cmd)){process.stdout.write(JSON.stringify({suppressOutput:true,hookSpecificOutput:{hookEventName:\u0027PreToolUse\u0027,permissionDecision:\u0027deny\u0027,permissionDecisionReason:\u0027wiki/CANON.md is immutable law (CANON \\u00a76) \\u2014 change it only via the /update-canon skill with Jim\\u2019s approval, never raw rm/mv/redirect.\u0027}}))}}catch(e){}process.exit(0)});\"",
+                                                           "timeout":  5
+                                                       }
+                                                   ]
+                                     },
+                                     {
+                                         "matcher":  "Read",
+                                         "hooks":  [
+                                                       {
+                                                           "type":  "command",
+                                                           "command":  "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/codebase-pkg-mcp-first.cjs",
+                                                           "timeout":  5
+                                                       }
+                                                   ]
+                                     }
+                                 ],
+                  "Stop":  [
+                               {
+                                   "matcher":  "",
+                                   "hooks":  [
+                                                 {
+                                                     "type":  "command",
+                                                     "command":  "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/doc-check.cjs",
+                                                     "timeout":  10
+                                                 },
+                                                 {
+                                                     "type":  "command",
+                                                     "command":  "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/canon-check.cjs",
+                                                     "timeout":  120
+                                                 }
+                                             ]
+                               },
+                               {
+                                   "matcher":  "",
+                                   "hooks":  [
+                                                 {
+                                                     "type":  "command",
+                                                     "command":  "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/codebase-pkg-session-capture.cjs",
+                                                     "timeout":  30
+                                                 }
+                                             ]
+                               },
+                               {
+                                   "hooks":  [
+                                                 {
+                                                     "type":  "command",
+                                                     "command":  "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/hive-scribe-capture.ps1\"",
+                                                     "timeout":  30
+                                                 }
+                                             ]
+                               }
+                           ]
+              }
 }

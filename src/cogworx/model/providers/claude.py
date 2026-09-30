@@ -108,6 +108,23 @@ def _map_messages(
                     ],
                 }
             )
+        elif msg.tool_calls:
+            # An assistant turn that requested tools is emitted as content BLOCKS carrying the
+            # tool_use entries: each tool_result above must match a tool_use in the preceding
+            # assistant turn, or the API rejects the request.
+            blocks: list[dict[str, Any]] = []
+            if msg.content:
+                blocks.append({"type": "text", "text": msg.content})
+            blocks.extend(
+                {
+                    "type": "tool_use",
+                    "id": call.id,
+                    "name": call.name,
+                    "input": call.arguments,
+                }
+                for call in msg.tool_calls
+            )
+            api_messages.append({"role": msg.role, "content": blocks})
         else:
             api_messages.append({"role": msg.role, "content": msg.content})
     return system_prompt, api_messages

@@ -69,6 +69,7 @@ all network calls while exercising the full adapter logic.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -160,7 +161,9 @@ def _map_messages(
     every message type maps directly without extraction.
 
     Tool results use ``role="tool"`` with ``tool_call_id`` — this matches the
-    OpenAI wire format exactly.
+    OpenAI wire format exactly.  An assistant turn carrying ``tool_calls`` is
+    emitted with them, since the API refuses a ``role="tool"`` message that does
+    not answer a request in the preceding assistant turn.
     """
     api_messages: list[dict[str, Any]] = []
     for msg in messages:
@@ -170,6 +173,26 @@ def _map_messages(
                     "role": "tool",
                     "content": msg.content,
                     "tool_call_id": msg.tool_call_id or "",
+                }
+            )
+        elif msg.tool_calls:
+            # `content` is null when the assistant turn was tools-only — the wire
+            # format expects null there, not an empty string.
+            api_messages.append(
+                {
+                    "role": msg.role,
+                    "content": msg.content or None,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(call.arguments),
+                            },
+                        }
+                        for call in msg.tool_calls
+                    ],
                 }
             )
         else:

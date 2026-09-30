@@ -579,3 +579,65 @@ async def test_max_output_tokens_used_in_request() -> None:
 
     kwargs = client.messages.create.call_args.kwargs
     assert kwargs["max_tokens"] == 1024
+
+
+# ---------------------------------------------------------------------------
+# Assistant turns carrying tool_calls map to Anthropic tool_use content blocks
+# ---------------------------------------------------------------------------
+
+
+def test_map_messages_emits_assistant_tool_use_blocks() -> None:
+    """Each tool_result must match a tool_use in the preceding assistant turn.
+
+    Anthropic rejects a tool_result whose id has no corresponding tool_use, so the assistant turn
+    is emitted as content blocks rather than a bare string.
+    """
+    from cogworx.model.providers.claude import _map_messages
+
+    _, mapped = _map_messages(
+        [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(id="tc-1", name="echo", arguments={"x": "v"}),),
+            ),
+            ChatMessage(role="tool", content='{"ok": true}', tool_call_id="tc-1"),
+        ]
+    )
+
+    assistant = mapped[1]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] == [
+        {"type": "tool_use", "id": "tc-1", "name": "echo", "input": {"x": "v"}}
+    ]
+    # Anthropic takes the arguments as an object, unlike the OpenAI wire format's JSON string.
+    assert isinstance(assistant["content"][0]["input"], dict)
+
+    # The tool result that follows answers a tool_use present on that turn.
+    tool_result = mapped[2]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == assistant["content"][0]["id"]
+
+
+def test_map_messages_puts_assistant_text_before_tool_use() -> None:
+    from cogworx.model.providers.claude import _map_messages
+
+    _, mapped = _map_messages(
+        [
+            ChatMessage(
+                role="assistant",
+                content="thinking out loud",
+                tool_calls=(ToolCall(id="tc-1", name="echo", arguments={}),),
+            )
+        ]
+    )
+    assert [block["type"] for block in mapped[0]["content"]] == ["text", "tool_use"]
+
+
+def test_map_messages_unchanged_without_tool_calls() -> None:
+    """The additive field changes nothing for turns that requested no tools."""
+    from cogworx.model.providers.claude import _map_messages
+
+    _, mapped = _map_messages([ChatMessage(role="assistant", content="plain")])
+    assert mapped == [{"role": "assistant", "content": "plain"}]

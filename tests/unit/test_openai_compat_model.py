@@ -675,3 +675,67 @@ def test_provider_config_is_frozen() -> None:
 def test_price_table_is_frozen() -> None:
     with pytest.raises(ValidationError):
         PRICE_TABLE.pro_input_usd_per_mtok = 99.0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Assistant turns carrying tool_calls map to the OpenAI function-call wire shape
+# ---------------------------------------------------------------------------
+
+
+def test_map_messages_emits_assistant_tool_calls() -> None:
+    """A tools-only assistant turn maps to `tool_calls` with null content.
+
+    The API rejects a role="tool" message that does not answer a request in the preceding
+    assistant turn, so the whole agentic loop depends on this mapping.
+    """
+    from cogworx.model.providers.openai_compat import _map_messages
+
+    mapped = _map_messages(
+        [
+            ChatMessage(role="user", content="go"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=(ToolCall(id="tc-1", name="echo", arguments={"x": "v"}),),
+            ),
+            ChatMessage(role="tool", content='{"ok": true}', tool_call_id="tc-1"),
+        ]
+    )
+
+    assistant = mapped[1]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] is None, "a tools-only turn sends null content, not empty string"
+    assert assistant["tool_calls"] == [
+        {
+            "id": "tc-1",
+            "type": "function",
+            "function": {"name": "echo", "arguments": json.dumps({"x": "v"})},
+        }
+    ]
+    # Arguments travel as a JSON *string* on this wire format, not an object.
+    assert isinstance(assistant["tool_calls"][0]["function"]["arguments"], str)
+    assert mapped[2]["tool_call_id"] == "tc-1"
+
+
+def test_map_messages_keeps_assistant_text_alongside_tool_calls() -> None:
+    from cogworx.model.providers.openai_compat import _map_messages
+
+    mapped = _map_messages(
+        [
+            ChatMessage(
+                role="assistant",
+                content="thinking out loud",
+                tool_calls=(ToolCall(id="tc-1", name="echo", arguments={}),),
+            )
+        ]
+    )
+    assert mapped[0]["content"] == "thinking out loud"
+    assert len(mapped[0]["tool_calls"]) == 1
+
+
+def test_map_messages_unchanged_without_tool_calls() -> None:
+    """The additive field changes nothing for turns that requested no tools."""
+    from cogworx.model.providers.openai_compat import _map_messages
+
+    mapped = _map_messages([ChatMessage(role="assistant", content="plain")])
+    assert mapped == [{"role": "assistant", "content": "plain"}]

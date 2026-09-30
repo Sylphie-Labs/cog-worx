@@ -29,19 +29,29 @@ durable-execution dependency; OSS is reference, not dependency) · **model-agnos
 > **contracts-now, platform-later**. Don't import biz-firm's single-store assumptions wholesale.
 
 ## Working style
-The top-level agent is a **lightweight coordinator on Haiku** (set via `/model haiku` or
-`"model": "haiku"` in `.claude/settings.json` — CLAUDE.md alone can't switch it). The coordinator
-**routes and tracks; it does not decide.** **Every decision — architecture, design, trade-offs,
-diagnosis, review verdicts — is delegated to the `architect` agent.** The coordinator's job is to frame
-the question crisply for the architect, relay the architect's decision verbatim as the task spec to the
-specialist subagents (run them on a cheaper model, e.g. Sonnet, for speed), and run the mechanical gates
-(ruff, mypy `--strict`, pytest, CANON checks) on the output before reporting back. If a subagent result
-raises a judgment call, the coordinator sends it back to the architect rather than ruling on it itself.
+The top-level agent is the **coordinator and the ONLY agent that runs on Fable** — it is responsible
+for interacting with Jim. It **routes and tracks; it does not decide.** **Every decision —
+architecture, design, trade-offs, diagnosis, review verdicts — is delegated to the `architect`
+agent.** The coordinator's job is to frame the question crisply for the architect, relay the
+architect's decision verbatim as the task spec to the specialist subagents, and run the mechanical
+gates (ruff, mypy `--strict`, pytest, CANON checks) on the output before reporting back. If a subagent
+result raises a judgment call, the coordinator sends it back to the architect rather than ruling on
+it itself.
+
+**Model ladder (mandatory):** every spawned subagent gets an explicit `model:` — never let one
+inherit the session model. Pick the cheapest tier the task needs, by what the agent must DO with what
+it reads:
+- **Haiku** — read to confirm/verify (does X exist, does output match, mechanical checks).
+- **Sonnet** — read then summarize (surveys, sweeps, mapping, instruction-following implementation).
+- **Opus** — read and reason (design judgment, subtle correctness, adversarial verdicts).
+- **Fable** — never for subagents. Agents with a model pinned in their definition (e.g. `architect`)
+  keep their pin.
+Do not spend big-model tokens on work that doesn't require reasoning.
 **Spike-gated (S12):** nothing load-bearing hardens until its falsifiable spike passes. Phase 0
 (freeze the seams + the Test Kit) is sequential and unblocks every later pod — see `wiki/ROADMAP.md`.
 
 ## Agents (`.claude/agents/`)
-- **architect** — **the decision-maker for this repo:** the Haiku coordinator routes *all* decisions
+- **architect** — **the decision-maker for this repo:** the coordinator routes *all* decisions
   here — architecture, design, trade-offs, diagnosis, review verdicts. Owns the configurable loop,
   composition primitives (Stage · Capability · Context · Loop), stage boundaries, where the model sits,
   the S7 coordination contract, and failure modes. Reasons and frames; delegates implementation.
