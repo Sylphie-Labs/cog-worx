@@ -46,18 +46,27 @@ dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 0
 # A Python implementation, when present, is the one that runs -- on every
 # platform, before the .sh/.ps1 split. New hooks are written in Python with
 # no hand-synced pair (dec_01M21SWDC62XZVBVBMZ745R64K). Under Git Bash on
-# Windows the interpreter is usually `python`, not `python3`. No interpreter
-# at all is reported (exit 1: Claude Code shows the line, does not block)
-# rather than silently skipped, because a guard that is not running should
-# not look like a guard that found nothing.
+# Windows the interpreter is usually `python`, not `python3` -- and worse,
+# `python3` is often on PATH anyway as the Microsoft Store placeholder
+# (WindowsApps/python3), which `command -v` finds but which only prints
+# "Python was not found" and exits non-zero. So a candidate counts only if
+# it can actually run an empty program. No working interpreter at all is
+# reported (exit 1: Claude Code shows the line, does not block) rather than
+# silently skipped, because a guard that is not running should not look
+# like a guard that found nothing.
 py="$dir/$name.py"
 if [ -f "$py" ]; then
-    if command -v python3 >/dev/null 2>&1; then
-        python3 "$py" "$@"
-    elif command -v python >/dev/null 2>&1; then
-        python "$py" "$@"
+    interp=""
+    for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1 && "$cand" -c pass >/dev/null 2>&1; then
+            interp=$cand
+            break
+        fi
+    done
+    if [ -n "$interp" ]; then
+        "$interp" "$py" "$@"
     else
-        echo "hook.sh: $name.py needs python3 (or python), and neither is on PATH; hook not run" >&2
+        echo "hook.sh: $name.py needs a working python3 (or python) on PATH, and neither runs; hook not run" >&2
         finish 1
     fi
     finish $?

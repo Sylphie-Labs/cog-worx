@@ -47,139 +47,62 @@ OVERRIDE. Re-run with the prefix `HIVE_GIT_GUARD=allow git ...`. The prefix is
 read from the command text, so the intent is in the transcript, and nothing
 is remembered between calls.
 
-Compound commands are walked segment by segment (&&, ||, ;, |, backticks,
-$(...), newlines); a leading `cd` and git's own `-C` are honoured so the check
-runs where the command would. Heredoc bodies are skipped. A report is capped
-at 40 lines. Standard library only.
+WHAT IT READS. Compound commands are walked segment by segment (&&, ||, ;, |,
+newlines); a leading `cd` (with `~`, `$HOME` and `$PWD` expanded) and git's own
+`-C` are honored so the check runs where the command would. A `cd` whose target
+is not then an existing directory (a substitution, another variable, a glob, a
+missing path) leaves the check in the directory it was in. Wrappers are looked
+through (sudo, timeout, nice, env, nohup, command...). The text inside a
+command is read too, up to three levels deep: every `$(...)` and backtick substitution (in double quotes as
+well), the argument of `sh`/`bash`/`zsh`/`dash`/`ksh -c`, and the arguments
+of `eval`; a `cd` inside such a body applies inside it. Not read: a
+substitution inside a heredoc whose delimiter is quoted (the shell expands
+nothing there), a script file, an alias, and anything deeper than three
+levels. Heredoc bodies are skipped. A report is capped at 40 lines. Standard
+library only.
 """
 import json
 import os
-import re
 import shlex
 import subprocess
 import sys
 
+# The tokenizer is shared with secret-guard.py and imported from this file's
+# own directory. Without this, the import would leave a __pycache__/ in every
+# connected repo's .claude/hooks/.
+sys.dont_write_bytecode = True
+try:
+    import hive_shell
+except ImportError as e:
+    print(f"git-guard: hive_shell.py is missing next to this file ({e}); not checked. "
+          "Re-run init_repo.py to restore it.", file=sys.stderr)
+    sys.exit(1)
+from hive_shell import is_git, parse_git, segments  # noqa: E402
+
+MAX_DEPTH = 3
 OVERRIDE_VAR = "HIVE_GIT_GUARD"
 OVERRIDE_VALUE = "allow"
-SEGMENT_BREAKS = {";", "&&", "||", "|", "&", "|&", "(", ")", ";;", "`"}
-PUNCTUATION = "();<>|&`"   # shlex's default set plus the backtick
 MAX_REPORT_LINES = 40
-PREFIX_WORDS = {"env", "command", "exec", "nohup", "time", "builtin"}
-ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-# Global git options that take a value, and ones that do not.
-GIT_GLOBAL_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
-GIT_GLOBAL_FLAGS = {"-p", "--paginate", "-P", "--no-pager", "--no-replace-objects",
-                    "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs",
-                    "--icase-pathspecs", "--no-optional-locks", "--bare"}
 
-
-class GuardError(Exception):
-    """The guard could not do its job; reported on stderr with exit 1."""
+# The guard could not do its job; reported on stderr with exit 1.
+GuardError = hive_shell.ParseError
 
 
 # ---------------------------------------------------------------- parsing
-
-def strip_heredocs(command):
-    """Drop heredoc bodies so their lines are not read as commands."""
-    out = []
-    lines = command.split("\n")
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        out.append(line)
-        m = HEREDOC_RE.search(line)
-        i += 1
-        if m:
-            terminator = m.group(2)
-            j = i
-            while j < len(lines) and lines[j].strip() != terminator:
-                j += 1
-            if j < len(lines):
-                i = j + 1  # skip the body and the terminator line
-            # else: `<<` inside a quoted string, not a heredoc; keep reading
-    return out
-
-
-def segments(command):
-    """Split a shell command into simple-command token lists.
-
-    Quotes are honoured (so `echo 'git reset --hard'` is one echo argument),
-    operators split, newlines split. Raises GuardError on shell the tokenizer
-    cannot read, such as an unterminated quote.
-    """
-    text = " ; ".join(strip_heredocs(command))
-    # posix=True strips an unquoted backslash, which is what Git Bash does
-    # before git sees the word, so a Windows path in a command tokenises the
-    # way the shell would run it. Quoted forms keep their backslashes.
-    lex = shlex.shlex(text, posix=True, punctuation_chars=PUNCTUATION)
-    lex.whitespace_split = True
-    try:
-        tokens = list(lex)
-    except ValueError as e:
-        raise GuardError(f"could not parse the command ({e}); not checked")
-    out, cur = [], []
-    skip_next = False
-    for tok in tokens:
-        if skip_next:
-            skip_next = False
-            continue
-        if tok in SEGMENT_BREAKS:
-            if cur:
-                out.append(cur)
-            cur = []
-        elif tok and all(ch in "<>&" for ch in tok):
-            # A redirection: the next token is its target, not an argument,
-            # and a bare digit just before it (2>&1) is the fd, not an argument.
-            if cur and cur[-1].isdigit():
-                cur.pop()
-            skip_next = True
-        else:
-            cur.append(tok)
-    if cur:
-        out.append(cur)
-    return out
-
+# Tokenizing lives in hive_shell.py. What is left here is the one thing that
+# is this guard's own: the override prefix.
 
 def split_prefix(seg):
-    """Peel `VAR=x ... env command` off a segment. Returns (overridden, rest)."""
-    overridden = False
-    i = 0
-    while i < len(seg):
-        tok = seg[i]
-        if ASSIGNMENT_RE.match(tok):
-            name, _, value = tok.partition("=")
-            if name == OVERRIDE_VAR and value == OVERRIDE_VALUE:
-                overridden = True
-            i += 1
-        elif tok in PREFIX_WORDS:
-            i += 1
-        else:
-            break
-    return overridden, seg[i:]
-
-
-def is_git(word):
-    base = os.path.basename(word)
-    return base == "git" or base == "git.exe"
-
-
-def parse_git(rest, cwd):
-    """(subcommand, args, cwd) for a `git ...` segment, or None."""
-    i = 1
-    while i < len(rest):
-        tok = rest[i]
-        if tok in GIT_GLOBAL_WITH_VALUE:
-            if tok == "-C" and i + 1 < len(rest):
-                cwd = os.path.normpath(os.path.join(cwd, rest[i + 1]))
-            i += 2
-        elif tok.startswith("--") and "=" in tok and tok.split("=", 1)[0] in GIT_GLOBAL_WITH_VALUE:
-            i += 1
-        elif tok in GIT_GLOBAL_FLAGS or (tok.startswith("-") and tok != "--"):
-            i += 1
-        else:
-            return tok, rest[i + 1:], cwd
-    return None
+    """Peel the wrappers off a segment (`VAR=x sudo -u me timeout 5 ...`, see
+    hive_shell.peel). Returns (overridden, rest). The override counts only
+    where the variable can reach git: before it directly, or through a wrapper
+    that passes the environment on (nice, timeout, nohup, command), or given
+    by env or sudo itself. `HIVE_GIT_GUARD=allow sudo git ...` does not count
+    (sudo clears the environment, so git never sees the variable), nor does
+    the word after command, nohup, timeout or nice (the shell would run it as
+    a command). When unsure, it is not an override."""
+    _, rest, _, reaching = hive_shell.peel(seg)
+    return f"{OVERRIDE_VAR}={OVERRIDE_VALUE}" in reaching, rest
 
 
 # ---------------------------------------------------------------- git
@@ -408,17 +331,63 @@ RULES = {
 
 # ---------------------------------------------------------------- main
 
-def findings_for(command, cwd):
+def next_dir(here, target):
+    """The directory a `cd target` moves the check to. `~`, `$HOME` and `$PWD`
+    (with or without braces) are expanded. A target that is not then an
+    existing directory (it holds another expansion or a substitution, a glob,
+    or just is not there) leaves the check where it was: the guard cannot know
+    where the shell would end up, and standing aside would switch it off."""
+    # The shell's home is $HOME. On Windows os.path.expanduser reads
+    # USERPROFILE instead, which Git Bash does not use for `~` or `$HOME`.
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    for name, value in (("HOME", home), ("PWD", here)):
+        target = target.replace("${" + name + "}", value)
+        if target == "$" + name or target.startswith("$" + name + "/"):
+            target = value + target[len(name) + 1:]
+    if target == "~" or target.startswith("~/"):
+        target = home + target[1:]
+    path = os.path.normpath(os.path.join(here, os.path.expanduser(hive_shell.native_path(target))))
+    return path if os.path.isdir(path) and not any(c in target for c in "$`*?[") else here
+
+
+def findings_for(command, cwd, depth=0, allowed=False):
+    """What `command` would lose. Substitutions are cut out of the text and
+    checked on their own, where the shell would run them; `sh -c` and `eval`
+    arguments are parsed again. `allowed` says the override reached this
+    command line from an outer `HIVE_GIT_GUARD=allow sh -c ...`."""
     found = []
+    spans = hive_shell.substitution_spans(command) if depth < MAX_DEPTH else []
+    text = hive_shell.cut_substitutions(command, spans)
+    checked = set()
+
+    def unplace(word):
+        return hive_shell.restore_substitutions(word, command, spans)
+
+    def check_spans(words, where):
+        for word in words:
+            for m in hive_shell.PLACEHOLDER_RE.finditer(word):
+                k = int(m.group(1))
+                if k not in checked:
+                    checked.add(k)
+                    found.extend(findings_for(spans[k][2], where, depth + 1))
+
     here = cwd
-    for seg in segments(command):
+    for seg in segments(text):
+        check_spans(seg, here)
         overridden, rest = split_prefix(seg)
         if not rest:
             continue
+        rest = [unplace(t) for t in rest]
         if rest[0] in ("cd", "pushd") and len(rest) > 1 and rest[1] != "-":
-            here = os.path.normpath(os.path.join(here, os.path.expanduser(rest[1])))
+            here = next_dir(here, rest[1])
             continue
-        if not is_git(rest[0]) or overridden:
+        base = hive_shell.prefix_base(rest[0])
+        if depth < MAX_DEPTH and (base in hive_shell.SHELLS or base == "eval"):
+            line = hive_shell.shell_c_argument(rest[1:]) if base != "eval" else " ".join(rest[1:])
+            if line is not None:
+                found.extend(findings_for(line, here, depth + 1, allowed or overridden))
+            continue
+        if not is_git(rest[0]) or overridden or allowed:
             continue
         parsed = parse_git(rest, here)
         if not parsed:
@@ -430,6 +399,10 @@ def findings_for(command, cwd):
         finding = rule(args, git_cwd, " ".join(shlex.quote(t) for t in rest))
         if finding:
             found.append(finding)
+    for k in range(len(spans)):          # one in a comment or a redirect target
+        if k not in checked:
+            checked.add(k)
+            found.extend(findings_for(spans[k][2], here, depth + 1))
     return found
 
 

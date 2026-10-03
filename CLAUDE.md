@@ -73,3 +73,31 @@ exactly-once on the TimescaleDB journal, no model re-call on replay (S6) · own 
 model-agnostic (S4) · structure over prompting, never trust the model's self-report (S9) · ruff + mypy
 `--strict` + pytest clean · port/generalize proven pieces from `tess`/`sylphie`/`biz-firm` rather than
 reinventing in the abstract · spike before harden (S12).
+
+<!-- hive-client:security:start (managed by hive-client init_repo.py; your own text goes outside these markers) -->
+## Secrets and credentials
+
+- Never run a command whose normal output is a credential, and never read a
+  file that holds one: `git credential fill`, `gh auth token`, keychain
+  lookups, a bare `env` or `printenv`, `.env` files, private keys,
+  `~/.aws/credentials`.
+- To check that a credential works, look at the exit code
+  (`command >/dev/null 2>&1; echo $?`) or watch a dummy value get rejected.
+  Do not print what a helper returns.
+- To use a secret, capture it without showing it:
+  `NAME="$(command)" some-command`. Do not echo the variable. For values in
+  a `.env` file, let the program load the file (`--env-file`, `source`)
+  instead of printing it.
+- To check that a variable is set: `test -n "${NAME:-}"` or
+  `echo "${NAME:+set}"`. To see which keys a `.env` file expects, read
+  `.env.example`.
+- Never put a secret in a commit, a pull request, a ticket or a message. If
+  one shows up in output, say so at once and do not repeat it.
+- This repo's hooks and permission rules enforce part of this. The secret
+  guard blocks the commands above and names a safe alternative; the git
+  guard blocks git commands that would discard uncommitted work; the deny
+  rules in `.claude/settings.json` block reading secret files. If one of
+  them stops something you need, tell the person. Do not look for another
+  way to run it. Exceptions are theirs to add.
+- Do not force-push, and do not push to `production`. A person does those.
+<!-- hive-client:security:end -->
