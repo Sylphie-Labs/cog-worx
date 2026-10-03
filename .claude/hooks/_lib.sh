@@ -148,32 +148,21 @@ find_claude() {
     return 1
 }
 
-# transcript_cut <transcript> <from_offset> <out_file> -- copies the bytes of
-# <transcript> from <from_offset> up to (and including) the last newline in
-# the file into <out_file>, so the cut never splits a JSONL record. Prints the
-# end offset that was cut to (the next pass starts there). Prints <from_offset>
-# unchanged and writes nothing when there is no complete new line. If the
-# transcript has shrunk below <from_offset> (rewritten), starts over from 0.
+# transcript_cut <transcript> <from_offset> <out_file> -- writes the REDACTED
+# bytes of <transcript> from <from_offset> up to (and including) the last
+# newline in the file into <out_file>, so the cut never splits a JSONL record
+# and the scribe never sees a secret (hive_redact.py, next to this file, does
+# both in one step: the unredacted slice never touches disk). Prints two
+# lines: the end offset in the ORIGINAL transcript (the next pass starts
+# there), then what was redacted as `kind=n ...`, or an empty line. Prints
+# <from_offset> unchanged and writes nothing when there is no complete new
+# line. If the transcript has shrunk below <from_offset> (rewritten), starts
+# over from 0. Fails, with nothing written, when the step cannot run; the
+# caller must then skip the pass.
+#
+# `here` is the hooks directory, set by the script that sourced this file.
 transcript_cut() {
-    _py -c '
-import sys
-tp, start, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-with open(tp, "rb") as f:
-    f.seek(0, 2)
-    size = f.tell()
-    if size < start:
-        start = 0
-    f.seek(start)
-    data = f.read(size - start)
-end = data.rfind(b"\n")
-if end < 0:
-    sys.stdout.write(str(start))
-    sys.exit(0)
-data = data[:end + 1]
-with open(out, "wb") as o:
-    o.write(data)
-sys.stdout.write(str(start + len(data)))
-' "$1" "$2" "$3"
+    _py "${here:-.}/hive_redact.py" cut "$1" "$2" "$3"
 }
 
 # pid_alive <pid> -- true when a process with that pid exists.
@@ -203,7 +192,7 @@ busy_is_live() {
 # from this hook: its own session (so a process-group TERM aimed at the
 # hook's tree does not kill a pass mid-run), stdin from /dev/null (nohup only
 # redirects a TTY, and the hook's stdin is Claude Code's JSON pipe), output
-# discarded. python3 does the setsid so the behaviour is the same on macOS
+# discarded. python3 does the setsid so the behavior is the same on macOS
 # (no setsid binary) and Linux. Prints the child's pid.
 spawn_detached() {
     nohup python3 -c 'import os, sys

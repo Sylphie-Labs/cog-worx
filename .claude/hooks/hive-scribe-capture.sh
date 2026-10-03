@@ -19,13 +19,28 @@
 #   - capture mode keeps looping while the transcript has grown by another
 #     debounce worth since its last pass, so a Stop that arrived while a pass was
 #     running (and was therefore turned away) is still picked up by that pass;
-#   - a lock file with the running pass's pid serialises passes per session.
+#   - a lock file with the running pass's pid serializes passes per session.
 #
 # State, per session id, under $STATE_DIR:
 #   <sid>.last         byte offset of the transcript captured so far (one line)
 #   <sid>.busy         pid of the capture pass currently running
-#   <sid>.delta.jsonl  the slice handed to the running pass; removed when it ends
 #   <sid>.log          combined output of every pass
+#   work/<sid>/        the running pass's working directory. It holds one
+#                      file, delta.jsonl: the REDACTED slice handed to the
+#                      pass. Removed when the run ends.
+#
+# What the scribe can read. The slice is redacted before it is written
+# (hive_redact.py). The capture session runs with `--tools Read` (no Bash, no
+# search tools) and `--permission-mode dontAsk` (anything that would prompt is
+# denied). Those two flags alone do NOT stop it reading other files (checked
+# live on Claude Code 2.1.287, 2026-10-01); the settings file passed with
+# --settings (hive-scribe.settings.json, blockReadsOutsideWorkingDirectories)
+# is what does. `--restricted` is not used: it drops the user-scope hive-scribe
+# MCP server the scribe writes through. The limit is "the working directories":
+# the scribe's own directory, which holds only the slice, plus any
+# permissions.additionalDirectories the person configured for themselves.
+# `Read` is deliberately NOT in --allowedTools: listed there it would be
+# pre-approved for every path. See tik_01M1MK92XRJ1CZSV52AQ35Q8HA.
 #
 # TEMPLATE: this file is installed by init_repo.py into a target repo's
 # .claude/hooks/. The slug placeholder below is replaced by init_repo.py at
@@ -33,10 +48,12 @@
 # from the installed repo itself (.claude/hooks/hive-scribe.prompt.md, next to where
 # this script lives once installed).
 #
-# Requires Claude Code 2.1.69 or later: the capture prompt is passed with
-# --append-system-prompt-file (documented from that release), never inline,
-# so the .ps1 sibling can do the same under cmd.exe's command-line cap. An
-# older CLI fails the pass with "unknown option", which the pass log records.
+# Requires a Claude Code CLI with --append-system-prompt-file (2.1.69 or
+# later), --tools, --settings, and --permission-mode dontAsk; checked on
+# 2.1.287. The
+# capture prompt is passed by file, never inline, so the .ps1 sibling can do
+# the same under cmd.exe's command-line cap. An older CLI fails the pass with
+# "unknown option", which the pass log records.
 #
 # Usage:  hive-scribe-capture.sh                                 (hook mode)
 #         hive-scribe-capture.sh __capture <sid> <transcript>    (internal)
@@ -62,7 +79,7 @@ MAX_PASSES_PER_RUN=8  # bound on the catch-up loop inside one capture process
 # once per session. Deduped through a MARKER FILE, not by grepping the session
 # log: that log is also where every scribe pass's stdout and stderr is appended,
 # so a key matched against its contents can be satisfied by a pass that merely
-# MENTIONED the phrase -- and the scribe summarises sessions working on this
+# MENTIONED the phrase -- and the scribe summarizes sessions working on this
 # very repo. The one diagnostic that exists to make a "connected but silent"
 # repo diagnosable would then be the one thing suppressed.
 log_setup_once() {
@@ -76,15 +93,26 @@ if [ "$1" = "__capture" ]; then
     # ---- capture mode: the scribe session itself ----
     sid=$2
     tp=$3
+    # Checked here as well as in hook mode: `__capture` is directly invocable,
+    # and the id names a directory this branch removes on exit.
+    case "$sid" in ''|*[!0-9A-Za-z_-]*) exit 0 ;; esac
     HIVE_SCRIBE=1
     export HIVE_SCRIBE
+    # The previous layout kept an unredacted slice here. A session that began
+    # under that version may have left one behind; remove this session's only
+    # (not a glob: another repo may still run the old script for another id).
+    rm -f "$STATE_DIR/$sid.delta.jsonl"
     busy="$STATE_DIR/$sid.busy"
     marker="$STATE_DIR/$sid.last"
-    delta="$STATE_DIR/$sid.delta.jsonl"
     log_file="$STATE_DIR/$sid.log"
-    trap 'rm -f "$busy" "$delta"' EXIT
+    # One directory per session, holding only the redacted slice: it is the
+    # scribe's working directory, and so the only place it can read.
+    work_dir="$STATE_DIR/work/$sid"
+    delta="$work_dir/delta.jsonl"
+    # The lock goes last. Once it is gone the next pass may start, and it
+    # makes this same directory.
+    trap 'rm -rf "$work_dir"; rm -f "$busy"' EXIT
     log() { hive_log "$log_file" "$1"; }
-    work_dir="$STATE_DIR/work"
     mkdir -p "$work_dir" || exit 0
     cd "$work_dir" || exit 0
     # The capture prompt sits in this hook's own directory, the same way
@@ -97,6 +125,10 @@ if [ "$1" = "__capture" ]; then
     # own (tik_01M23QQK56K6R43CYTYSWF4R8V). Needs Claude Code with
     # --append-system-prompt-file; see the version note in the header.
     [ -s "$agent_path" ] || { log "capture prompt missing or empty at $agent_path"; exit 0; }
+    # Fail closed: the settings file is the read limit (see the header), so
+    # without it no pass starts.
+    settings_path="$here/hive-scribe.settings.json"
+    [ -s "$settings_path" ] || { log "scribe settings missing or empty at $settings_path; capture skipped"; exit 0; }
     # An inherited CLAUDE_BIN is RE-VALIDATED, not trusted. Hook mode exports one
     # it resolved through find_claude, so through the shipped flow this value is
     # always already checked -- but capture mode re-enters as a fresh /bin/sh and
@@ -104,7 +136,7 @@ if [ "$1" = "__capture" ]; then
     # `__capture` is directly invocable. Defence in depth rather than a live hole.
     #
     # A relative value is rejected even though the `cd "$work_dir"` above has
-    # moved OUT of the repo: it would resolve under $STATE_DIR/work, which is
+    # moved OUT of the repo: it would resolve under $STATE_DIR/work/<sid>, which is
     # not the repo but is not a location anyone chose either. The repo-cwd
     # exposure is hook mode's, not this branch's -- see find_claude's own
     # comment. `${CLAUDE_BIN:-}` for symmetry with the guarded expansions in
@@ -128,7 +160,20 @@ if [ "$1" = "__capture" ]; then
         # The first pass of this run was admitted by the hook's debounce; later
         # ones (catching up on Stops that arrived mid-pass) must earn it again.
         if [ "$n" -gt 1 ] && [ $((size - last)) -lt "$DEBOUNCE" ]; then break; fi
-        end=$(transcript_cut "$tp" "$last" "$delta") || break
+        # Fail closed: when the cut-and-redact step cannot run, no slice
+        # exists, and the scribe is not started on an unredacted one.
+        # The module's stderr is one line naming why (it never carries
+        # transcript content); it goes in the log line.
+        cut_err="$STATE_DIR/$sid.cut-err"
+        cut=$(transcript_cut "$tp" "$last" "$delta" 2>"$cut_err") || {
+            why=$(sed -n 1p "$cut_err" 2>/dev/null | cut -c1-300)
+            rm -f "$cut_err"
+            log "redaction FAILED (${why:-no reason given}): no slice was written; offset stays at $last and the same bytes are retried on the next Stop"
+            break
+        }
+        rm -f "$cut_err"
+        end=$(printf '%s\n' "$cut" | sed -n 1p)
+        redacted=$(printf '%s\n' "$cut" | sed -n 2p)
         case "$end" in ''|*[!0-9]*) break ;; esac
         [ "$end" -gt "$last" ] && [ -s "$delta" ] || break
         if [ "$last" -gt 0 ]; then
@@ -138,11 +183,15 @@ if [ "$1" = "__capture" ]; then
         fi
         prompt="Capture this session into the hive. Session id: $sid. Transcript file to read: $delta. $scope The session memory's external_ref is session:$sid and its tag is session-$sid. This session belongs to hive project '$PROJECT_SLUG'. Pass project: '$PROJECT_SLUG' on every memory_write, ticket_create, decision_record, ticket_list, decision_list and memory_query call."
         log "pass start: bytes [$last,$end)"
+        if [ -n "$redacted" ]; then log "redacted: $redacted"; fi
         "$CLAUDE_BIN" -p "$prompt" \
             --append-system-prompt-file "$agent_path" \
             --model sonnet \
             --max-turns 30 \
-            --allowedTools 'Read,mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' >>"$log_file" 2>&1
+            --settings "$settings_path" \
+            --tools Read \
+            --permission-mode dontAsk \
+            --allowedTools 'mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' >>"$log_file" 2>&1
         rc=$?
         if [ "$rc" -eq 0 ]; then
             printf '%s\n' "$end" > "$marker"

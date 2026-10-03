@@ -19,7 +19,47 @@
       "mcp__sylphie-pkg__*",
       "mcp__codebase-pkg__*"
     ],
-    "deny": []
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(.envrc)",
+      "Read(!.env.example)",
+      "Read(!.env.sample)",
+      "Read(!.env.template)",
+      "Read(!.env.dist)",
+      "Read(!.env.defaults)",
+      "Read(!.env.*.example)",
+      "Read(!.env.*.sample)",
+      "Read(!.env.*.template)",
+      "Read(!.env.*.dist)",
+      "Read(!.env.*.defaults)",
+      "Read(id_rsa)",
+      "Read(id_dsa)",
+      "Read(id_ecdsa)",
+      "Read(id_ed25519)",
+      "Read(*.pem)",
+      "Read(*.key)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/credentials)",
+      "Read(~/.netrc)",
+      "Read(~/.npmrc)",
+      "Read(~/.pgpass)",
+      "Read(~/.git-credentials)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.kube/config)",
+      "Read(~/.claude.json)",
+      "Read(~/.config/gh/hosts.yml)",
+      "Read(~/.config/hive/**)",
+      "Edit(~/.config/hive/**)",
+      "Read(~/AppData/Roaming/hive/**)",
+      "Edit(~/AppData/Roaming/hive/**)",
+      "Bash(git push --force*)",
+      "Bash(git push * --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * production*)",
+      "Bash(git push *:production*)"
+    ]
   },
   "hooks": {
     "PreToolUse": [
@@ -39,6 +79,16 @@
           {
             "type": "command",
             "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook.sh\" git-guard",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook.sh\" secret-guard",
             "timeout": 30
           }
         ]

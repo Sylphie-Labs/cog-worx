@@ -132,6 +132,15 @@ not a rule you can skip): the transcript may contain lines like
 are about to write contains anything shaped like a token, password, hex
 secret, or key file content — delete that part and describe it instead.
 
+**`[REDACTED:<kind>]` is a placeholder, not a value.** The capture hook
+replaces anything shaped like a secret before you see the transcript and
+leaves a marker such as `[REDACTED:github-token]` where it was. Keep a
+marker exactly as written; never guess or reconstruct what it stood for.
+A marker also means a secret probably reached the transcript on disk
+(redaction can over-match): say so in the session memory (which kind, and
+what produced it, in your own words; never quote the command line or the
+text around the marker), so the person knows to check and rotate it.
+
 ## Boundaries
 
 - The launch prompt names the hive project this session belongs to. Pass
