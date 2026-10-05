@@ -72,6 +72,10 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 PROJECT_SLUG='cog-worx'   # replaced by init_repo.py at install time
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hive-scribe"
+# Markers, logs and the redacted slice are for this user only. The umask covers
+# everything made from here on; the chmod after each mkdir of $STATE_DIR closes
+# a directory an earlier version made.
+umask 077
 DEBOUNCE=30000        # bytes of new transcript before another pass is worth running
 MAX_PASSES_PER_RUN=8  # bound on the catch-up loop inside one capture process
 
@@ -214,6 +218,7 @@ fi
 # its own, written once, before anything that needs python3 to parse.
 if ! python3 -c 'import json' >/dev/null 2>&1; then
     mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+    chmod 700 "$STATE_DIR" 2>/dev/null
     grep -qsF "python3 not usable" "$STATE_DIR/hook-errors.log" \
         || hive_log "$STATE_DIR/hook-errors.log" "python3 not usable on this machine; hive-scribe capture is disabled until it is installed"
     exit 0
@@ -231,6 +236,7 @@ case "$sid" in *[!0-9A-Za-z_-]*) exit 0 ;; esac
 [ -f "$tp" ] || exit 0
 
 mkdir -p "$STATE_DIR" || exit 0
+chmod 700 "$STATE_DIR" 2>/dev/null
 
 
 # Debounce: only capture when the transcript has grown >= DEBOUNCE since the

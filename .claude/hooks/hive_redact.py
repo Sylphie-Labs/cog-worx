@@ -34,6 +34,18 @@ assignment. Each match becomes [REDACTED:<kind>]. The kernel-side check
 (tik_01M2TX3JKJ4XCCH7N6V2BQZFPE) should mirror these kinds: Python and Rust
 cannot share the code, so the list of kinds is the contract.
 
+SPANS. find_spans(line) gives the same matches as positions in the line. It
+is for sweep_secrets.py in hive-client, which reports and overwrites secrets
+that are already on disk. redact_line and find_spans are one loop (_scan), so
+what capture redacts and what the sweep finds cannot differ.
+
+A MASK IS NOT A SECRET. A value that is only `*`, or that begins with a token's
+prefix (zero to eleven letters, `_` or `-`) and four or more `*`, where what
+follows the stars is the end of the value or a byte that is not a letter, digit
+or `*`, is what the sweep's scrub writes (`ghs_****`, and `ghs_****;echo` when
+punctuation followed the token). It is left alone: there is nothing in it to
+redact. Stars followed by letters or digits (`pass****word9`) are not a mask.
+
 The slice stays valid JSONL. A transcript record is one line of JSON, so a
 secret sits inside a JSON string, where a quote is `\\"` and a newline is
 `\\n`. No replacement contains a quote or a backslash, and a match never
@@ -123,7 +135,7 @@ KINDS = [
     ("url-credential", re.compile(
         rb"(?P<keep>(?<=://)[^\s/:@\"\\]{0,128}:)(?P<secret>[^\s/\"\\]{1,256})(?=@)")),
     # NAME=value / "name": "value" / name: value, where the name says secret.
-    # This pattern matches the name and the separator only; _redact_assignments
+    # This pattern matches the name and the separator only; _assignment_values
     # reads the value. The name's tail is bounded and its head is not matched
     # at all, so a long run of word characters costs linear time, not
     # quadratic. The tail takes no dot, so `secret-guard.py:50:...` in grep
@@ -137,6 +149,13 @@ _NOT_A_SECRET = re.compile(rb"(?i)^(?:true|false|null|none|[0-9.]+)$")
 _HEAD = re.compile(rb"[A-Za-z0-9_-]{0,64}$")
 _ALNUM = re.compile(rb"[A-Za-z0-9]+")
 _MARKER = b"[REDACTED:"
+# A mask, not a secret: nothing but `*`, or a value that BEGINS with zero to
+# eleven of `[A-Za-z_-]` and four or more `*`, after which comes the end of the
+# value or a byte that is not a letter, digit or `*` (`ghs_****`, `sk-ant-****`,
+# `ghs_****;echo`). It is what the sweep's scrub leaves behind, so a scrubbed
+# file must not match again. Stars followed by letters or digits are not a
+# mask: `pass****word9` still holds a secret. Use `.match`.
+_MASK = re.compile(rb"\*+\Z|[A-Za-z_-]{0,11}\*{4,}(?![A-Za-z0-9*])")
 
 _QUOTED_MAX = 512        # longest quoted value read
 _UNQUOTED_WINDOW = 256   # unquoted value read in one bounded step
@@ -204,13 +223,12 @@ def _assignment_is_literal(m, value, quoted):
     return not re.search(rb"[a-z]", head + m.group("name"))
 
 
-def _redact_assignments(pattern, line, counts):
-    """Replace the value of every secret-named assignment in `line`. The
-    pattern finds the name and separator; the value is read here: up to the
-    closing quote for a quoted one, else up to whitespace, a quote, a
+def _assignment_values(pattern, line):
+    """[(start, end)] of the value of every secret-named assignment in `line`.
+    The pattern finds the name and separator; the value is read here: up to
+    the closing quote for a quoted one, else up to whitespace, a quote, a
     backslash or a bracket."""
-    out = []
-    pos = 0       # everything before this is copied or replaced
+    found = []
     scan = 0      # where the next search starts
     while True:
         m = pattern.search(line, scan)
@@ -227,17 +245,15 @@ def _redact_assignments(pattern, line, counts):
         if end is None:
             end = _UNQUOTED_WINDOWED.match(line, start).end()
         value = line[start:end]
-        if value.startswith(_MARKER) or not _assignment_is_literal(m, value, quoted):
+        if (value.startswith(_MARKER) or _MASK.match(value)
+                or not _assignment_is_literal(m, value, quoted)):
             scan = m.end()
             continue
         if not quoted and end - start == _UNQUOTED_WINDOW:
             end = _UNQUOTED.match(line, end).end()      # take the rest of a long value
-        counts["assignment"] = counts.get("assignment", 0) + 1
-        out.append(line[pos:start])
-        out.append(b"[REDACTED:assignment]")
-        pos = scan = end
-    out.append(line[pos:])
-    return b"".join(out)
+        found.append((start, end))
+        scan = end
+    return found
 
 
 def _bearer_is_literal(m):
@@ -261,32 +277,102 @@ def _basic_is_literal(m):
 # Patterns whose match is redacted only when the value reads as a literal
 # secret. The curl form of basic-auth is a shape that is always redacted.
 _LITERAL_CHECKS = {_BEARER: _bearer_is_literal, _BASIC_HEADER: _basic_is_literal}
-_SCANNERS = {"assignment": _redact_assignments}
+_SCANNERS = {"assignment": _assignment_values}
+
+
+def _matches(kind, pattern, line):
+    """[(start, end)] in `line`, in order: the part of each match of this kind
+    that is replaced. A value that is already a marker, or a mask, is not a
+    match."""
+    if kind in _SCANNERS:
+        return _SCANNERS[kind](pattern, line)
+    has_secret = "secret" in pattern.groupindex
+    check = _LITERAL_CHECKS.get(pattern)
+    found = []
+    for m in pattern.finditer(line):
+        if not has_secret:
+            found.append(m.span())
+            continue
+        secret = m.group("secret")
+        if secret.startswith(_MARKER) or _MASK.match(secret):
+            continue
+        if check is not None and not check(m):
+            continue
+        found.append(m.span("secret"))
+    return found
+
+
+def _replace(line, spans, found, kind):
+    """Replace each (start, end) of `found` in `line` with this kind's marker.
+    `spans` describes the markers already in `line`: (start, end, orig_start,
+    orig_end, kind), in order, where start:end is the marker in `line` and
+    orig_start:orig_end is what it replaced in the original line. Returns the
+    new line and the new list.
+
+    Offsets are mapped back through the earlier markers, so every span is in
+    the original line's offsets however much the line has changed length. A
+    match that touches earlier markers swallows them: one span, of this kind,
+    covering all of what they covered."""
+    marker = b"[REDACTED:" + kind.encode("ascii") + b"]"
+    out = []
+    new_spans = []
+    pos = 0       # everything before this in `line` is copied or replaced
+    shift = 0     # (offset in the new line) - (offset in `line`), at `pos`
+    i = 0         # the next earlier marker not yet carried over or swallowed
+    for start, end in found:
+        while i < len(spans) and spans[i][1] <= start:
+            s = spans[i]
+            new_spans.append((s[0] + shift, s[1] + shift, s[2], s[3], s[4]))
+            i += 1
+        # Past the last marker before `start`, an offset in `line` and one in
+        # the original differ by a constant.
+        delta = spans[i - 1][3] - spans[i - 1][1] if i else 0
+        orig_start = start + delta
+        orig_end = end + delta
+        while i < len(spans) and spans[i][0] < end:
+            s = spans[i]
+            orig_start = min(orig_start, s[2])
+            orig_end = max(end + (s[3] - s[1]), s[3])
+            i += 1
+        out.append(line[pos:start])
+        out.append(marker)
+        new_start = start + shift
+        new_spans.append((new_start, new_start + len(marker), orig_start, orig_end, kind))
+        shift += len(marker) - (end - start)
+        pos = end
+    for s in spans[i:]:
+        new_spans.append((s[0] + shift, s[1] + shift, s[2], s[3], s[4]))
+    out.append(line[pos:])
+    return b"".join(out), new_spans
+
+
+def _scan(line, counts=None):
+    """(the line with every match replaced, the spans). One loop gives both,
+    so what capture redacts and what the sweep finds cannot differ. The kinds
+    run in table order and each sees the markers of the ones before it."""
+    spans = []
+    for kind, pattern in KINDS:
+        found = _matches(kind, pattern, line)
+        if not found:
+            continue
+        if counts is not None:
+            counts[kind] = counts.get(kind, 0) + len(found)
+        line, spans = _replace(line, spans, found, kind)
+    return line, spans
 
 
 def redact_line(line, counts):
     """One transcript line with every match replaced. `counts` (kind -> n) is
     updated in place."""
-    for kind, pattern in KINDS:
-        if kind in _SCANNERS:
-            line = _SCANNERS[kind](pattern, line, counts)
-            continue
-        marker = b"[REDACTED:" + kind.encode("ascii") + b"]"
-        check = _LITERAL_CHECKS.get(pattern)
+    return _scan(line, counts)[0]
 
-        def replace(m, kind=kind, marker=marker, check=check):
-            if m.groupdict().get("secret", b"").startswith(_MARKER):
-                return m.group(0)       # already a marker: leave it, do not count it
-            if "secret" in m.groupdict():
-                if check is not None and not check(m):
-                    return m.group(0)
-                counts[kind] = counts.get(kind, 0) + 1
-                return m.group("keep") + marker
-            counts[kind] = counts.get(kind, 0) + 1
-            return marker
 
-        line = pattern.sub(replace, line)
-    return line
+def find_spans(line):
+    """[(start, end, kind), ...] for every secret in `line`, in order, in the
+    line's own byte offsets. start:end is the part redact_line replaces with
+    a marker: the whole match, or its `secret` group, or an assignment's
+    value. The sweep (sweep_secrets.py in hive-client) is built on this."""
+    return [(s[2], s[3], s[4]) for s in _scan(line)[1]]
 
 
 def redact(data):
