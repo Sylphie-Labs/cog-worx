@@ -29,8 +29,12 @@ It covers: git credential fill/get and the credential helpers; gh auth token;
 keychain lookups; printenv, env, a bare export/declare/typeset/set, and echo
 or printf of a plain $NAME whose name looks secret (TOKEN, KEY, PASSWORD...);
 cat and the other readers on .env files, private keys, .pem/.key files and
-the credential files under the home directory; kubectl/oc secret values; and
-docker/podman inspect of the environment. A block message prints the rule and
+the credential files under the home directory; kubectl/oc secret values;
+docker/podman inspect of the environment; a command run inside a container
+(docker exec, docker run, docker compose exec/run) that any of these rules
+would block outside one; docker compose config; and the cloud and package
+CLIs that print a token (gcloud auth print-access-token, aws configure get of
+a secret, op read, npm token list). A block message prints the rule and
 a canonical form of the command (its program and the words the rule matched),
 never the command itself: an inline value must not be copied into the message.
 
@@ -130,8 +134,36 @@ URL_NAMES = ("DATABASE_URL", "DB_URL", "REDIS_URL", "MONGODB_URI", "MONGO_URL",
 # or `!` (indirection) before the name and anything up to the first `}` after.
 EXPANSION_RE = re.compile(r"\$(?:\{([#!]?)([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}?|([A-Za-z_][A-Za-z0-9_]*))")
 # docker and podman options that come before the subcommand and take a value.
-DOCKER_GLOBAL_VALUES = {"--context", "-c", "-H", "--host", "--config", "-l", "--log-level"}
+DOCKER_GLOBAL_VALUES = {"--context", "-c", "-H", "--host", "--config", "-l", "--log-level",
+                        "--tlscacert", "--tlscert", "--tlskey"}
 GH_GLOBAL_VALUES = {"-R", "--repo"}
+COMPOSE_GLOBAL_VALUES = {"-f", "--file", "-p", "--project-name", "--profile", "--env-file",
+                         "--project-directory", "--parallel", "--progress", "--ansi",
+                         # docker-compose v1, and docker's own when typed after `compose`
+                         "--log-level", "-H", "--host", "--context", "-c",
+                         "--tlscacert", "--tlscert", "--tlskey"}
+COMPOSE_PROGRAMS = ("docker-compose", "podman-compose")
+OP_GLOBAL_VALUES = {"--account", "--config", "--session", "--encoding", "--format"}
+NPM_GLOBAL_VALUES = {"--registry", "--userconfig", "--globalconfig", "--prefix", "--cache",
+                     "--loglevel", "--otp", "-w", "--workspace"}
+# `exec` (docker, podman, compose) has few options that take a value: list them.
+EXEC_VALUE_OPTIONS = {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir",
+                      "--detach-keys", "--index"}
+EXEC_VALUE_LETTERS = set("euw")
+# `run` has dozens, and new ones arrive: list its flags, and take every other
+# option to have a value.
+RUN_FLAGS = {"--rm", "--detach", "--interactive", "--tty", "--init", "--privileged",
+             "--read-only", "--publish-all", "--no-healthcheck", "--oom-kill-disable",
+             "--sig-proxy", "--quiet", "--help", "--no-TTY", "--no-deps", "--service-ports",
+             "--use-aliases", "--build", "--quiet-pull", "--quiet-build", "--remove-orphans",
+             "--disable-content-trust"}
+RUN_FLAG_LETTERS = set("ditPqT")
+# `docker compose config` options that list names or hashes, or write the
+# result to a file, and so print no values.
+COMPOSE_CONFIG_SAFE = {"--services", "--volumes", "--profiles", "--images", "--quiet", "-q",
+                       "--hash", "-o", "--output"}
+GCLOUD_TOKEN_PRINTERS = ("print-access-token", "print-identity-token")
+AWS_SECRET_SETTINGS = ("aws_secret_access_key", "aws_session_token")
 
 CAPTURE = 'to use the value without showing it, capture it: NAME="$(...)" some-command'
 
@@ -164,6 +196,18 @@ RULES = {
     "docker-inspect": (
         "it prints the container's environment, which is where its secrets are",
         "pick the fields you need: docker inspect --format '{{.State.Status}}' NAME"),
+    "container-env": (
+        "it prints secrets from inside a container",
+        "check one variable is set without printing it: "
+        "docker exec NAME sh -c 'echo \"${VAR:+set}\"'"),
+    "compose-config": (
+        "it prints the resolved compose file, with every environment value filled in",
+        "list names only (docker compose config --services, --volumes, --images), "
+        "or check that the file is valid: docker compose config --quiet"),
+    "cloud-token": (
+        "it prints an access token or a stored secret",
+        "discard the output and check the exit code (... >/dev/null 2>&1; echo $?); "
+        + CAPTURE),
     "allow-file": (
         "it touches the secret guard's own allow file",
         "a person edits that file by hand, outside the session"),
@@ -432,6 +476,112 @@ def docker_format_is_safe(fmt):
 
 # ---------------------------------------------------------------- rules
 
+def container_command(args, sub):
+    """The command a `docker exec` or `docker run` runs inside the container:
+    `args` (the words after the subcommand) without the options and without the
+    container, image or service name. An `--entrypoint` is the program, and
+    the words after the image are its arguments. Empty when there is no command."""
+    i = 0
+    entrypoint = []
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            break
+        if not a.startswith("-") or a == "-":
+            break
+        i += 1
+        if a == "--entrypoint" and i < len(args):
+            entrypoint = [args[i]]
+        elif a.startswith("--entrypoint="):
+            entrypoint = [a.split("=", 1)[1]]
+        if a.startswith("--"):
+            takes_value = "=" not in a and (
+                a in EXEC_VALUE_OPTIONS if sub == "exec" else a not in RUN_FLAGS)
+        else:
+            # -it, -e NAME=value, -eNAME=value: the first letter that takes a
+            # value ends the cluster, and the value is the next word only when
+            # that letter is the last one.
+            takes_value = False
+            for j, letter in enumerate(a[1:]):
+                if letter in EXEC_VALUE_LETTERS if sub == "exec" else letter not in RUN_FLAG_LETTERS:
+                    takes_value = j == len(a) - 2
+                    break
+        if takes_value:
+            i += 1
+    command = args[i + 1:]
+    if command[:1] == ["--"]:
+        command = command[1:]
+    return entrypoint + command
+
+
+def check_container(cmd, args, text, cwd, depth, found, tainted):
+    """docker, podman and docker-compose: an inspect that can show the
+    environment, a compose config, and a command run inside a container, which
+    is judged by the same rules as one typed directly."""
+    name, compose = cmd, cmd in COMPOSE_PROGRAMS
+    if compose:
+        dargs = skip_global_options(args, COMPOSE_GLOBAL_VALUES)
+    else:
+        dargs = skip_global_options(args, DOCKER_GLOBAL_VALUES)
+        if dargs[:1] == ["compose"]:
+            name, compose = f"{cmd} compose", True
+            dargs = skip_global_options(dargs[1:], COMPOSE_GLOBAL_VALUES)
+    group = ""
+    if not compose and dargs[:1] in (["container"], ["service"]):
+        group, dargs = dargs[0], dargs[1:]
+    sub = dargs[0] if dargs else ""
+    if sub == "inspect" and not compose:
+        if not docker_format_is_safe(option_value(args, "-f", "--format")):
+            found.append(Finding("docker-inspect", text, f"{cmd} inspect"))
+    elif sub in ("config", "convert") and compose:      # convert: the older name
+        if not any(a.split("=", 1)[0] in COMPOSE_CONFIG_SAFE for a in dargs[1:]):
+            found.append(Finding("compose-config", text, f"{name} config"))
+    elif sub in ("exec", "run") and group != "service" and depth < MAX_DEPTH:
+        inner = container_command(dargs[1:], sub)
+        if not inner:
+            return
+        nested = []
+        check(" ".join(shlex.quote(w) for w in inner), cwd, depth + 1, nested, Taint(tainted))
+        for f in nested:
+            if f.rule == "allow-file":
+                found.append(f)
+            else:
+                # Its own rule id: allowing `env-dump` must not open every container.
+                found.append(Finding("container-env", text, f"{name} {sub} {f.shown}"))
+                break
+
+
+def check_cloud_token(cmd, args, ops, text, found):
+    """The cloud and package CLIs whose normal output is a token or a stored
+    secret. `shown` is built from the fixed words matched, never an argument."""
+    shown = None
+    if cmd == "gcloud":
+        if "auth" in ops:
+            printer = next((o for o in ops[ops.index("auth") + 1:]
+                            if o in GCLOUD_TOKEN_PRINTERS), None)
+            shown = printer and f"gcloud auth {printer}"
+    elif cmd == "aws":
+        for i in range(len(ops) - 2):
+            if ops[i:i + 2] == ["configure", "get"]:
+                # Every later operand: `--profile NAME` may come before the setting.
+                settings = [o.rsplit(".", 1)[-1].lower() for o in ops[i + 2:]]
+                setting = next((x for x in settings if x in AWS_SECRET_SETTINGS), None)
+                shown = setting and f"aws configure get {setting}"
+                break
+    elif cmd == "op":
+        # With --out-file the value goes to a file and nothing is printed.
+        to_file = any(a.split("=", 1)[0] in ("-o", "--out-file") for a in args)
+        if skip_global_options(args, OP_GLOBAL_VALUES)[:1] == ["read"] and not to_file:
+            shown = "op read"
+    elif cmd == "npm":
+        nops = operands(skip_global_options(args, NPM_GLOBAL_VALUES))
+        if nops[:1] == ["token"] and nops[1:2] in ([], ["list"], ["ls"]):
+            shown = "npm token list"
+    if shown:
+        found.append(Finding("cloud-token", text, shown))
+
+
 def skip_global_options(args, with_value):
     """`args` without the leading global options of docker/podman/gh, so the
     subcommand comes first. An option in `with_value` takes the next word
@@ -560,6 +710,10 @@ def check_command(rest, seg, cwd, depth, found, tainted, unplace=str):
     elif cmd == "security":
         if ops[:1] in (["find-generic-password"], ["find-internet-password"]):
             found.append(Finding("keychain", text, f"security {ops[0]}"))
+        elif ops[:1] == ["dump-keychain"] and any(
+                a.startswith("-") and not a.startswith("--") and "d" in a for a in args):
+            # -d decrypts: without it only the item names and attributes print.
+            found.append(Finding("keychain", text, "security dump-keychain -d"))
     elif cmd in ("kubectl", "oc"):
         names = [part for a in ops for part in a.split(",")]
         if "get" in ops and any(re.match(r"secrets?(?:$|/|\.)", n) for n in names):
@@ -567,12 +721,10 @@ def check_command(rest, seg, cwd, depth, found, tainted, unplace=str):
             templated = any(a == "--template" or a.startswith("--template=") for a in args)
             if templated or (out is not None and out not in ("name", "wide")):
                 found.append(Finding("kubectl-secret", text, f"{cmd} get secret"))
-    elif cmd in ("docker", "podman"):
-        dops = operands(skip_global_options(args, DOCKER_GLOBAL_VALUES))
-        if dops[:1] == ["inspect"] or dops[:2] == ["container", "inspect"]:
-            fmt = option_value(args, "-f", "--format")
-            if not docker_format_is_safe(fmt):
-                found.append(Finding("docker-inspect", text, f"{cmd} inspect"))
+    elif cmd in ("docker", "podman") or cmd in COMPOSE_PROGRAMS:
+        check_container(cmd, args, text, cwd, depth, found, tainted)
+    elif cmd in ("gcloud", "aws", "op", "npm"):
+        check_cloud_token(cmd, args, ops, text, found)
     elif check_env_dump(cmd, cut_rest[1:], operands(cut_rest[1:]), text, found, tainted):
         return
     elif cmd in READERS:
