@@ -403,4 +403,4 @@ Definition of Done, and deferred work. Detailed per-pod design and validation no
 
 ## License
 
-Apache License 2.0, as declared in `pyproject.toml`.
+Apache License 2.0. See [`LICENSE`](LICENSE); `pyproject.toml` declares the same.

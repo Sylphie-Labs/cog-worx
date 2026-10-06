@@ -130,9 +130,9 @@ only the session memory and stop.
       "external_ref": "session:d28e2509-476f-43bc-bc33-1bed0ef1feab",
       "tags": ["session-d28e2509-476f-43bc-bc33-1bed0ef1feab"],
       "body": "Session 2026-08-18 (Jim + Claude, hive-mind repo):
-      provisioned InterServer VPS hive-mind-01 (162.35.104.142) and
+      provisioned a VPS, hive-01 (203.0.113.10), and
       deployed the hive to production behind Caddy TLS at
-      162-35-104-142.sslip.io. Bootstrapped owner, seeded 10 docs,
+      203-0-113-10.sslip.io. Bootstrapped owner, seeded 10 docs,
       registered MCP locally. Scaffolded ui/ React shell. Designed the
       drone-coordination model (heartbeats, claim/lease, mailbox, queen).
       Built memory_write external_ref upsert (commit 388934e). Minted the
