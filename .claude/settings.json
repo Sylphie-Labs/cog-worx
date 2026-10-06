@@ -11,12 +11,7 @@
       "Agent",
       "Bash(*)",
       "PowerShell(Get-ChildItem *)",
-      "PowerShell(railway *)",
       "Skill(update-config)",
-      "mcp__playwright__*",
-      "mcp__smart-terminal__*",
-      "mcp__railway-mcp-server__*",
-      "mcp__sylphie-pkg__*",
       "mcp__codebase-pkg__*"
     ],
     "deny": [
