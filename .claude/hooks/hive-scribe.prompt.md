@@ -170,3 +170,16 @@ text around the marker), so the person knows to check and rotate it.
 - One session memory per run, decisions/tickets only when the bar above
   is genuinely met. An empty-handed run that writes only the session
   memory is a correct run.
+
+## Your last line
+
+End your final reply with exactly one line, and nothing after it:
+
+- `SCRIBE_RESULT: ok` when the session memory write succeeded.
+- `SCRIBE_RESULT: write-refused` when the hive refused or failed the
+  session memory write (for example `forbidden_project`, an auth error, or
+  a server error), even if other writes succeeded.
+
+Do not retry a refused write without `project`, or under another project,
+to get an `ok`. The hook reads this line: on `write-refused` it keeps this
+slice and hands it to a later pass, once the access is fixed.

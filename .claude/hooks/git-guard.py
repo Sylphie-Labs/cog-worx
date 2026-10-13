@@ -385,6 +385,8 @@ def findings_for(command, cwd, depth=0, allowed=False):
         if depth < MAX_DEPTH and (base in hive_shell.SHELLS or base == "eval"):
             line = hive_shell.shell_c_argument(rest[1:]) if base != "eval" else " ".join(rest[1:])
             if line is not None:
+                # A quoted `$` is text here and live in the shell that reads it.
+                line = hive_shell.unmask(line)
                 found.extend(findings_for(line, here, depth + 1, allowed or overridden))
             continue
         if not is_git(rest[0]) or overridden or allowed:

@@ -26,13 +26,18 @@ PUNCTUATION = "();<>|&`"   # shlex's default set plus the backtick
 # read. A prefix word's own options (and which take a value) and the operands
 # it takes before the command (`timeout 5 cmd`: the duration) are skipped.
 PREFIX_WORDS = {"env", "command", "exec", "nohup", "time", "builtin",
-                "sudo", "timeout", "nice", "stdbuf", "noglob"}
+                "sudo", "timeout", "nice", "stdbuf", "noglob", "xargs"}
 PREFIX_OPTION_VALUES = {
     "sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "--user", "--group"},
     "env": {"-u", "-C", "-S", "--unset", "--chdir", "--split-string"},
     "timeout": {"-s", "--signal", "-k", "--kill-after"},
     "nice": {"-n", "--adjustment"},
     "stdbuf": {"-i", "-o", "-e"},
+    # xargs runs the command after it, with words from its input appended.
+    # -i and --replace take an optional value, glued on, so they are flags.
+    "xargs": {"-I", "-n", "-P", "-d", "-s", "-L", "-E", "-a", "--max-args", "--max-procs",
+              "--delimiter", "--arg-file", "--eof", "--max-lines", "--max-chars",
+              "--process-slot-var"},
 }
 PREFIX_OPERANDS = {"timeout": 1}
 # After these, a `NAME=value` word still sets a variable for the command; after
@@ -48,6 +53,12 @@ SHELL_KEYWORDS = {"if", "then", "elif", "else", "do", "while", "until", "!", "{"
 # private-use stand-in, and swapped back in the words that come out.
 _STAND_IN = {ch: chr(0xE000 + i) for i, ch in enumerate(PUNCTUATION)}
 _RESTORE = {v: k for k, v in _STAND_IN.items()}
+# A `$` in single quotes or after a backslash expands nothing. It becomes this
+# stand-in and, unlike the punctuation, is NOT restored in the words that come
+# out: a guard that reads `$NAME` in a word then sees only the live ones.
+# unmask() gives the word back as typed, for text a shell will read again.
+LITERAL_DOLLAR = chr(0xE000 + len(PUNCTUATION))
+_RESERVED = len(PUNCTUATION) + 1
 # Every operator the tokenizer can hand over, longest first within a length.
 # shlex returns a run of adjacent punctuation (`;(`, `&&(`) as ONE token, so a
 # run is cut back into these.
@@ -71,7 +82,16 @@ class ParseError(Exception):
 def strip_heredocs(command):
     """Drop heredoc bodies so their lines are not read as commands. Several
     heredocs on one line are consumed in order."""
+    return _strip_heredocs(command)[0]
+
+
+def _strip_heredocs(command):
+    """(lines without heredoc bodies, bodies). Each body is (terminator, text,
+    expands): `expands` is False when the terminator was quoted or escaped, so
+    the shell expands nothing in the body. Bodies come in the order they are
+    consumed, which is the order of their `<<` operators."""
     out = []
+    bodies = []
     lines = command.split("\n")
     failed = set()        # terminators with no line after this point
     i = 0
@@ -87,10 +107,12 @@ def strip_heredocs(command):
             while j < len(lines) and lines[j].strip() != terminator:
                 j += 1
             if j < len(lines):
+                body = "".join(l + "\n" for l in lines[i:j])
+                bodies.append((terminator, body, not (m.group(1) or m.group(2))))
                 i = j + 1  # skip the body and the terminator line
             else:
                 failed.add(terminator)   # `<<` inside a quoted string, not a heredoc
-    return out
+    return out, bodies
 
 
 class Segment:
@@ -106,17 +128,32 @@ class Segment:
             descriptor (`>&2`) is not tracked and counts as not quiet. A
             redirect after a subshell (`(cmd) >/dev/null`) belongs to the
             subshell, not to the commands inside, so those are not quiet.
+    pipe_in True when it reads its standard input from the segment before it
+            (`a | b`, `a |& b`)
+    leaks   True when its standard output ends up where a capture would not
+            catch it: on another descriptor (`>&2`) or a terminal device
+            (`/dev/tty`, `/dev/stderr`). The last redirect of standard output
+            wins here too, and `2>&1` says nothing about it.
+    here    the words of its here-strings (`<<< word`), in order
+    heredocs
+            (body, expands) for each of its heredocs: the body's text, and
+            whether the shell expands `$NAME` and `$(...)` in it (it does not
+            when the terminator was quoted or escaped: `<<'EOF'`)
     """
-    __slots__ = ("tokens", "reads", "writes", "quiet")
+    __slots__ = ("tokens", "reads", "writes", "quiet", "pipe_in", "leaks", "here", "heredocs")
 
     def __init__(self):
         self.tokens, self.reads, self.writes, self.quiet = [], [], [], False
+        self.pipe_in, self.leaks, self.here, self.heredocs = False, False, [], []
 
     def __bool__(self):
         return bool(self.tokens or self.reads or self.writes)
 
 
 REDIRECT_OPS = {"<", "<>", "<<", "<<<", "<&", ">", ">>", ">|", "&>", "&>>", ">&"}
+# Files that are a terminal or another descriptor: output sent there is shown
+# even when the command's standard output is being captured.
+SHOWN_FILES = {"/dev/tty", "/dev/stderr", "/dev/fd/2", "/proc/self/fd/2", "/dev/console"}
 
 
 def _operator_tokens(tokens):
@@ -154,9 +191,11 @@ def _mask_quoted(text):
       to the next newline; any other `#` is an ordinary character;
     - an unquoted newline becomes ` ; `; a quoted one stays a newline.
 
+    - a `$` in single quotes or after a backslash becomes LITERAL_DOLLAR.
+
     Raises ParseError if the text already holds a stand-in character.
     """
-    if any(0xE000 <= ord(ch) < 0xE000 + len(PUNCTUATION) for ch in text):
+    if any(0xE000 <= ord(ch) < 0xE000 + _RESERVED for ch in text):
         raise ParseError("could not parse the command (reserved character); not checked")
     out = []
     quote = None
@@ -167,11 +206,16 @@ def _mask_quoted(text):
         if quote == "'":
             if ch == "'":
                 quote = None
-            out.append(_STAND_IN.get(ch, ch))
+            out.append(LITERAL_DOLLAR if ch == "$" else _STAND_IN.get(ch, ch))
         elif ch == "\\" and i + 1 < n:
             nxt = text[i + 1]
             i += 1
-            if nxt != "\n":
+            if nxt == "$":
+                # The shell drops the backslash and keeps a literal `$`, in
+                # double quotes too (where shlex would keep the backslash).
+                out.append(LITERAL_DOLLAR)
+                word_start = False
+            elif nxt != "\n":
                 out.append(ch)
                 out.append(_STAND_IN.get(nxt, nxt))
                 word_start = False
@@ -203,6 +247,13 @@ def _restore(word):
     return word.translate(_RESTORE_TABLE)
 
 
+def unmask(word):
+    """`word` with each literal `$` back, as it was typed: for text that is
+    handed to a shell or an interpreter to read again (`sh -c`, `eval`, a
+    script on standard input), where quoting starts over."""
+    return word.replace(LITERAL_DOLLAR, "$")
+
+
 def segments_with_redirects(command):
     """Split a shell command into simple commands, as a list of Segment.
 
@@ -213,7 +264,8 @@ def segments_with_redirects(command):
     operators split, newlines split. Raises ParseError on shell the tokenizer
     cannot read, such as an unterminated quote.
     """
-    text = _mask_quoted("\n".join(strip_heredocs(command)))
+    lines, bodies = _strip_heredocs(command)
+    text = _mask_quoted("\n".join(lines))
     # posix=True strips an unquoted backslash, which is what Git Bash does
     # before git sees the word, so a Windows path in a command tokenizes the
     # way the shell would run it. Quoted forms keep their backslashes.
@@ -236,25 +288,42 @@ def segments_with_redirects(command):
             stdout = "&" in op and op != ">&" or fd in (None, "1")
             if op in ("<", "<>"):
                 seg.reads.append(_restore(tok))
+            elif op == "<<<":
+                seg.here.append(_restore(tok))
+            elif op == "<<":
+                # The terminator word, its quotes already stripped and a
+                # leading `-` (of `<<-`) still attached: its body is the first
+                # not yet claimed with that name.
+                name = _restore(tok).lstrip("-")
+                for k, (terminator, body, expands) in enumerate(bodies):
+                    if terminator == name:
+                        seg.heredocs.append((body, expands))
+                        del bodies[k]
+                        break
             elif op == ">&":
                 if tok.isdigit() or tok == "-":
                     # A descriptor, not a file. Stdout now follows another
-                    # descriptor, which is not tracked: not quiet.
+                    # descriptor, which is not tracked: not quiet, and shown
+                    # unless it is stdout itself or closed.
                     if stdout:
                         seg.quiet = False
+                        seg.leaks = tok not in ("1", "-")
                 else:
                     seg.writes.append(_restore(tok))
                     if stdout:
                         seg.quiet = tok == "/dev/null"
-            elif op not in ("<<", "<<<", "<&"):    # those are not files
+                        seg.leaks = tok in SHOWN_FILES
+            elif op != "<&":                        # a descriptor, not a file
                 seg.writes.append(_restore(tok))
                 if stdout:
                     seg.quiet = tok == "/dev/null"
+                    seg.leaks = tok in SHOWN_FILES
             continue
         if tok in SEGMENT_BREAKS:
             if seg:
                 out.append(seg)
             seg = Segment()
+            seg.pipe_in = tok in ("|", "|&")
         elif tok in REDIRECT_OPS:
             # A redirection: the next token is its target, not an argument,
             # and a bare digit just before it (2>&1) is the fd, not an argument.

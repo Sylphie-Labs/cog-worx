@@ -297,6 +297,7 @@ if ($Capture) {
                 # stdout and stderr both land in the log through Write-LogLine, one
                 # line at a time (streaming, one encoding). Native stderr arrives as
                 # ErrorRecords under 2>&1; "$_" is the text of either kind.
+                $lastOut = ''
                 & $claudeBin -p $prompt `
                     --append-system-prompt-file $promptPath `
                     --model sonnet `
@@ -305,14 +306,33 @@ if ($Capture) {
                     --tools Read `
                     --permission-mode dontAsk `
                     --allowedTools 'mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' 2>&1 |
-                    ForEach-Object { Write-LogLine $logFile "$_" }
-                if ($LASTEXITCODE -eq 0) {
-                    Set-Content -Path $marker -Value $end -Encoding ascii
-                    Write-Log "pass ok: offset now $end"
-                } else {
-                    Write-Log "pass FAILED (claude exit $LASTEXITCODE): offset stays at $last; bytes [$last,$end) will be retried on the next Stop"
+                    ForEach-Object {
+                        Write-LogLine $logFile "$_"
+                        # The last non-empty STDOUT line, for the verdict below.
+                        if ($_ -isnot [System.Management.Automation.ErrorRecord] -and "$_".Trim() -ne '') { $lastOut = "$_".Trim() }
+                    }
+                $rc = $LASTEXITCODE
+                # claude exits 0 when the hive refused every write, so exit 0
+                # alone does not mean anything landed. The scribe's verdict is
+                # the last non-empty line of its reply, never a line elsewhere
+                # in it: a scribe summarizing a session about this very hook
+                # may quote one.
+                $verdict = ''
+                if ($lastOut -match '^SCRIBE_RESULT: *([a-z-]+)$') { $verdict = $Matches[1] }
+                if ($rc -ne 0) {
+                    Write-Log "pass FAILED (claude exit $rc): offset stays at $last; bytes [$last,$end) will be retried on the next Stop"
                     break
                 }
+                if ($verdict -eq 'write-refused') {
+                    Write-Log "pass FAILED (hive write refused): offset stays at $last; bytes [$last,$end) will be retried on the next Stop"
+                    break
+                }
+                # No verdict (an older prompt, or the scribe left it off) counts
+                # as ok, as before: retrying a slice the scribe may well have
+                # written would loop on every Stop while it keeps forgetting.
+                if ($verdict -eq '') { Write-Log "no SCRIBE_RESULT line in the scribe's reply; counted as ok" }
+                Set-Content -Path $marker -Value $end -Encoding ascii
+                Write-Log "pass ok: offset now $end"
             }
         }
     } catch {

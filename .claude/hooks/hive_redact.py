@@ -141,7 +141,7 @@ KINDS = [
     # quadratic. The tail takes no dot, so `secret-guard.py:50:...` in grep
     # output is not an assignment.
     ("assignment", re.compile(
-        rb"(?i)(?P<keep>(?P<name>" + _ASSIGN_NAMES + rb"[A-Za-z0-9_-]{0,40})"
+        rb"(?i)(?P<keep>(?P<name>" + _ASSIGN_NAMES + rb"[A-Za-z0-9_-]{0,128})"
         rb"(?P<q1>(?:\\*[\"'])?)(?P<sep>\s*[=:]\s*)(?P<q2>(?:\\*[\"'])?))")),
 ]
 

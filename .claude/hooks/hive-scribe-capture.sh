@@ -113,9 +113,13 @@ if [ "$1" = "__capture" ]; then
     # scribe's working directory, and so the only place it can read.
     work_dir="$STATE_DIR/work/$sid"
     delta="$work_dir/delta.jsonl"
+    # A pass's own output, read for the scribe's verdict and then appended to
+    # the log. Outside work_dir, which must hold only the slice.
+    pass_out="$STATE_DIR/$sid.pass-out"
+    pass_err="$STATE_DIR/$sid.pass-err"
     # The lock goes last. Once it is gone the next pass may start, and it
     # makes this same directory.
-    trap 'rm -rf "$work_dir"; rm -f "$busy"' EXIT
+    trap 'rm -rf "$work_dir"; rm -f "$pass_out" "$pass_err" "$busy"' EXIT
     log() { hive_log "$log_file" "$1"; }
     mkdir -p "$work_dir" || exit 0
     cd "$work_dir" || exit 0
@@ -195,15 +199,30 @@ if [ "$1" = "__capture" ]; then
             --settings "$settings_path" \
             --tools Read \
             --permission-mode dontAsk \
-            --allowedTools 'mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' >>"$log_file" 2>&1
+            --allowedTools 'mcp__hive-scribe__decision_record,mcp__hive-scribe__memory_write,mcp__hive-scribe__memory_query,mcp__hive-scribe__ticket_create,mcp__hive-scribe__ticket_list,mcp__hive-scribe__decision_list,mcp__hive-scribe__activity_list,mcp__hive-scribe__activity_summary' >"$pass_out" 2>"$pass_err"
         rc=$?
-        if [ "$rc" -eq 0 ]; then
-            printf '%s\n' "$end" > "$marker"
-            log "pass ok: offset now $end"
-        else
+        cat "$pass_out" "$pass_err" >>"$log_file" 2>/dev/null
+        # claude exits 0 when the hive refused every write, so exit 0 alone
+        # does not mean anything landed. The scribe's verdict is the last
+        # non-empty line of its reply (stdout only), never a line elsewhere in
+        # it: a scribe summarizing a session about this very hook may quote one.
+        # shellcheck disable=SC2016  # `$` is sed's last-line address
+        verdict=$(tr -d '\r' < "$pass_out" 2>/dev/null | sed -n '/[^[:space:]]/h; ${x;p;}' \
+            | sed -n 's/^SCRIBE_RESULT: *\([a-z-]*\)[[:space:]]*$/\1/p')
+        rm -f "$pass_out" "$pass_err"
+        if [ "$rc" -ne 0 ]; then
             log "pass FAILED (claude exit $rc): offset stays at $last; bytes [$last,$end) will be retried on the next Stop"
             break
+        elif [ "$verdict" = "write-refused" ]; then
+            log "pass FAILED (hive write refused): offset stays at $last; bytes [$last,$end) will be retried on the next Stop"
+            break
         fi
+        # No verdict (an older prompt, or the scribe left it off) counts as ok,
+        # as before: retrying a slice the scribe may well have written would
+        # loop on every Stop for as long as it keeps forgetting.
+        [ -n "$verdict" ] || log "no SCRIBE_RESULT line in the scribe's reply; counted as ok"
+        printf '%s\n' "$end" > "$marker"
+        log "pass ok: offset now $end"
     done
     exit 0
 fi
