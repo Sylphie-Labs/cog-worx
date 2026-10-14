@@ -27,9 +27,12 @@ CONTRACT.
 RULES. The RULES table below is the list; each has an id.
 It covers: git credential fill/get and the credential helpers; gh auth token;
 keychain lookups; printenv, env, a bare export/declare/typeset/set, and echo
-or printf of a plain $NAME whose name looks secret (TOKEN, KEY, PASSWORD...);
-cat and the other readers on .env files, private keys, .pem/.key files and
-the credential files under the home directory; kubectl/oc secret values;
+or printf of a plain $NAME whose name looks secret (TOKEN, KEY, PASSWORD...),
+or such a variable fed to a reader by a here-string or a bare heredoc; cat,
+diff and the other readers on .env files, private keys, .pem/.key files and
+the credential files under the home directory, and openssl printing a private
+key; a python/node/ruby/perl/php one-liner that prints a secret variable, the
+environment, or a secret file it opens; kubectl/oc secret values;
 docker/podman inspect of the environment; a command run inside a container
 (docker exec, docker run, docker compose exec/run) that any of these rules
 would block outside one; docker compose config; and the cloud and package
@@ -62,12 +65,15 @@ for when checking a credential. It does not stop a determined workaround
 capture (hive_redact.py) is the backstop for what gets past it.
 
 Compound commands are walked segment by segment (&&, ||, ;, |, backticks,
-$(...), newlines); a substitution inside double quotes, `sh -c '...'` and
-`eval ...` are parsed again; a leading `cd` is honored. Heredoc bodies are
-skipped. A command whose standard output goes to /dev/null prints nothing and
-is allowed: that is the exit-code check the messages recommend. A pipe or a
+$(...), newlines); a substitution inside double quotes, `sh -c '...'`,
+`eval ...`, `xargs cmd`, and a shell or interpreter fed its program by an
+echo or printf before a pipe, a here-string or a heredoc are parsed again; a
+leading `cd` is honored. A `$` in single quotes or after a backslash is text.
+A command whose standard output goes to /dev/null prints nothing and is
+allowed: that is the exit-code check the messages recommend. A pipe or a
 substitution is NOT treated that way, because what happens to the output next
-cannot be known from the text. Standard library only.
+cannot be known from the text. A capture, NAME=$(...), shows nothing unless
+its body sends the output to stderr or a terminal. Standard library only.
 """
 import fnmatch
 import json
@@ -95,7 +101,10 @@ MAX_DEPTH = 3
 # Commands that print the files they are given.
 READERS = {"cat", "head", "tail", "less", "more", "bat", "nl", "tac", "grep", "egrep",
            "fgrep", "rg", "sed", "awk", "cut", "sort", "strings", "base64", "xxd", "od",
-           "hexdump"}
+           "hexdump", "diff", "sdiff", "colordiff", "comm", "paste"}
+# The diff family prints the lines that differ, so a secret file on either side
+# shows; with -q or --brief it says only whether the files differ.
+DIFF_FAMILY = {"diff", "sdiff", "colordiff"}
 # Of those, the ones whose first operand is a pattern or script, not a file,
 # unless one of these options supplied it instead.
 PATTERN_FIRST = {"grep", "egrep", "fgrep", "rg", "sed", "awk"}
@@ -163,7 +172,55 @@ RUN_FLAG_LETTERS = set("ditPqT")
 COMPOSE_CONFIG_SAFE = {"--services", "--volumes", "--profiles", "--images", "--quiet", "-q",
                        "--hash", "-o", "--output"}
 GCLOUD_TOKEN_PRINTERS = ("print-access-token", "print-identity-token")
+# openssl subcommands whose -in is a private key, printed (re-encoded, or as
+# text with -text) unless the output goes to a file or only the public half or
+# a check result is asked for.
+OPENSSL_KEY_COMMANDS = {"rsa", "ec", "pkey", "pkcs8", "dsa"}
+STDOUT_FILES = {"-", "/dev/stdout", "/dev/fd/1", "/proc/self/fd/1", "/dev/tty", "/dev/stderr",
+                "/dev/fd/2", "/proc/self/fd/2", "/dev/console"}
 AWS_SECRET_SETTINGS = ("aws_secret_access_key", "aws_session_token")
+
+# Interpreters with a one-line program on the command line, by language:
+# the options that take the program as the next word, and the ones whose
+# program's result is printed (`node -p`).
+INTERPRETER_RE = re.compile(r"^(?:python(?:[23](?:\.\d+)?)?|pypy3?|py|node|nodejs|bun|ruby|perl|php)$")
+INLINE_CODE_OPTIONS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"},
+                       "ruby": {"-e"}, "perl": {"-e", "-E"}, "php": {"-r"}}
+INLINE_CODE_LETTERS = {"python": "c", "node": "ep", "ruby": "e", "perl": "eE", "php": "r"}
+# A call that prints: its argument is what shows.
+PRINT_CALLS = {
+    "python": re.compile(r"\b(?:print|pprint|sys\.std(?:out|err)\.write|logging\.\w+|logger\.\w+)(?=\s*\()"),
+    "node": re.compile(r"\b(?:console\.\w+|process\.std(?:out|err)\.write|alert)(?=\s*\()"),
+    "ruby": re.compile(r"(?:^|[;\s{(])(?:puts|print|p|pp|printf|warn|\$stdout\.\w+|STDOUT\.\w+)\b"),
+    "perl": re.compile(r"\b(?:print|say|printf|warn|die)\b"),
+    "php": re.compile(r"\b(?:echo|print|print_r|var_dump|var_export|printf|error_log)\b"),
+}
+# A read of one environment variable, by name, and of the whole environment.
+ENV_NAME_RES = [re.compile(r) for r in (
+    r"environ\s*\[\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"environ\.get\s*\(\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"\bgetenv\s*\(\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"process\.env\.([A-Za-z_]\w*)",
+    r"process\.env\s*\[\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"\bENV\s*\[\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"\bENV\.fetch\s*\(\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"\$ENV\s*\{\s*['\"]?([A-Za-z_]\w*)",
+    r"\$_(?:ENV|SERVER)\s*\[\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"Deno\.env\.get\s*\(\s*['\"]([A-Za-z_]\w*)['\"]",
+    r"Bun\.env\.([A-Za-z_]\w*)")]
+# `os.environ` as a whole argument: followed by `,`, `)` or the end of the
+# argument text (`in os.environ else` is a membership test, not a dump).
+_WHOLE = r"\s*(?=[,)\n;]|$)"
+ENV_ALL_RE = re.compile(
+    r"os\.environ" + _WHOLE + r"|environ\.(?:items|copy|values)\s*\(|\bprocess\.env" + _WHOLE
+    + r"|\bENV\.(?:to_h|to_a|each|inspect|map)\b|\bENV" + _WHOLE + r"|%ENV\b"
+    + r"|\$_ENV" + _WHOLE + r"|\bgetenv\s*\(\s*\)")
+# A call that opens a file named by a string literal (its first string
+# argument after an optional handle and mode, as in perl's open).
+OPEN_RE = re.compile(
+    r"\b(?:open|Path|readFileSync|readFile|createReadStream|file_get_contents|fopen|readlines"
+    r"|IO\.read|File\.(?:read|open|readlines|foreach)|Deno\.readTextFile|Bun\.file)"
+    r"\s*\(\s*(?:[A-Za-z_]\w*\s*,\s*)?(?:\"[^\"\n]*\"\s*,\s*)?(['\"])([^'\"\n]+)\1")
 
 CAPTURE = 'to use the value without showing it, capture it: NAME="$(...)" some-command'
 
@@ -231,11 +288,14 @@ class Finding:
     file word of a secret-file finding, and `match` the text an allow pattern is
     matched against: `cmd`, except for secret-file, where it is `program file`
     so that an entry allows one file and not the whole command. `cmd` and `match`
-    hold the full command text: they are matched against, never printed."""
+    hold the full command text: they are matched against, never printed.
+    `leaked` says the command's output went to a terminal or another
+    descriptor, so a capture around it does not catch it."""
 
     def __init__(self, rule, cmd, shown, file=None, match=None):
         self.rule, self.cmd, self.shown, self.file = rule, cmd, shown, file
         self.match = cmd if match is None else match
+        self.leaked = False
 
 
 # ---------------------------------------------------------------- paths
@@ -542,7 +602,10 @@ def check_container(cmd, args, text, cwd, depth, found, tainted):
         if not inner:
             return
         nested = []
-        check(" ".join(shlex.quote(w) for w in inner), cwd, depth + 1, nested, Taint(tainted))
+        # Re-quoted as a command line of its own: a literal `$` goes back
+        # inside quotes, so the nested parse reads it the same way.
+        check(" ".join(shlex.quote(hive_shell.unmask(w)) for w in inner),
+              cwd, depth + 1, nested, Taint(tainted))
         for f in nested:
             if f.rule == "allow-file":
                 found.append(f)
@@ -550,6 +613,158 @@ def check_container(cmd, args, text, cwd, depth, found, tainted):
                 # Its own rule id: allowing `env-dump` must not open every container.
                 found.append(Finding("container-env", text, f"{name} {sub} {f.shown}"))
                 break
+
+
+def diff_prints_no_content(args):
+    """True when a diff-family command only says whether the files differ."""
+    for a in args:
+        if a == "--":
+            break
+        if a == "--brief" or (a.startswith("-") and not a.startswith("--") and "q" in a[1:]):
+            return True
+    return False
+
+
+def openssl_option(args, name):
+    """The word after `name` (openssl options are `-in FILE`, never glued or
+    `=`-joined: `-inform` is another option), or None when it is absent."""
+    for i, a in enumerate(args):
+        if a == name:
+            return args[i + 1] if i + 1 < len(args) else ""
+    return None
+
+
+def check_openssl(args, text, found):
+    """`openssl rsa -in key.pem` and its relatives print the private key, as
+    PEM or, with -text, in the clear. Not when -pubin reads a public key,
+    -pubout writes only the public half, -out sends it to a file, or -noout
+    (without -text) prints nothing but what other options ask for."""
+    sub = args[0] if args else ""
+    if sub not in OPENSSL_KEY_COMMANDS:
+        return
+    rest = args[1:]
+    if "-pubin" in rest or "-pubout" in rest:
+        return
+    if "-noout" in rest and "-text" not in rest:
+        return
+    out = openssl_option(rest, "-out")
+    if out is not None and out not in STDOUT_FILES:
+        return
+    infile = openssl_option(rest, "-in")
+    if infile:
+        found.append(secret_file_finding(infile, text, f"openssl {sub}", False))
+
+
+def interpreter_language(cmd):
+    """The language family of an interpreter command name, or None."""
+    if not INTERPRETER_RE.match(cmd):
+        return None
+    if cmd.startswith(("python", "pypy", "py")):
+        return "python"
+    if cmd in ("node", "nodejs", "bun"):
+        return "node"
+    return cmd
+
+
+def inline_code(lang, args):
+    """([program text], printed): the programs given on the command line
+    (`-c CODE`, `-e CODE`...), and whether their result is printed as such
+    (`node -p`)."""
+    codes, printed = [], False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            break
+        if a.startswith("--"):
+            name, has_value, value = a.partition("=")
+            if name in INLINE_CODE_OPTIONS[lang]:
+                printed = printed or name == "--print"
+                if has_value:
+                    codes.append(value)
+                elif i < len(args):
+                    codes.append(args[i])
+                    i += 1
+        elif a.startswith("-") and len(a) > 1:
+            letters = a[1:]
+            hit = next((c for c in letters if c in INLINE_CODE_LETTERS[lang]), None)
+            if hit:
+                printed = printed or (lang == "node" and "p" in letters)
+                if i < len(args):
+                    codes.append(args[i])
+                    i += 1
+                if lang == "python":
+                    break           # the rest are the program's arguments
+    return codes, printed
+
+
+def balanced(text, start):
+    """The text inside the parentheses that open at `start`, quotes honored;
+    to the end when they never close."""
+    depth, q = 0, None
+    for j in range(start, len(text)):
+        c = text[j]
+        if q:
+            if c == "\\":
+                continue
+            if c == q:
+                q = None
+        elif c in "'\"":
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:j]
+    return text[start + 1:]
+
+
+def print_arguments(lang, code, printed):
+    """The text of each print call's arguments in `code`: inside its
+    parentheses, or up to the end of the statement when it has none."""
+    if printed:
+        return [code]
+    out = []
+    for m in PRINT_CALLS[lang].finditer(code):
+        rest = code[m.end():]
+        if rest.lstrip().startswith("("):
+            out.append(balanced(code, m.end() + len(rest) - len(rest.lstrip())))
+        elif lang in ("ruby", "perl", "php"):
+            out.append(re.split(r"[;\n]", rest, 1)[0])
+    return out
+
+
+def check_inline_code(cmd, args, seg, piped, unplace, text, cwd, found, tainted):
+    """A one-line program that prints a secret: an environment variable whose
+    name looks secret (or holds a capture) read inside a print call, the whole
+    environment printed, or a secret file opened in a program that prints.
+    The program comes from the command line or, with no program operand, from
+    what the command is fed."""
+    lang = interpreter_language(cmd)
+    codes, printed = inline_code(lang, args)
+    how = "-c" if lang == "python" else "-e"
+    if not codes and operands(args) in ([], ["-"]):
+        fed = stdin_text(seg, piped, unplace)
+        if fed.strip():
+            codes, how = [fed], "-"
+    for code in map(hive_shell.unmask, codes):
+        shown_args = print_arguments(lang, code, printed)
+        for arg in shown_args:
+            if ENV_ALL_RE.search(arg):
+                found.append(Finding("env-dump", text, f"{cmd} {how} (prints the environment)"))
+                return
+            for pattern in ENV_NAME_RES:
+                for m in pattern.finditer(arg):
+                    if sensitive(m.group(1), tainted):
+                        found.append(Finding("env-dump", text, f"{cmd} {how} (prints ${m.group(1)})"))
+                        return
+        if shown_args:
+            for m in OPEN_RE.finditer(code):
+                if is_secret_path(m.group(2), cwd):
+                    found.append(secret_file_finding(m.group(2), text, f"{cmd} {how}", False))
+                    return
 
 
 def check_cloud_token(cmd, args, ops, text, found):
@@ -598,6 +813,7 @@ def secret_file_finding(word, text, program, redirected):
     (empty for a bare redirection); `redirected` says it is read through `<`.
     Allow patterns match `program file`, the same for both ways of reading."""
     program = program or "(redirection)"
+    word = hive_shell.unmask(word)
     shown = f"(redirection) < {word}" if redirected else f"{program} {word}"
     return Finding("secret-file", text, shown, word, match=f"{program} {word}")
 
@@ -644,9 +860,54 @@ def check_env_dump(cmd, args, ops, text, found, tainted):
     return False
 
 
-def check_command(rest, seg, cwd, depth, found, tainted, unplace=str):
+def piped_text(prev):
+    """The text an `echo` or `printf` segment writes, when `prev` (its peeled
+    words) is one, as the command after the pipe reads it; else None. The
+    operands are joined with spaces and a `\\n` becomes a line break, which is
+    how `printf '%s\\n' 'cmd'` and `echo -e` come out. An echo of a secret
+    variable is judged as that echo, not here."""
+    if not prev or os.path.basename(prev[0]) not in ("echo", "printf"):
+        return None
+    return " ".join(operands(prev[1:])).replace("\\n", "\n")
+
+
+def stdin_text(seg, piped, unplace):
+    """Everything the segment is known to read on standard input: its
+    here-strings, its heredoc bodies (a literal one too: the program that
+    reads it still runs what is in it), and what an echo or printf pipes in."""
+    parts = [unplace(w) for w in seg.here]
+    # In a bare heredoc the outer shell turns `\$` into `$` before the
+    # program reads it; in a literal one the body is passed as written.
+    parts += [unplace(body).replace("\\$", "$") if expands else unplace(body)
+              for body, expands in seg.heredocs]
+    if seg.pipe_in and piped is not None:
+        parts.append(piped)
+    return hive_shell.unmask("\n".join(parts))
+
+
+def shell_reads_its_script_from_stdin(args):
+    """True for `sh`, `bash -s`, `sh -x`: no -c, no script operand, and not
+    -n, which only checks the syntax."""
+    if hive_shell.shell_c_argument(args) is not None:
+        return False
+    if any(a in ("-n", "-s") for a in args):
+        return "-s" in args and "-n" not in args
+    return not operands(args)
+
+
+def check_command(rest, seg, cwd, depth, found, tainted, unplace=str, piped=None):
     """Apply every rule to one simple command. `rest` is the segment's tokens
-    with its prefix peeled."""
+    with its prefix peeled; `piped` is what an echo or printf before a pipe
+    writes. A finding made while the segment's output leaks (`>&2`,
+    `>/dev/tty`) is marked, so a capture around it still counts."""
+    start = len(found)
+    check_simple_command(rest, seg, cwd, depth, found, tainted, unplace, piped)
+    if seg.leaks:
+        for f in found[start:]:
+            f.leaked = True
+
+
+def check_simple_command(rest, seg, cwd, depth, found, tainted, unplace=str, piped=None):
     # Every word is read as the user typed it: a placeholder for a substitution
     # must not reach a message or the text an allow pattern is matched against.
     # The expansion checks (echo, printenv, declare -p) judge the words with the
@@ -656,7 +917,13 @@ def check_command(rest, seg, cwd, depth, found, tainted, unplace=str):
     rest = [unplace(t) for t in rest]
     reads = [unplace(t) for t in seg.reads]
     writes = [unplace(t) for t in seg.writes]
-    text = " ".join(shlex.quote(t) for t in rest)
+    # What the command reads on standard input, where the shell expands it:
+    # a here-string's word, a bare heredoc's body (where `\$` is literal).
+    # Substitutions in them are judged on their own, like an echo
+    # argument's, so the placeholders stay.
+    fed = seg.here + [body.replace("\\$", hive_shell.LITERAL_DOLLAR)
+                      for body, expands in seg.heredocs if expands]
+    text = " ".join(shlex.quote(hive_shell.unmask(t)) for t in rest)
     cmd = os.path.basename(rest[0]) if rest else ""
     if cmd.endswith(".exe"):
         cmd = cmd[:-4]
@@ -682,10 +949,19 @@ def check_command(rest, seg, cwd, depth, found, tainted, unplace=str):
     if cmd in hive_shell.SHELLS and depth < MAX_DEPTH:
         line = hive_shell.shell_c_argument(args)
         if line is not None:
-            check(unplace(line), cwd, depth + 1, found, Taint(tainted))
+            check(hive_shell.unmask(unplace(line)), cwd, depth + 1, found, Taint(tainted))
+        elif shell_reads_its_script_from_stdin(args):
+            # `echo 'cmd' | sh`, `sh <<< 'cmd'`, `bash <<EOF ... EOF`: the
+            # script is what it is fed, when the command says what that is.
+            script = stdin_text(seg, piped, unplace)
+            if script.strip():
+                check(script, cwd, depth + 1, found, Taint(tainted))
         return
     if cmd == "eval" and depth < MAX_DEPTH:
-        check(unplace(" ".join(args)), cwd, depth + 1, found, Taint(tainted))
+        check(hive_shell.unmask(unplace(" ".join(args))), cwd, depth + 1, found, Taint(tainted))
+        return
+    if interpreter_language(cmd):
+        check_inline_code(cmd, args, seg, piped, unplace, text, cwd, found, tainted)
         return
 
     if hive_shell.is_git(rest[0]):
@@ -725,6 +1001,8 @@ def check_command(rest, seg, cwd, depth, found, tainted, unplace=str):
         check_container(cmd, args, text, cwd, depth, found, tainted)
     elif cmd in ("gcloud", "aws", "op", "npm"):
         check_cloud_token(cmd, args, ops, text, found)
+    elif cmd == "openssl":
+        check_openssl(args, text, found)
     elif check_env_dump(cmd, cut_rest[1:], operands(cut_rest[1:]), text, found, tainted):
         return
     elif cmd in READERS:
@@ -733,6 +1011,14 @@ def check_command(rest, seg, cwd, depth, found, tainted, unplace=str):
             files = ops[1:]
         if cmd in GREP_FAMILY and grep_prints_no_content(args):
             return
+        if cmd in DIFF_FAMILY and diff_prints_no_content(args):
+            return
+        # `cat <<< "$TOKEN"`, `cat <<EOF ... $TOKEN ... EOF`: the reader
+        # prints what it is fed, and the shell put the value there.
+        name = printed_secret_variable(fed, tainted)
+        if name:
+            how = "<<<" if any(name in shown_names(w) for w in seg.here) else "<<EOF"
+            found.append(Finding("env-dump", text, f"{cmd} {how} ${name}"))
         for word in files:
             if is_secret_path(word, cwd):
                 found.append(secret_file_finding(word, text, cmd, False))
@@ -780,14 +1066,19 @@ def check(command, cwd, depth, found, tainted=None):
         if name is None:
             found.extend(inner)
             return
-        kept = [f for f in inner if f.rule == "allow-file"]
-        if len(kept) < len(inner):
+        # Captured: only what the capture cannot hold counts, and the name
+        # is tainted by anything else.
+        kept = [f for f in inner if f.rule == "allow-file" or f.leaked]
+        if any(f.rule != "allow-file" for f in inner):
             tainted.add(name)
         found.extend(kept)
 
     here = cwd
+    prev = []           # the previous segment's peeled words, for `echo ... | sh`
     for seg in hive_shell.segments_with_redirects(text):
         saw_env, rest, assignments, _ = hive_shell.peel(seg.tokens)
+        piped = piped_text(prev)
+        prev = [unplace(t) for t in rest]
         builtin = bool(rest) and hive_shell.prefix_base(rest[0]) in CAPTURE_BUILTINS
         words = [w for w, ok in assignments if ok] + (rest[1:] if builtin else [])
         captured = {}
@@ -796,7 +1087,7 @@ def check(command, cwd, depth, found, tainted=None):
             if m:
                 captured[int(m.group(2))] = m.group(1)
         # Left to right: each substitution is checked with the names tainted so far.
-        placeholders = sorted({int(m.group(1)) for w in seg.tokens + seg.reads + seg.writes
+        placeholders = sorted({int(m.group(1)) for w in seg.tokens + seg.reads + seg.writes + seg.here
                                for m in PLACEHOLDER_RE.finditer(w)})
         mark = len(tainted.order)
         for k in placeholders:
@@ -814,7 +1105,7 @@ def check(command, cwd, depth, found, tainted=None):
         elif rest[0] in ("cd", "pushd") and len(rest) > 1 and rest[1] != "-":
             here = resolve(rest[1], here)
         else:
-            check_command(rest, seg, here, depth, found, tainted, unplace)
+            check_command(rest, seg, here, depth, found, tainted, unplace, piped)
         if rest and not builtin:
             # `X=$(cmd) prog`: X exists only for prog, so forget it afterwards.
             tainted.forget_since(mark)
