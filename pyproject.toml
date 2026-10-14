@@ -57,7 +57,7 @@ dev = [
     # reports in the same PR. History: an uncapped mypy floor once let the lock drift onto 2.x and
     # light up ~155 strict-mode diagnostics; the <2 cap was lifted once `mypy --strict` was clean
     # on 2.3.1 across the whole tree.
-    "ruff>=0.15.16,<0.17",
+    "ruff>=0.15.16,<0.18",
     "mypy>=1.13.0,<3",
     "pytest>=8.3.0",
     "pytest-asyncio>=1.4.0",
