@@ -2,7 +2,8 @@
 
 A framework, not a product: the loop, the memory, the verification, the perception, and the QoL
 machinery, out of the box. The public API is re-exported from this package root as the seams harden;
-during Phase 0 it is intentionally thin while the cross-pod contracts are frozen.
+for now it stays intentionally thin — import from the subpackages (``cogworx.loop``,
+``cogworx.recall``, ``cogworx.verification``, ...).
 
 See ``wiki/CANON.md`` (law) and ``wiki/ROADMAP.md`` (build order).
 """
