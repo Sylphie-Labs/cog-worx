@@ -181,8 +181,8 @@ The first four are read by the library; the three `*_PORT` variables are read on
 
 Model providers are configured in code (`cogworx.model.providers`), not through `COGWORX_`
 variables. The optional live-provider integration tests read the provider's usual variables
-(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and skip when they are absent; the DeepSeek and Ollama live
-tests are currently hard-skipped. Never commit `.env`; it is gitignored.
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `OLLAMA_BASE_URL` for a local
+Ollama) and skip when they are absent. Never commit `.env`; it is gitignored.
 
 ## Usage
 
