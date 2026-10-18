@@ -62,10 +62,20 @@ raises a judgment call, the coordinator sends it back to the architect rather th
 ## Hooks (`.claude/hooks/`)
 - **PreToolUse (Bash)** — blocks raw `rm`/`mv`/redirect against `wiki/CANON.md` (the CANON is immutable;
   changes go through `/update-canon`, CANON §6).
+- **PreToolUse (Bash) → git-guard** — shows what a worktree-destroying git command (`checkout --`,
+  `reset --hard`, `clean`, …) would discard before it runs. Installed by hive-client's `init_repo.py`.
+- **PreToolUse (Bash) → secret-guard** — blocks commands whose output is a credential and names a safe
+  alternative (see *Secrets and credentials* below). Installed by `init_repo.py`.
 - **Stop → doc-check.cjs** — warn-only; nudges to keep `wiki/ROADMAP.md` / session logs in step with
   `src/` changes.
 - **Stop → canon-check.cjs** — spawns Sonnet to check `src/**/*.py` diffs against S1–S12; **blocks**
   completion on a violation.
+- **Stop → hive-scribe-capture** — launches a detached `claude -p` scribe pass that records the
+  session's decisions and tickets in the hive (`hive-scribe.prompt.md`). Never blocks; installed by
+  `init_repo.py`.
+
+All `init_repo.py`-managed hooks run through `.claude/hooks/hook.sh <name>`; refresh them from
+hive-client rather than hand-editing.
 
 ## Standing rules
 Model work OFF the write path (S1) · provenance + epistemic typing on every claim (S5) · durable
