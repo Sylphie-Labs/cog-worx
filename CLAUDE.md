@@ -37,8 +37,9 @@ the question crisply for the architect, relay the architect's decision verbatim 
 specialist subagents (run them on a cheaper model, e.g. Sonnet, for speed), and run the mechanical gates
 (ruff, mypy `--strict`, pytest, CANON checks) on the output before reporting back. If a subagent result
 raises a judgment call, the coordinator sends it back to the architect rather than ruling on it itself.
-**Spike-gated (S12):** nothing load-bearing hardens until its falsifiable spike passes. Phase 0
-(freeze the seams + the Test Kit) is sequential and unblocks every later pod — see `wiki/ROADMAP.md`.
+**Spike-gated (S12):** nothing load-bearing hardens until its falsifiable spike passes. Phases 0–3 are
+complete; Phase 4 (Verification & Truth) is in its GATE spike — see `wiki/ROADMAP.md` for the build
+order and current status.
 
 ## Agents (`.claude/agents/`)
 - **architect** — **the decision-maker for this repo:** the Haiku coordinator routes *all* decisions

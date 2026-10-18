@@ -382,11 +382,17 @@ already done in biz-firm, so this is port + generalize.
 
 ## Phase 4 — Verification & Truth
 
-- [ ] **Oracle layer** — deterministic coding, math proofing, simulated chemistry, simulated physics
-      (port tess `tools/` + `oracles/`)
-- [ ] **Honest failure**
-- [ ] **Thesis/antithesis team decision-making**
+- [x] **Oracle layer** — deterministic coding, math proofing, simulated chemistry, simulated physics
+      (port tess `tools/` + `oracles/`) *(Pods 4.0 / 4.1 / 4.1a ✅ LANDED 2026-06-15 — oracle seam,
+      `Verdict`, `OracleRegistry`, LLM-judge fallback, deterministic `CodeOracle` with F7 taint binding
+      (`src/cogworx/verification/`). Math (4.1b) and chemistry/physics (4.1c/d) oracles are **deferred**
+      — off the critical path, see `docs/sessions/2026-06-15-phase-4-plan.md`.)*
+- [x] **Honest failure** *(Pod 4.2 ✅ LANDED 2026-06-15 — `verification/honest_failure.py`)*
+- [x] **Thesis/antithesis team decision-making** *(Pod 4.3 ✅ LANDED 2026-06-15 — dialectic stages +
+      off-path evidence projector, `verification/dialectic.py`)*
 - [ ] **⛓ Spike** — antithesis catch-rate eval + never-trust-self-report invariant (S9)
+      *(Pod 4.4 in progress: sizing stats, corpus lock, 5-arm runner, GATE scorer (4.4a–4.4e) and the
+      4.4-live bring-up driver are built; no GATE verdict is recorded yet.)*
 
 ---
 
