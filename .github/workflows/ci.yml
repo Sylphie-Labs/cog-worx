@@ -70,8 +70,10 @@ jobs:
   integration:
     name: integration + Spike Suite 1 (polyglot substrate)
     runs-on: ubuntu-24.04
-    # The substrate job is heavier; keep it off every PR push until the
-    # compose stack is wired. Enabled for main and release tags.
+    # The substrate job is heavier, so it runs on pushes to main only — not
+    # on PRs (see the header). The workflow has no tag trigger, so release
+    # tags do not run it either. Live-provider tests in this tier skip unless
+    # their key/URL env vars are set, and this job sets none of them.
     if: github.ref == 'refs/heads/main'
     services:
       neo4j:
