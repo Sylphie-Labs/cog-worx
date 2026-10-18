@@ -98,4 +98,6 @@ jobs:
           COGWORX_NEO4J_USER: neo4j
           COGWORX_NEO4J_PASSWORD: cogworx-test
           COGWORX_PG_DSN: postgresql://postgres:cogworx-test@localhost:5432/cogworx
+          # The services are supposed to be up here: fail, don't skip, if one isn't (tests/conftest.py).
+          COGWORX_REQUIRE_SUBSTRATE: "1"
         run: uv run --locked nox -s integration

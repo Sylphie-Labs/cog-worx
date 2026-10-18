@@ -179,6 +179,11 @@ The first four are read by the library; the three `*_PORT` variables are read on
 `docker compose`. If you move a host port, update the matching URI or DSN too, for example
 `COGWORX_NEO4J_BOLT_PORT=17687` together with `COGWORX_NEO4J_URI=bolt://localhost:17687`.
 
+Integration tests that need the substrate skip themselves when its configured endpoint does not
+accept a TCP connection, so a bare `pytest` without `docker compose up -d` reports them as skipped
+rather than failing them. Set `COGWORX_REQUIRE_SUBSTRATE=1` to make an unreachable Neo4j or
+Postgres fail those tests instead; CI's integration job does.
+
 Model providers are configured in code (`cogworx.model.providers`), not through `COGWORX_`
 variables. The optional live-provider integration tests read the provider's usual variables
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and skip when they are absent; the DeepSeek and Ollama live
